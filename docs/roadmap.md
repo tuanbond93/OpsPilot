@@ -53,10 +53,20 @@
 - [x] Interactive `/rootcause` playground page separating Verified Evidence from AI Explanation
 - [x] 20 unit tests in `src/__tests__/rootcause.test.ts` (0 external API calls)
 
-## Sprint 4.3 - 4.5: Specialized AI Agents (Upcoming)
-- [ ] Sprint 4.3: Summary Agent (`src/agents/summary/`)
-- [ ] Sprint 4.4: Message Agent (`src/agents/message/`)
-- [ ] Sprint 4.5: Optimization Agent (`src/agents/optimization/`)
+## Sprint 4.3: Follow-up Engine & Operational State Machine (Completed)
+- [x] Database migration `002_followup_engine.sql` (`followup_cases` & `followup_events`)
+- [x] Configurable follow-up policy (`src/config/followup.ts`)
+- [x] Deterministic State Machine (`NEW` ➔ `FIRST_PUSH_SENT` ➔ `FOLLOWING_UP` ➔ `SECOND_PUSH_SENT` ➔ `ESCALATED` ➔ `RESOLVED` ➔ `CLOSED`)
+- [x] Deterministic Progress Assessment (`strong_progress`, `limited_progress`, `no_progress`, `worsening`, `insufficient_data`)
+- [x] `FollowupMessageBuilder` structured payload builder
+- [x] Debug endpoints `GET /api/debug/followups` & `GET /api/debug/followups/[id]`
+- [x] Interactive `/followups` dashboard page (DB read-only)
+- [x] Test suite in `src/__tests__/followup.test.ts`
+- [x] Documentation in `docs/followup-engine.md`
+
+## Sprint 4.4 - 4.5: Next AI & Alert Agents (Upcoming)
+- [ ] Sprint 4.4: Message Agent & Telegram Connector (`src/agents/message/`)
+- [ ] Sprint 4.5: Summary Agent & Optimization Agent (`src/agents/summary/`)
 
 ---
 

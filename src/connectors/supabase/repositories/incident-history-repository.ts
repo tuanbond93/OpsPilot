@@ -65,4 +65,34 @@ export class IncidentHistoryRepository {
 
     return (data || []) as IncidentHistoryRow[];
   }
+
+  /**
+   * Batch fetches history records for multiple incident IDs in a single database query.
+   * Prevents N+1 database queries during sync & follow-up processing.
+   */
+  async getHistoriesByIncidentIds(incidentIds: string[]): Promise<Map<string, IncidentHistoryRow[]>> {
+    const historyMap = new Map<string, IncidentHistoryRow[]>();
+    if (incidentIds.length === 0) return historyMap;
+
+    const { data, error } = await this.client
+      .from("incident_history")
+      .select("*")
+      .in("incident_id", incidentIds)
+      .order("recorded_at", { ascending: true });
+
+    if (error) {
+      throw new Error(`IncidentHistoryRepository.getHistoriesByIncidentIds failed: ${error.message}`);
+    }
+
+    for (const row of (data || []) as IncidentHistoryRow[]) {
+      const existing = historyMap.get(row.incident_id);
+      if (existing) {
+        existing.push(row);
+      } else {
+        historyMap.set(row.incident_id, [row]);
+      }
+    }
+
+    return historyMap;
+  }
 }

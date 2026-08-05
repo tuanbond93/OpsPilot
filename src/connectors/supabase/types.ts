@@ -73,11 +73,73 @@ export interface OrderExceptionRow {
   order_code: string;
   reason_code: ExceptionReasonCode;
   reason_name: string;
-  note?: string | null;
-  approved_by?: string | null;
-  starts_at: string;
+  warehouse_id?: string | null;
+  notes?: string | null;
+  created_by?: string | null;
   expires_at?: string | null;
-  active: boolean;
+  created_at?: string;
+}
+
+export type FollowupState =
+  | "NEW"
+  | "FIRST_PUSH_PENDING"
+  | "FIRST_PUSH_SENT"
+  | "FOLLOWING_UP"
+  | "SECOND_PUSH_PENDING"
+  | "SECOND_PUSH_SENT"
+  | "ESCALATION_PENDING"
+  | "ESCALATED"
+  | "RESOLVED"
+  | "CLOSED";
+
+export type ProgressAssessment =
+  | "strong_progress"
+  | "limited_progress"
+  | "no_progress"
+  | "worsening"
+  | "insufficient_data";
+
+export type FollowupEventType =
+  | "CASE_CREATED"
+  | "PUSH_REQUESTED"
+  | "PUSH_CONFIRMED"
+  | "ASSESSMENT_CHECKED"
+  | "ESCALATION_REQUESTED"
+  | "ESCALATION_CONFIRMED"
+  | "INCIDENT_RESOLVED"
+  | "CASE_CLOSED"
+  | "CASE_REOPENED";
+
+export interface FollowupCaseRow {
+  id: string;
+  incident_id: string; // UUID FK referencing incidents(id)
+  incident_key: string;
+  current_state: FollowupState;
+  first_detected_at: string;
+  last_checked_at: string;
+  next_action_at?: string | null;
+  last_action_requested_at?: string | null;
+  last_action_confirmed_at?: string | null;
+  resolved_at?: string | null;
+  closed_at?: string | null;
+  baseline_affected_order_count: number;
+  latest_affected_order_count: number;
+  current_progress_percent: number;
+  current_assessment: ProgressAssessment;
   created_at?: string;
   updated_at?: string;
+}
+
+export interface FollowupEventRow {
+  id: string;
+  followup_case_id: string;
+  event_type: FollowupEventType;
+  event_time: string;
+  snapshot_id?: string | null;
+  old_state: FollowupState;
+  new_state: FollowupState;
+  assessment: ProgressAssessment;
+  confirmed_by?: string | null;
+  notes?: string | null;
+  created_at?: string;
 }

@@ -7,8 +7,10 @@ import {
   IncidentRepository,
   IncidentHistoryRepository,
   ExceptionRepository,
+  FollowupRepository,
   type OrderSnapshotRow,
 } from "@/connectors/supabase";
+import { FollowupEngine } from "@/engine/followup";
 
 export interface SyncJobResult {
   ok: boolean;
@@ -158,6 +160,28 @@ export async function syncRillnet(): Promise<SyncJobResult> {
           syncRunId,
           startedAt
         );
+
+        // 9. Execute Follow-up Engine State Machine using UUID FKs
+        try {
+          const followupRepo = dbClient ? new FollowupRepository(dbClient) : null;
+          const incidentDbIds: string[] = [];
+
+          for (const inc of incidents) {
+            const dbId = keyToIdMap.get(inc.incidentKey);
+            if (dbId) {
+              inc.incidentId = dbId; // Assign DB UUID FK
+              incidentDbIds.push(dbId);
+            }
+          }
+
+          // 1 Single Database Query for all incident histories (No N+1!)
+          const historyMap = await incidentHistoryRepo.getHistoriesByIncidentIds(incidentDbIds);
+
+          const followupEngine = new FollowupEngine(followupRepo);
+          await followupEngine.processIncidentFollowups(incidents, historyMap, undefined, referenceTimeMs);
+        } catch {
+          // Suppress followup engine errors in background sync
+        }
       } catch {
         // Suppress DB upsert errors if DB is unreachable
       }

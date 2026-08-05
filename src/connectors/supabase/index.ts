@@ -5,3 +5,4 @@ export * from "./repositories/order-snapshot-repository";
 export * from "./repositories/incident-repository";
 export * from "./repositories/incident-history-repository";
 export * from "./repositories/exception-repository";
+export * from "./repositories/followup-repository";
