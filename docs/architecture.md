@@ -138,6 +138,10 @@ OpsPilot features a **Provider-Agnostic AI Foundation Layer** ([`src/ai/`](file:
 └──────────────────────────────┘└──────────────────────────────┘
 ```
 
-- **Clean Architecture Principle**: Agents NEVER call OpenAI or Gemini APIs directly. All interactions use the `AIProvider` abstraction interface (`generate()`).
-- **Prompt Loader**: Prompts are stored as raw markdown files in `src/prompts/` and loaded dynamically via `loadPrompt(name)`.
-- **Extensibility**: Custom providers (e.g. Anthropic Claude, OpenRouter, Local Ollama) can be added by implementing `AIProvider` and calling `registerAIProvider(provider)`.
+### 4.4 Root Cause Agent (`src/agents/root-cause/`)
+Refactored into a deterministic, evidence-grounded explanation pipeline:
+- [`context-builder.ts`](file:///d:/Project/OpsPilot/src/agents/root-cause/context-builder.ts): Computes trend metrics (`trendDirection`, `changePercent`, `progressStatus`, `incidentDurationHours`).
+- [`evidence-builder.ts`](file:///d:/Project/OpsPilot/src/agents/root-cause/evidence-builder.ts): Converts raw context into typed `evidenceCodes` and deterministic evidence statements.
+- [`risk-calculator.ts`](file:///d:/Project/OpsPilot/src/agents/root-cause/risk-calculator.ts): Computes deterministic risk score (0–100) and risk level (`low`, `medium`, `high`, `critical`).
+- [`schema.ts`](file:///d:/Project/OpsPilot/src/agents/root-cause/schema.ts): Strict JSON output schema validator, evidence code verifier, and safe fallback generator.
+- [`agent.ts`](file:///d:/Project/OpsPilot/src/agents/root-cause/agent.ts): Calls provider-agnostic `AIProvider.generate()` without vendor SDK imports.

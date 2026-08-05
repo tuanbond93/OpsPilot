@@ -43,8 +43,17 @@
 - [x] Dynamic Prompt Loader `loadPrompt(name)` from `src/prompts/*.md` (`src/ai/provider.ts`)
 - [x] Unit test suite with mocked providers (`src/__tests__/provider.test.ts`)
 
-## Sprint 4.2 - 4.5: Specialized AI Agents (Upcoming)
-- [ ] Sprint 4.2: Root Cause Agent (`src/agents/root-cause/`)
+## Sprint 4.2: Root Cause Agent (Completed & Refactored)
+- [x] Evidence-grounded pipeline (`context-builder.ts`, `evidence-builder.ts`, `risk-calculator.ts`, `schema.ts`, `agent.ts`)
+- [x] Deterministic trend & progress calculation rules (`strong_progress`, `limited_progress`, `no_material_progress`, `worsening`, `insufficient_data`)
+- [x] Deterministic risk engine & factor breakdown (capped at 100)
+- [x] Typed `evidenceCodes` and anti-hallucination verification
+- [x] Externalized prompt metadata (`--- name: rootcause version: 2 language: vi ---`)
+- [x] Debug endpoint `GET /api/debug/rootcause/[incidentId]`
+- [x] Interactive `/rootcause` playground page separating Verified Evidence from AI Explanation
+- [x] 20 unit tests in `src/__tests__/rootcause.test.ts` (0 external API calls)
+
+## Sprint 4.3 - 4.5: Specialized AI Agents (Upcoming)
 - [ ] Sprint 4.3: Summary Agent (`src/agents/summary/`)
 - [ ] Sprint 4.4: Message Agent (`src/agents/message/`)
 - [ ] Sprint 4.5: Optimization Agent (`src/agents/optimization/`)

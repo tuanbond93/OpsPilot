@@ -15,21 +15,20 @@ describe("Sprint 4.1: AI Foundation & Provider Abstraction Tests", () => {
 
   it("loads prompt markdown template from src/prompts directory", () => {
     const promptText = loadPrompt("rootcause");
-    expect(promptText).toContain("# Root Cause Analysis Prompt Template");
-    expect(promptText).toContain("{{orderId}}");
+    expect(promptText).toContain("# System Prompt: OpsPilot Root Cause Explanation Agent");
+    expect(promptText).toContain("STRICT HALLUCINATION GUARD & NON-GOAL CONSTRAINTS");
   });
 
   it("interpolates template variables in prompt loader", () => {
-    const promptText = loadPrompt("rootcause", {
-      orderId: "ORD-999",
-      delayHours: "48",
-      warehouse: "Kho Hà Nội",
-      lastUpdate: "2026-08-05",
+    const promptText = loadPrompt("message", {
+      reasonName: "Kho chưa lấy",
+      warehouseName: "Kho Phú Thọ",
+      affectedOrderCount: "42",
     });
 
-    expect(promptText).toContain("- Order ID: ORD-999");
-    expect(promptText).toContain("- Delay Duration: 48 hours");
-    expect(promptText).toContain("- Warehouse: Kho Hà Nội");
+    expect(promptText).toContain("- Incident Reason: Kho chưa lấy");
+    expect(promptText).toContain("- Warehouse Name: Kho Phú Thọ");
+    expect(promptText).toContain("- Affected Order Count: 42");
   });
 
   it("resolves default AI provider (openai) from getAIProvider()", () => {

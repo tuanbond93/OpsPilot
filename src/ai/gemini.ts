@@ -18,6 +18,8 @@ export class GeminiProvider implements AIProvider {
   ): Promise<AIResponse> {
     const apiKey = this.getApiKey();
     const model = options.model || "gemini-1.5-flash";
+    const timeoutMs = options.timeoutMs ?? 20000;
+    const maxRetries = options.retries ?? 1;
 
     let userContent = prompt;
     if (input) {
@@ -49,34 +51,52 @@ export class GeminiProvider implements AIProvider {
       },
     };
 
-    const response = await fetch(endpoint, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(payload),
-    });
+    let lastError: Error | null = null;
 
-    if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(`Gemini API request failed (${response.status}): ${errorText}`);
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+      try {
+        const response = await fetch(endpoint, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(payload),
+          signal: controller.signal,
+        });
+
+        clearTimeout(timer);
+
+        if (!response.ok) {
+          const errorText = await response.text();
+          throw new Error(`Gemini API request failed (${response.status}): ${errorText}`);
+        }
+
+        const data = await response.json();
+        const candidate = data.candidates?.[0];
+        const text = candidate?.content?.parts?.[0]?.text || "";
+
+        const usageMetadata = data.usageMetadata;
+        const usage: UsageInfo = {
+          promptTokens: usageMetadata?.promptTokenCount,
+          completionTokens: usageMetadata?.candidatesTokenCount,
+          totalTokens: usageMetadata?.totalTokenCount,
+        };
+
+        return {
+          text,
+          usage,
+          model,
+        };
+      } catch (err: unknown) {
+        clearTimeout(timer);
+        lastError = err instanceof Error ? err : new Error(String(err));
+        if (attempt === maxRetries) break;
+      }
     }
 
-    const data = await response.json();
-    const candidate = data.candidates?.[0];
-    const text = candidate?.content?.parts?.[0]?.text || "";
-
-    const usageMetadata = data.usageMetadata;
-    const usage: UsageInfo = {
-      promptTokens: usageMetadata?.promptTokenCount,
-      completionTokens: usageMetadata?.candidatesTokenCount,
-      totalTokens: usageMetadata?.totalTokenCount,
-    };
-
-    return {
-      text,
-      usage,
-      model,
-    };
+    throw lastError || new Error("Gemini API call failed after retries");
   }
 }

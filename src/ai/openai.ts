@@ -18,6 +18,8 @@ export class OpenAIProvider implements AIProvider {
   ): Promise<AIResponse> {
     const apiKey = this.getApiKey();
     const model = options.model || "gpt-4o-mini";
+    const timeoutMs = options.timeoutMs ?? 20000;
+    const maxRetries = options.retries ?? 1;
 
     let userContent = prompt;
     if (input) {
@@ -39,33 +41,51 @@ export class OpenAIProvider implements AIProvider {
       max_tokens: options.maxTokens ?? 1000,
     };
 
-    const response = await fetch("https://api.openai.com/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify(payload),
-    });
+    let lastError: Error | null = null;
 
-    if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(`OpenAI API request failed (${response.status}): ${errorText}`);
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+      try {
+        const response = await fetch("https://api.openai.com/v1/chat/completions", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${apiKey}`,
+          },
+          body: JSON.stringify(payload),
+          signal: controller.signal,
+        });
+
+        clearTimeout(timer);
+
+        if (!response.ok) {
+          const errorText = await response.text();
+          throw new Error(`OpenAI API request failed (${response.status}): ${errorText}`);
+        }
+
+        const data = await response.json();
+        const text = data.choices?.[0]?.message?.content || "";
+
+        const usage: UsageInfo = {
+          promptTokens: data.usage?.prompt_tokens,
+          completionTokens: data.usage?.completion_tokens,
+          totalTokens: data.usage?.total_tokens,
+        };
+
+        return {
+          text,
+          usage,
+          model: data.model || model,
+        };
+      } catch (err: unknown) {
+        clearTimeout(timer);
+        lastError = err instanceof Error ? err : new Error(String(err));
+        if (attempt === maxRetries) break;
+      }
     }
 
-    const data = await response.json();
-    const text = data.choices?.[0]?.message?.content || "";
-
-    const usage: UsageInfo = {
-      promptTokens: data.usage?.prompt_tokens,
-      completionTokens: data.usage?.completion_tokens,
-      totalTokens: data.usage?.total_tokens,
-    };
-
-    return {
-      text,
-      usage,
-      model: data.model || model,
-    };
+    throw lastError || new Error("OpenAI API call failed after retries");
   }
 }

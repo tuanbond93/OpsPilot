@@ -15,6 +15,15 @@ export interface GenerateOptions {
   temperature?: number;
   maxTokens?: number;
   systemPrompt?: string;
+  timeoutMs?: number; // Default 20000 (20s)
+  retries?: number; // Default 1
+}
+
+export interface PromptMetadata {
+  name: string;
+  version: number;
+  language: string;
+  content: string;
 }
 
 export interface AIProvider {
