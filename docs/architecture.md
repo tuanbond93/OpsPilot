@@ -113,9 +113,31 @@ Ops Control Room Dashboard
 - `priority-engine`: Computes urgency priority rankings.
 - `scheduler`: Triggers rule checks on fixed schedules.
 
-### 4.3 AI Agents (`src/agents/`)
-- `root-cause`: Analyzes complex, ambiguous delay causes.
-- `message`: Composes natural language notifications when triggered by Rule Engine.
-- `followup`: Assists with text generation for follow-up reminders.
-- `summary`: Synthesizes shift handover incident reports.
-- `optimization`: Proposes rule adjustments based on trend analysis.
+### 4.3 AI Agents Layer & AI Foundation (`src/ai/` & `src/agents/`)
+OpsPilot features a **Provider-Agnostic AI Foundation Layer** ([`src/ai/`](file:///d:/Project/OpsPilot/src/ai/)):
+
+```text
+┌─────────────────────────────────────────────────────────────┐
+│                       AI Agent Layer                        │
+│ (src/agents/: root-cause, summary, message, optimization)   │
+└──────────────────────────────┬──────────────────────────────┘
+                               │
+                               ▼
+┌─────────────────────────────────────────────────────────────┐
+│                 Provider-Agnostic AI Layer                  │
+│                     (src/ai/provider.ts)                    │
+│   - loadPrompt(name) -> loads templates from src/prompts/   │
+│   - getAIProvider()  -> resolves active LLM provider       │
+└──────────────┬──────────────────────────────┬───────────────┘
+               │                              │
+               ▼                              ▼
+┌──────────────────────────────┐┌──────────────────────────────┐
+│  OpenAI Provider             ││  Gemini Provider             │
+│  (src/ai/openai.ts)          ││  (src/ai/gemini.ts)          │
+│  gpt-4o-mini / gpt-4o        ││  gemini-1.5-flash            │
+└──────────────────────────────┘└──────────────────────────────┘
+```
+
+- **Clean Architecture Principle**: Agents NEVER call OpenAI or Gemini APIs directly. All interactions use the `AIProvider` abstraction interface (`generate()`).
+- **Prompt Loader**: Prompts are stored as raw markdown files in `src/prompts/` and loaded dynamically via `loadPrompt(name)`.
+- **Extensibility**: Custom providers (e.g. Anthropic Claude, OpenRouter, Local Ollama) can be added by implementing `AIProvider` and calling `registerAIProvider(provider)`.

@@ -30,9 +30,15 @@ src/
 ├── engine/               # Operations Engine ("The Brain")
 │   ├── incident/         # Incident detection engine
 │   ├── priority/         # Urgency priority calculator
-│   ├── scheduler/        # Task scheduler (governs 08:00 -> 10:00 -> 12:00 cadence)
+│   ├── scheduler/        # Task scheduler
 │   └── rules/            # Configurable rules (push.ts, sla.ts, exception.ts, priority.ts)
-├── agents/               # Autonomous AI Agents (Invoked on ambiguous data / drafting)
+├── ai/                   # Provider-Agnostic AI Foundation Layer
+│   ├── types.ts          # Common interfaces (AIProvider, AIResponse, GenerateOptions)
+│   ├── openai.ts         # OpenAI provider implementation (gpt-4o-mini)
+│   ├── gemini.ts         # Google Gemini provider implementation (gemini-1.5-flash)
+│   ├── provider.ts       # Provider factory, switcher & loadPrompt() loader
+│   └── index.ts          # Module re-exports
+├── agents/               # Autonomous AI Agents (Call AIProvider only)
 │   ├── root-cause/       # Root cause analysis agent
 │   ├── message/          # Automated message drafting agent
 │   ├── followup/         # Followup text generation agent

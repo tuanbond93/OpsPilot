@@ -36,10 +36,18 @@
 
 ---
 
-## Sprint 4: Realtime Telematics & Automated Alerts
-- [ ] Supabase Realtime subscriptions for shipment location & delay events
-- [ ] Automated push alert dispatch system
-- [ ] Operational metrics analytics page
+## Sprint 4.1: AI Foundation Layer (Completed)
+- [x] Provider-agnostic `AIProvider` abstraction interface (`src/ai/types.ts`)
+- [x] OpenAI provider implementation (`src/ai/openai.ts`)
+- [x] Gemini provider implementation (`src/ai/gemini.ts`)
+- [x] Dynamic Prompt Loader `loadPrompt(name)` from `src/prompts/*.md` (`src/ai/provider.ts`)
+- [x] Unit test suite with mocked providers (`src/__tests__/provider.test.ts`)
+
+## Sprint 4.2 - 4.5: Specialized AI Agents (Upcoming)
+- [ ] Sprint 4.2: Root Cause Agent (`src/agents/root-cause/`)
+- [ ] Sprint 4.3: Summary Agent (`src/agents/summary/`)
+- [ ] Sprint 4.4: Message Agent (`src/agents/message/`)
+- [ ] Sprint 4.5: Optimization Agent (`src/agents/optimization/`)
 
 ---
 
