@@ -308,26 +308,38 @@ export class FollowupEngine {
 
     const enqueueActionsStartedAt = this.logSubphaseStart("enqueueActions");
     try {
-    for (const pending of pendingTransitions) {
-      if (pending.action && this.actionQueue) {
-        metrics.actions++;
-        await this.timeOperation(metrics, "actionEnqueue", () =>
-          this.actionQueue!.enqueueAction(pending.action!)
-        );
+      const actionsToEnqueue = pendingTransitions
+        .filter((pending) => pending.action)
+        .map((pending) => pending.action!);
+
+      if (actionsToEnqueue.length > 0 && this.actionQueue) {
+        metrics.actions += actionsToEnqueue.length;
+        if (typeof this.actionQueue.enqueueActionBatch === "function") {
+          await this.timeOperation(metrics, "actionEnqueue", () =>
+            this.actionQueue!.enqueueActionBatch!(actionsToEnqueue)
+          );
+        } else {
+          for (const actionParams of actionsToEnqueue) {
+            await this.timeOperation(metrics, "actionEnqueue", () =>
+              this.actionQueue!.enqueueAction(actionParams)
+            );
+          }
+        }
       }
 
-      results.push({
-        incidentId: pending.incident.incidentId,
-        incidentKey: pending.processParams.incidentKey,
-        warehouseName: pending.incident.warehouseName,
-        reasonName: pending.incident.reasonName,
-        oldState: pending.transitionResult.oldState,
-        newState: pending.transitionResult.newState,
-        progressPercent: pending.processParams.changePercent,
-        assessment: pending.processParams.assessment,
-        payload: pending.payload,
-      });
-    }
+      for (const pending of pendingTransitions) {
+        results.push({
+          incidentId: pending.incident.incidentId,
+          incidentKey: pending.processParams.incidentKey,
+          warehouseName: pending.incident.warehouseName,
+          reasonName: pending.incident.reasonName,
+          oldState: pending.transitionResult.oldState,
+          newState: pending.transitionResult.newState,
+          progressPercent: pending.processParams.changePercent,
+          assessment: pending.processParams.assessment,
+          payload: pending.payload,
+        });
+      }
 
     } catch (error) {
       const failedActionQueueMetrics = this.actionQueue?.getMetricsSnapshot?.();

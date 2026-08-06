@@ -4,17 +4,12 @@ import type {
   NotificationActionEventRow,
   EnqueueActionParams,
   ActionStatus,
-  AuditEventType,
 } from "./types";
-import type { ActionQueueMetrics, IActionQueue } from "./IActionQueue";
+import type { ActionQueueMetrics, IActionQueue, ActionQueueDeduplicationResult } from "./IActionQueue";
 import { Deduplicator } from "./deduplicator";
 import { isFallbackAllowed } from "@/connectors/supabase/fallback-policy";
 
-export interface DeduplicationResult {
-  deduplicated: true;
-  existingAction: NotificationActionRow;
-  reason: "in_memory_duplicate" | "db_unique_constraint";
-}
+export interface DeduplicationResult extends ActionQueueDeduplicationResult {}
 
 export class ActionQueue implements IActionQueue {
   private inMemoryQueue: NotificationActionRow[] = [];
@@ -28,172 +23,279 @@ export class ActionQueue implements IActionQueue {
   }
 
   /**
-   * Enqueues a notification action with deduplication check and audit event logging.
-   * Returns the new action, an existing action (wrapped in DeduplicationResult), or null.
+   * Bulk query notification_actions by deduplication keys in chunks
    */
-  async enqueueAction(
-    params: EnqueueActionParams
-  ): Promise<NotificationActionRow | DeduplicationResult | null> {
-    this.metrics.enqueueCalls++;
-    const dedupKey = params.deduplicationKey || null;
-    const nowIso = new Date().toISOString();
+  async batchGetActionsByDedupKeys(dedupKeys: string[]): Promise<Map<string, NotificationActionRow>> {
+    const resultMap = new Map<string, NotificationActionRow>();
+    const validKeys = Array.from(new Set(dedupKeys.filter(Boolean)));
+    if (validKeys.length === 0) return resultMap;
 
-    // In-memory dedup check
-    if (dedupKey && Deduplicator.isDuplicateInMemory(dedupKey)) {
-      const existing = await this.getActionByDeduplicationKey(dedupKey);
-      if (existing) {
-        await this.appendEvent({
-          action_id: existing.id,
-          event_type: "ACTION_DEDUPLICATED",
-          old_status: existing.status,
-          new_status: existing.status,
-          attempt_number: 0,
-          provider: params.provider || "console",
-          metadata: {
-            deduplicationKey: dedupKey,
-            attemptedActionType: params.actionType,
-            reason: "in_memory_duplicate",
-            attemptedAt: nowIso,
-          },
-        });
-        return { deduplicated: true, existingAction: existing, reason: "in_memory_duplicate" };
+    if (this.client) {
+      this.metrics.dedupLookups++;
+      try {
+        const chunkSize = 100;
+        for (let i = 0; i < validKeys.length; i += chunkSize) {
+          const chunk = validKeys.slice(i, i + chunkSize);
+          const { data, error } = await this.client
+            .from("notification_actions")
+            .select("*")
+            .in("deduplication_key", chunk);
+
+          if (!error && data) {
+            for (const row of data) {
+              if (row.deduplication_key) {
+                resultMap.set(row.deduplication_key, row);
+              }
+            }
+          }
+        }
+        return resultMap;
+      } catch {
+        // Fallback to in-memory
       }
-      // Key in memory but action not found — should not happen, but return null safely
-      return null;
     }
 
-    const actionRow: Partial<NotificationActionRow> = {
-      action_type: params.actionType,
-      provider: params.provider || "console",
-      target_type: params.targetType || "WAREHOUSE",
-      target_id: params.targetId || null,
-      payload: params.payload || {},
-      status: "PENDING",
-      priority: params.priority || "medium",
-      deduplication_key: dedupKey,
-      retry_count: 0,
-      max_retry: params.maxRetry || 3,
-      scheduled_at: params.scheduledAt || nowIso,
-      created_at: nowIso,
-      updated_at: nowIso,
-    };
+    for (const key of validKeys) {
+      const match = this.inMemoryQueue.find((a) => a.deduplication_key === key);
+      if (match) resultMap.set(key, match);
+    }
+    return resultMap;
+  }
+
+  /**
+   * Bulk insert notification_actions in chunks
+   */
+  async batchInsertActions(actions: Array<Partial<NotificationActionRow>>): Promise<NotificationActionRow[]> {
+    if (actions.length === 0) return [];
 
     if (this.client) {
       this.metrics.actionInsertCalls++;
       try {
-        const { data, error } = await this.client
-          .from("notification_actions")
-          .insert([actionRow])
-          .select()
-          .single();
+        const insertedRows: NotificationActionRow[] = [];
+        const chunkSize = 100;
+        for (let i = 0; i < actions.length; i += chunkSize) {
+          const chunk = actions.slice(i, i + chunkSize);
+          const { data, error } = await this.client
+            .from("notification_actions")
+            .insert(chunk)
+            .select();
 
-        if (error) {
-          if (error.code === "23505") { // Unique constraint violation
-            if (dedupKey) Deduplicator.markKeyInMemory(dedupKey);
-            // Fetch the existing action to get its real UUID
-            const existing = dedupKey
-              ? await this.getActionByDeduplicationKey(dedupKey)
-              : null;
-            if (existing) {
-              await this.appendEvent({
-                action_id: existing.id,
-                event_type: "ACTION_DEDUPLICATED",
-                old_status: existing.status,
-                new_status: existing.status,
-                attempt_number: 0,
-                provider: params.provider || "console",
-                metadata: {
-                  deduplicationKey: dedupKey,
-                  attemptedActionType: params.actionType,
-                  reason: "db_unique_constraint",
-                  attemptedAt: nowIso,
-                },
-              });
-              return { deduplicated: true, existingAction: existing, reason: "db_unique_constraint" };
-            }
-            return null;
-          }
-          throw error;
+          if (error) throw error;
+          if (data) insertedRows.push(...data);
         }
+        return insertedRows;
+      } catch {
+        // Fallback to in-memory below
+      }
+    }
 
-        if (dedupKey) Deduplicator.markKeyInMemory(dedupKey);
-        await this.appendEvent({
-          action_id: data.id,
-          event_type: "ACTION_ENQUEUED",
-          old_status: null,
-          new_status: "PENDING",
-          attempt_number: 0,
-          provider: data.provider,
-          metadata: { payload: data.payload },
-        });
+    const nowIso = new Date().toISOString();
+    const fallbackRows: NotificationActionRow[] = actions.map((p) => {
+      const id = p.id || `act-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
+      return {
+        id,
+        action_type: p.action_type || "CUSTOM",
+        provider: p.provider || "console",
+        target_type: p.target_type || "WAREHOUSE",
+        target_id: p.target_id || null,
+        payload: p.payload || {},
+        status: p.status || "PENDING",
+        priority: p.priority || "medium",
+        deduplication_key: p.deduplication_key || null,
+        retry_count: p.retry_count || 0,
+        max_retry: p.max_retry || 3,
+        scheduled_at: p.scheduled_at || nowIso,
+        created_at: p.created_at || nowIso,
+        updated_at: p.updated_at || nowIso,
+      };
+    });
 
-        return data;
+    this.inMemoryQueue.push(...fallbackRows);
+    return fallbackRows;
+  }
+
+  /**
+   * Bulk insert notification_action_events in chunks
+   */
+  async batchAppendEvents(events: Array<Omit<NotificationActionEventRow, "id" | "created_at">>): Promise<NotificationActionEventRow[]> {
+    if (events.length === 0) return [];
+    const nowIso = new Date().toISOString();
+
+    if (this.client) {
+      this.metrics.auditEventWrites++;
+      try {
+        const insertedEvents: NotificationActionEventRow[] = [];
+        const payloadEvents = events.map((e) => ({ ...e, created_at: nowIso }));
+        const chunkSize = 100;
+
+        for (let i = 0; i < payloadEvents.length; i += chunkSize) {
+          const chunk = payloadEvents.slice(i, i + chunkSize);
+          const { data, error } = await this.client
+            .from("notification_action_events")
+            .insert(chunk)
+            .select();
+
+          if (error) throw error;
+          if (data) insertedEvents.push(...data);
+        }
+        return insertedEvents;
       } catch {
         // Fallback
       }
     }
 
-    // In-memory fallback
-    const id = `act-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
-    const fullRow: NotificationActionRow = {
-      id,
-      action_type: params.actionType,
-      provider: params.provider || "console",
-      target_type: params.targetType || "WAREHOUSE",
-      target_id: params.targetId || null,
-      payload: params.payload || {},
-      status: "PENDING",
-      priority: params.priority || "medium",
-      deduplication_key: dedupKey,
-      retry_count: 0,
-      max_retry: params.maxRetry || 3,
-      scheduled_at: params.scheduledAt || nowIso,
+    const fallbackEvents: NotificationActionEventRow[] = events.map((e) => ({
+      id: `evt-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+      ...e,
       created_at: nowIso,
-      updated_at: nowIso,
-    };
+    }));
+    this.inMemoryEvents.push(...fallbackEvents);
+    return fallbackEvents;
+  }
 
-    if (dedupKey) Deduplicator.markKeyInMemory(dedupKey);
-    this.inMemoryQueue.push(fullRow);
+  /**
+   * Enqueues a batch of notification action parameters efficiently in bulk
+   */
+  async enqueueActionBatch(
+    paramsList: EnqueueActionParams[]
+  ): Promise<Array<NotificationActionRow | ActionQueueDeduplicationResult | null>> {
+    if (paramsList.length === 0) return [];
+    const tStart = performance.now();
+    this.metrics.enqueueCalls += paramsList.length;
+    const nowIso = new Date().toISOString();
 
-    await this.appendEvent({
-      action_id: id,
-      event_type: "ACTION_ENQUEUED",
-      old_status: null,
-      new_status: "PENDING",
-      attempt_number: 0,
-      provider: fullRow.provider,
-      metadata: { payload: fullRow.payload },
-    });
+    const dedupKeys = paramsList.map((p) => p.deduplicationKey).filter(Boolean) as string[];
+    const existingMap = await this.batchGetActionsByDedupKeys(dedupKeys);
 
-    return fullRow;
+    const results: Array<NotificationActionRow | ActionQueueDeduplicationResult | null> = new Array(paramsList.length).fill(null);
+    const actionsToInsert: Array<{ index: number; row: Partial<NotificationActionRow> }> = [];
+    const eventsToAppend: Array<Omit<NotificationActionEventRow, "id" | "created_at">> = [];
+    const seenBatchKeys = new Map<string, NotificationActionRow>();
+
+    for (let i = 0; i < paramsList.length; i++) {
+      const params = paramsList[i];
+      const dedupKey = params.deduplicationKey || null;
+
+      if (dedupKey) {
+        const existingInDb = existingMap.get(dedupKey) || seenBatchKeys.get(dedupKey);
+        const isMemDup = Deduplicator.isDuplicateInMemory(dedupKey);
+
+        if (existingInDb || isMemDup) {
+          const existingRow = existingInDb || (await this.getActionByDeduplicationKey(dedupKey));
+          if (existingRow) {
+            const reason = isMemDup ? "in_memory_duplicate" : "db_unique_constraint";
+            results[i] = {
+              deduplicated: true,
+              existingAction: existingRow,
+              reason,
+            };
+            eventsToAppend.push({
+              action_id: existingRow.id,
+              event_type: "ACTION_DEDUPLICATED",
+              old_status: existingRow.status,
+              new_status: existingRow.status,
+              attempt_number: 0,
+              provider: params.provider || "console",
+              metadata: {
+                deduplicationKey: dedupKey,
+                attemptedActionType: params.actionType,
+                reason,
+                attemptedAt: nowIso,
+              },
+            });
+            continue;
+          }
+        }
+      }
+
+      const actionRow: Partial<NotificationActionRow> = {
+        action_type: params.actionType,
+        provider: params.provider || "console",
+        target_type: params.targetType || "WAREHOUSE",
+        target_id: params.targetId || null,
+        payload: params.payload || {},
+        status: "PENDING",
+        priority: params.priority || "medium",
+        deduplication_key: dedupKey,
+        retry_count: 0,
+        max_retry: params.maxRetry || 3,
+        scheduled_at: params.scheduledAt || nowIso,
+        created_at: nowIso,
+        updated_at: nowIso,
+      };
+
+      if (dedupKey) {
+        Deduplicator.markKeyInMemory(dedupKey);
+        seenBatchKeys.set(dedupKey, actionRow as NotificationActionRow);
+      }
+
+      actionsToInsert.push({ index: i, row: actionRow });
+    }
+
+    if (actionsToInsert.length > 0) {
+      const insertedRows = await this.batchInsertActions(actionsToInsert.map((a) => a.row));
+
+      for (let k = 0; k < actionsToInsert.length; k++) {
+        const { index, row } = actionsToInsert[k];
+        const inserted = insertedRows[k] || ({
+          id: `act-${Date.now()}-${k}`,
+          ...row,
+        } as NotificationActionRow);
+
+        results[index] = inserted;
+        if (inserted.deduplication_key) {
+          seenBatchKeys.set(inserted.deduplication_key, inserted);
+        }
+
+        eventsToAppend.push({
+          action_id: inserted.id,
+          event_type: "ACTION_ENQUEUED",
+          old_status: null,
+          new_status: "PENDING",
+          attempt_number: 0,
+          provider: inserted.provider,
+          metadata: { payload: inserted.payload },
+        });
+      }
+    }
+
+    if (eventsToAppend.length > 0) {
+      await this.batchAppendEvents(eventsToAppend);
+    }
+
+    const durationMs = Math.round(performance.now() - tStart);
+    const existingCount = paramsList.length - actionsToInsert.length;
+    const insertedCount = actionsToInsert.length;
+    const repositoryCalls = (dedupKeys.length > 0 ? 1 : 0) + (insertedCount > 0 ? 1 : 0) + (eventsToAppend.length > 0 ? 1 : 0);
+
+    console.log(
+      `[ActionQueue] operation=batchEnqueue candidates=${paramsList.length} existing=${existingCount} inserted=${insertedCount} events=${eventsToAppend.length} repositoryCalls=${repositoryCalls} durationMs=${durationMs} status=success`
+    );
+
+    return results;
+  }
+
+  /**
+   * Enqueues a single notification action with deduplication check and audit event logging.
+   */
+  async enqueueAction(
+    params: EnqueueActionParams
+  ): Promise<NotificationActionRow | ActionQueueDeduplicationResult | null> {
+    const res = await this.enqueueActionBatch([params]);
+    return res[0] || null;
   }
 
   /**
    * Finds a notification action by its deduplication_key.
    */
   async getActionByDeduplicationKey(dedupKey: string): Promise<NotificationActionRow | null> {
-    if (this.client) {
-      this.metrics.dedupLookups++;
-      try {
-        const { data, error } = await this.client
-          .from("notification_actions")
-          .select("*")
-          .eq("deduplication_key", dedupKey)
-          .maybeSingle();
-
-        if (!error && data) return data;
-      } catch {
-        // Fallback
-      }
-    }
-
-    return this.inMemoryQueue.find((a) => a.deduplication_key === dedupKey) || null;
+    const map = await this.batchGetActionsByDedupKeys([dedupKey]);
+    return map.get(dedupKey) || null;
   }
 
   /**
    * Database-backed atomic claim mechanism.
    * Prevents concurrent workers from processing the same action.
-   * Recovers actions stuck in PROCESSING beyond lockTimeoutMs.
    */
   async claimPendingActions(
     workerId: string = "worker-1",
@@ -206,7 +308,6 @@ export class ActionQueue implements IActionQueue {
 
     if (this.client) {
       try {
-        // 1. Fetch eligible actions (PENDING or stale PROCESSING)
         const { data: eligible, error: selectErr } = await this.client
           .from("notification_actions")
           .select("*")
@@ -257,7 +358,6 @@ export class ActionQueue implements IActionQueue {
       }
     }
 
-    // In-memory fallback claim implementation
     const claimed: NotificationActionRow[] = [];
     for (const action of this.inMemoryQueue) {
       if (claimed.length >= limit) break;
@@ -333,31 +433,8 @@ export class ActionQueue implements IActionQueue {
   async appendEvent(
     eventData: Omit<NotificationActionEventRow, "id" | "created_at">
   ): Promise<NotificationActionEventRow> {
-    const nowIso = new Date().toISOString();
-
-    if (this.client) {
-      this.metrics.auditEventWrites++;
-
-      try {
-        const { data, error } = await this.client
-          .from("notification_action_events")
-          .insert([{ ...eventData, created_at: nowIso }])
-          .select()
-          .single();
-
-        if (!error && data) return data;
-      } catch {
-        // Fallback
-      }
-    }
-
-    const eventRow: NotificationActionEventRow = {
-      id: `evt-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
-      ...eventData,
-      created_at: nowIso,
-    };
-    this.inMemoryEvents.push(eventRow);
-    return eventRow;
+    const res = await this.batchAppendEvents([eventData]);
+    return res[0];
   }
 
   async getActionEvents(actionId: string): Promise<NotificationActionEventRow[]> {

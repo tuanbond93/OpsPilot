@@ -23,6 +23,18 @@ export interface IActionQueue {
   enqueueAction(
     params: EnqueueActionParams
   ): Promise<NotificationActionRow | null | ActionQueueDeduplicationResult>;
+  enqueueActionBatch(
+    paramsList: EnqueueActionParams[]
+  ): Promise<Array<NotificationActionRow | ActionQueueDeduplicationResult | null>>;
+  batchGetActionsByDedupKeys(
+    dedupKeys: string[]
+  ): Promise<Map<string, NotificationActionRow>>;
+  batchInsertActions(
+    actions: Array<Partial<NotificationActionRow>>
+  ): Promise<NotificationActionRow[]>;
+  batchAppendEvents(
+    events: Array<Omit<NotificationActionEventRow, "id" | "created_at">>
+  ): Promise<NotificationActionEventRow[]>;
   claimPendingActions(
     workerId?: string,
     limit?: number,

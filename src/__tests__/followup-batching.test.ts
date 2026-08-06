@@ -67,6 +67,13 @@ class CountingActionQueue extends ActionQueue {
     this.enqueueCalls++;
     return super.enqueueAction(params);
   }
+
+  override async enqueueActionBatch(
+    paramsList: EnqueueActionParams[]
+  ): ReturnType<ActionQueue["enqueueActionBatch"]> {
+    this.enqueueCalls += paramsList.length;
+    return super.enqueueActionBatch(paramsList);
+  }
 }
 
 class CaseFailureRepository extends CountingFollowupRepository {
