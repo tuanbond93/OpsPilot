@@ -9,10 +9,10 @@ import { IAiWorkerService } from './interfaces/IAiWorkerService';
 import { IDashboardService } from './interfaces/IDashboardService';
 import { IProjectionService } from './interfaces/IProjectionService';
 
-import { NoOpIncidentService } from './impl/NoOpIncidentService';
-import { NoOpFollowupService } from './impl/NoOpFollowupService';
-import { NoOpSyncService } from './impl/NoOpSyncService';
-import { NoOpPlannerService } from './impl/NoOpPlannerService';
+import { IncidentService } from './impl/IncidentService';
+import { FollowupService } from './impl/FollowupService';
+import { SyncService } from './impl/SyncService';
+import { PlannerService } from './impl/PlannerService';
 
 import { AiWorkerService } from './impl/AiWorkerService';
 
@@ -26,20 +26,67 @@ import { ActionQueue } from "@/engine/action-queue";
 import { ConsoleProvider } from "@/notifications/providers/console";
 import { TelegramProvider } from "@/notifications/providers/telegram";
 import { DashboardService } from './impl/DashboardService';
-import { NoOpProjectionService } from './impl/NoOpProjectionService';
+import { ProjectionService } from './impl/ProjectionService';
+import { SupabaseWarehouseProjection } from '@/projections/adapters/SupabaseWarehouseProjection';
+import { SupabaseIncidentProjection } from '@/projections/adapters/SupabaseIncidentProjection';
+import { SupabasePlannerProjection } from '@/projections/adapters/SupabasePlannerProjection';
+import { SupabaseNotificationProjection } from '@/projections/adapters/SupabaseNotificationProjection';
 
 export class ServiceFactory {
   public static getIncidentService(client?: SupabaseClient): IIncidentService {
-    return new NoOpIncidentService();
+    const incidentRepo = client ? RepositoryFactory.getIncidentRepository(client) : RepositoryFactory.getIncidentRepository();
+    const historyRepo = client ? RepositoryFactory.getIncidentHistoryRepository(client) : RepositoryFactory.getIncidentHistoryRepository();
+    const rootCauseAgent = new RootCauseAgent();
+    return new IncidentService(incidentRepo, historyRepo, rootCauseAgent);
   }
   public static getFollowupService(client?: SupabaseClient): IFollowupService {
-    return new NoOpFollowupService();
+    const followupRepo = client ? RepositoryFactory.getFollowupRepository(client) : RepositoryFactory.getFollowupRepository();
+    const actionQueue = new ActionQueue(client);
+    return new FollowupService(followupRepo, actionQueue);
   }
   public static getSyncService(client?: SupabaseClient): ISyncService {
-    return new NoOpSyncService();
+    const syncRunRepo = RepositoryFactory.getSyncRunRepository(client);
+    const orderSnapshotRepo = RepositoryFactory.getOrderSnapshotRepository(client);
+    const incidentRepo = RepositoryFactory.getIncidentRepository(client);
+    const incidentHistoryRepo = RepositoryFactory.getIncidentHistoryRepository(client);
+    const exceptionRepo = RepositoryFactory.getExceptionRepository(client);
+    const followupRepo = RepositoryFactory.getFollowupRepository(client);
+    const aiJobRepo = RepositoryFactory.getAiJobRepository(client);
+    const actionQueue = new ActionQueue(client);
+
+    return new SyncService(
+      syncRunRepo,
+      orderSnapshotRepo,
+      incidentRepo,
+      incidentHistoryRepo,
+      exceptionRepo,
+      followupRepo,
+      aiJobRepo,
+      actionQueue
+    );
   }
   public static getPlannerService(client?: SupabaseClient): IPlannerService {
-    return new NoOpPlannerService();
+    const plannerRepo = RepositoryFactory.getPlannerRepository(client);
+    const incidentRepo = RepositoryFactory.getIncidentRepository(client);
+    const historyRepo = RepositoryFactory.getIncidentHistoryRepository(client);
+    const followupRepo = RepositoryFactory.getFollowupRepository(client);
+    const exceptionRepo = RepositoryFactory.getExceptionRepository(client);
+    const aiJobRepo = RepositoryFactory.getAiJobRepository(client);
+    const actionQueue = new ActionQueue(client);
+    const rootCauseAgent = new RootCauseAgent();
+    const actionPlannerAgent = new ActionPlannerAgent(plannerRepo);
+
+    return new PlannerService(
+      plannerRepo,
+      incidentRepo,
+      historyRepo,
+      followupRepo,
+      exceptionRepo,
+      aiJobRepo,
+      actionQueue,
+      rootCauseAgent,
+      actionPlannerAgent
+    );
   }
   public static getAiWorkerService(client?: SupabaseClient): IAiWorkerService {
     if (!client) {
@@ -84,6 +131,18 @@ export class ServiceFactory {
     );
   }
   public static getProjectionService(client?: SupabaseClient): IProjectionService {
-    return new NoOpProjectionService();
+    const warehouseProj = client ? new SupabaseWarehouseProjection(client) : null;
+    const incidentProj = client ? new SupabaseIncidentProjection(client) : null;
+    const plannerProj = client ? new SupabasePlannerProjection(client) : null;
+    const notifProj = client ? new SupabaseNotificationProjection(client) : null;
+    const projectionRunRepo = RepositoryFactory.getProjectionRunRepository(client);
+
+    return new ProjectionService(
+      warehouseProj,
+      incidentProj,
+      plannerProj,
+      notifProj,
+      projectionRunRepo
+    );
   }
 }

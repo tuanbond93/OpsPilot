@@ -112,9 +112,9 @@ export async function POST(
     });
 
     // 3. Trigger Follow-up State Confirmation
-    const notifService = ServiceFactory.getNotificationService();
     if (updated) {
-      await (notifService as any).handleFollowupStateConfirmation(updated, confirmedBy);
+      const followupService = ServiceFactory.getFollowupService(dbClient);
+      await followupService.handleFollowupStateConfirmation(updated, confirmedBy);
     }
 
     return NextResponse.json({

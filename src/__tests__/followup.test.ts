@@ -225,8 +225,8 @@ describe("Sprint 4.3 Hardened: Follow-up Engine & Action Governance Tests", () =
 
   // 10. Sync job performs 1 batch query for history without N+1 loop
   it("10. Sync job performs 1 batch query for history without N+1 loop", () => {
-    const syncJobCode = fs.readFileSync("src/jobs/sync-rillnet.ts", "utf-8");
-    expect(syncJobCode).toContain("getHistoriesByIncidentIds");
-    expect(syncJobCode).not.toContain("await incidentHistoryRepo.getIncidentHistory(");
+    const syncServiceCode = fs.readFileSync("src/services/impl/SyncService.ts", "utf-8");
+    expect(syncServiceCode).toContain("getHistoriesByIncidentIds");
+    expect(syncServiceCode).not.toContain("await incidentHistoryRepo.getIncidentHistory(");
   });
 });

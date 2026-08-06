@@ -34,6 +34,14 @@ import type { IDashboardRepository } from "./interfaces/IDashboardRepository";
 import { SupabaseDashboardRepository } from "./supabase/SupabaseDashboardRepository";
 import { MockDashboardRepository } from "./mock/MockDashboardRepository";
 
+import type { IOrderSnapshotRepository } from "./interfaces/IOrderSnapshotRepository";
+import { SupabaseOrderSnapshotRepository } from "./supabase/SupabaseOrderSnapshotRepository";
+import { MockOrderSnapshotRepository } from "./mock/MockOrderSnapshotRepository";
+
+import type { IProjectionRunRepository } from "./interfaces/IProjectionRunRepository";
+import { SupabaseProjectionRunRepository } from "@/connectors/supabase/repositories/projection-run-repository";
+import { MockProjectionRunRepository } from "./mock/MockProjectionRunRepository";
+
 export class RepositoryFactory {
   private static incidentRepo: IIncidentRepository | null = null;
   private static aiJobRepo: IAiJobRepository | null = null;
@@ -45,6 +53,7 @@ export class RepositoryFactory {
   private static dashboardRepo: IDashboardRepository | null = null;
   private static historyRepo: IIncidentHistoryRepository | null = null;
   private static exceptionRepo: IExceptionRepository | null = null;
+  private static orderSnapshotRepo: IOrderSnapshotRepository | null = null;
 
   // Setters for DI / Custom mock registrations
   static registerIncidentRepository(repo: IIncidentRepository): void {
@@ -85,6 +94,10 @@ export class RepositoryFactory {
 
   static registerDashboardRepository(repo: IDashboardRepository): void {
     this.dashboardRepo = repo;
+  }
+
+  static registerOrderSnapshotRepository(repo: IOrderSnapshotRepository): void {
+    this.orderSnapshotRepo = repo;
   }
 
   // Resolvers
@@ -201,11 +214,37 @@ export class RepositoryFactory {
     return this.dashboardRepo;
   }
 
+  static getOrderSnapshotRepository(client?: SupabaseClient | null): IOrderSnapshotRepository {
+    if (client) {
+      return new SupabaseOrderSnapshotRepository(client);
+    }
+    if (this.orderSnapshotRepo) return this.orderSnapshotRepo;
+
+    if (this.shouldProvideMock()) {
+      this.orderSnapshotRepo = new MockOrderSnapshotRepository();
+    } else {
+      const defaultClient = createAdminClient();
+      this.orderSnapshotRepo = new SupabaseOrderSnapshotRepository(defaultClient);
+    }
+    return this.orderSnapshotRepo;
+  }
+
   static getWarehouseRepository(): IWarehouseRepository {
     if (!this.warehouseRepo) {
       throw new Error("[RepositoryFactory] WarehouseRepository not registered");
     }
     return this.warehouseRepo;
+  }
+
+  static getProjectionRunRepository(client?: SupabaseClient): IProjectionRunRepository {
+    if (client) {
+      return new SupabaseProjectionRunRepository(client);
+    }
+    if (this.shouldProvideMock()) {
+      return new MockProjectionRunRepository();
+    }
+    const defaultClient = createAdminClient();
+    return new SupabaseProjectionRunRepository(defaultClient);
   }
 
   /**
@@ -227,5 +266,6 @@ export class RepositoryFactory {
     this.dashboardRepo = null;
     this.historyRepo = null;
     this.exceptionRepo = null;
+    this.orderSnapshotRepo = null;
   }
 }

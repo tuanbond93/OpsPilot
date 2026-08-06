@@ -52,9 +52,9 @@ describe("Sprint 5 Hardened: Notification Platform & Action Governance Tests", (
 
   // 1. Rillnet sync enqueues but does not dispatch
   it("1. Rillnet sync job enqueues notification actions but does NOT dispatch", () => {
-    const syncJobCode = fs.readFileSync("src/jobs/sync-rillnet.ts", "utf-8");
-    expect(syncJobCode).toContain("FollowupEngine");
-    expect(syncJobCode).not.toContain("dispatcher.dispatchPending");
+    const syncServiceCode = fs.readFileSync("src/services/impl/SyncService.ts", "utf-8");
+    expect(syncServiceCode).toContain("FollowupEngine");
+    expect(syncServiceCode).not.toContain("dispatcher.dispatchPending");
   });
 
   // 2. Atomic action claiming prevents double-claiming by concurrent workers

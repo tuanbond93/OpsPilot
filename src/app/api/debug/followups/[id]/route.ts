@@ -1,34 +1,34 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { createAdminClient } from "@/connectors/supabase";
-import { RepositoryFactory } from "@/repositories/RepositoryFactory";
+import { ServiceFactory } from "@/services/ServiceFactory";
 
 export const dynamic = "force-dynamic";
 
 export async function GET(
-  request: NextRequest,
+  _request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
 
   try {
-    const dbClient = createAdminClient();
-    const repo = RepositoryFactory.getFollowupRepository(dbClient);
+    let dbClient;
+    try {
+      dbClient = createAdminClient();
+    } catch {
+      // Fallback
+    }
 
-    const followupCase = await repo.getCaseById(id);
+    const service = ServiceFactory.getFollowupService(dbClient);
+    const result = await service.getCaseById(id);
 
-    if (!followupCase) {
+    if (!result) {
       return NextResponse.json(
         { error: "NotFound", message: `Followup case '${id}' not found.` },
         { status: 404 }
       );
     }
 
-    const events = await repo.getEventsByCaseId(followupCase.id);
-
-    return NextResponse.json({
-      followupCase,
-      events,
-    });
+    return NextResponse.json(result);
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
     return NextResponse.json(

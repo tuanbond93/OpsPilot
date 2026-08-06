@@ -1,9 +1,6 @@
 import { createAdminClient } from "@/connectors/supabase";
 import { isFallbackAllowed } from "@/connectors/supabase/fallback-policy";
-import { projectWarehouse } from "./warehouse-projection";
-import { projectIncident } from "./incident-projection";
-import { projectPlanner } from "./planner-projection";
-import { projectNotification } from "./notification-projection";
+import { ServiceFactory } from "@/services/ServiceFactory";
 
 export interface ProjectionRefreshParams {
   source: string; // e.g., 'sync', 'planner', 'followup', 'notification'
@@ -37,33 +34,8 @@ export async function refresh(params: ProjectionRefreshParams): Promise<void> {
     throw err;
   }
 
-  // Phase 5 Parallel Executions
-  try {
-    await Promise.all([
-      projectWarehouse(client).then(res => {
-        if (res.status === "failed") {
-          console.error(`[ProjectionEngine] Warehouse Projection failed: ${res.errorMessage}`);
-        }
-      }),
-      projectIncident(client).then(res => {
-        if (res.status === "failed") {
-          console.error(`[ProjectionEngine] Incident Projection failed: ${res.errorMessage}`);
-        }
-      }),
-      projectPlanner(client).then(res => {
-        if (res.status === "failed") {
-          console.error(`[ProjectionEngine] Planner Projection failed: ${res.errorMessage}`);
-        }
-      }),
-      projectNotification(client).then(res => {
-        if (res.status === "failed") {
-          console.error(`[ProjectionEngine] Notification Projection failed: ${res.errorMessage}`);
-        }
-      })
-    ]);
-  } catch (e: any) {
-    console.error(`[ProjectionEngine] Projection engine encountered a execution error: ${e.message || e}`);
-  }
+  const projectionService = ServiceFactory.getProjectionService(client);
+  await projectionService.refreshProjections(params);
 
   console.log("[ProjectionEngine] Projection Engine finished");
 }
