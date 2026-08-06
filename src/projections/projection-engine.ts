@@ -1,4 +1,5 @@
 import { createAdminClient } from "@/connectors/supabase";
+import { isFallbackAllowed } from "@/connectors/supabase/fallback-policy";
 import { projectWarehouse } from "./warehouse-projection";
 import { projectIncident } from "./incident-projection";
 import { projectPlanner } from "./planner-projection";
@@ -29,6 +30,10 @@ export async function refresh(params: ProjectionRefreshParams): Promise<void> {
     client = createAdminClient();
   } catch (err) {
     console.error("[ProjectionEngine] FATAL: createAdminClient() threw", err);
+    if (isFallbackAllowed()) {
+      console.log("[ProjectionEngine] Fallback allowed, skipping projection engine execution");
+      return;
+    }
     throw err;
   }
 

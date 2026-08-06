@@ -68,7 +68,7 @@ describe("Phase 3: Incident Projection Tests", () => {
           else if (table === "followup_cases") data = mockFollowups;
           else if (table === "planner_runs") data = mockPlannerDrafts;
           else if (table === "notification_actions") data = mockNotifications;
-          else if (table === "incident_histories") data = mockHistories;
+          else if (table === "incident_history") data = mockHistories;
           return Promise.resolve(callback({ data, error: null }));
         }),
       };

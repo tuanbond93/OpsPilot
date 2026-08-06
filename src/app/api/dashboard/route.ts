@@ -96,10 +96,22 @@ export async function GET(request: Request) {
 
     incidentsMs = Math.round(performance.now() - t0);
 
-    if (incidentsRes.error) throw incidentsRes.error;
-    if (warehousesRes.error) throw warehousesRes.error;
-    if (plannerRes.error) throw plannerRes.error;
-    if (notificationsRes.error) throw notificationsRes.error;
+    if (incidentsRes.error) {
+      if (!isFallbackAllowed()) throw incidentsRes.error;
+      (incidentsRes as any).data = [];
+    }
+    if (warehousesRes.error) {
+      if (!isFallbackAllowed()) throw warehousesRes.error;
+      (warehousesRes as any).data = [];
+    }
+    if (plannerRes.error) {
+      if (!isFallbackAllowed()) throw plannerRes.error;
+      (plannerRes as any).data = [];
+    }
+    if (notificationsRes.error) {
+      if (!isFallbackAllowed()) throw notificationsRes.error;
+      (notificationsRes as any).data = [];
+    }
 
     const incidentsListRaw = incidentsRes.data || [];
     const warehousesListRaw = warehousesRes.data || [];
@@ -125,7 +137,14 @@ export async function GET(request: Request) {
     }
 
     const liveIncidentsList = filteredIncidents.map((i: any) => {
-      const riskMap = i.risk ? JSON.parse(typeof i.risk === "string" ? i.risk : JSON.stringify(i.risk)) : { score: 50, level: "medium" };
+      let riskMap: any = { score: 50, level: "medium" };
+      if (i.risk) {
+        try {
+          riskMap = typeof i.risk === "object" ? i.risk : JSON.parse(i.risk);
+        } catch {
+          riskMap = { score: 50, level: String(i.risk) };
+        }
+      }
       
       // Attempt to extract values
       return {
