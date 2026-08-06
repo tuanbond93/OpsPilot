@@ -29,7 +29,7 @@ CREATE TABLE IF NOT EXISTS followup_cases (
     last_checked_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     resolved_at TIMESTAMPTZ NULL,
     closed_at TIMESTAMPTZ NULL,
-    current_progress_percent NUMERIC(5,2) DEFAULT 0,
+    current_progress_percent NUMERIC(10,2) DEFAULT 0,
     current_assessment progress_assessment_enum NOT NULL DEFAULT 'insufficient_data',
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()

@@ -229,4 +229,18 @@ describe("Sprint 4.3 Hardened: Follow-up Engine & Action Governance Tests", () =
     expect(syncServiceCode).toContain("getHistoriesByIncidentIds");
     expect(syncServiceCode).not.toContain("await incidentHistoryRepo.getIncidentHistory(");
   });
+
+  // 11. Large surge baseline=1, current=200 yields exact -19900% progress without clamping
+  it("11. Large surge baseline=1, current=200 yields exact -19900% progress without clamping", () => {
+    const { progressPercent, assessment } = evaluateProgressAssessment(200, 1, 2);
+    expect(progressPercent).toBe(-19900);
+    expect(assessment).toBe("worsening");
+  });
+
+  // 12. Massive surge baseline=1, current=10000 yields exact -999900% progress without clamping
+  it("12. Massive surge baseline=1, current=10000 yields exact -999900% progress without clamping", () => {
+    const { progressPercent, assessment } = evaluateProgressAssessment(10000, 1, 2);
+    expect(progressPercent).toBe(-999900);
+    expect(assessment).toBe("worsening");
+  });
 });

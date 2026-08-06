@@ -1,5 +1,5 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
-import type { SyncRunRow, SyncRunStatus } from "@/connectors/supabase/types";
+import type { SyncRunRow, SyncRunStatus, SyncPhase } from "@/connectors/supabase/types";
 import { BaseRepository } from "../base/BaseRepository";
 import type { ISyncRunRepository } from "../interfaces/ISyncRunRepository";
 
@@ -12,6 +12,8 @@ export class SupabaseSyncRunRepository extends BaseRepository implements ISyncRu
     const newRun: Partial<SyncRunRow> = {
       started_at: startedAt,
       status: "running" as SyncRunStatus,
+      current_phase: "CREATED",
+      completed_phases: ["CREATED"],
       fetched_order_count: 0,
       normalized_order_count: 0,
       incident_count: 0,
@@ -21,6 +23,24 @@ export class SupabaseSyncRunRepository extends BaseRepository implements ISyncRu
     const query = this.client
       .from("sync_runs")
       .insert(newRun)
+      .select()
+      .single();
+
+    return this.executeSingle<SyncRunRow>(query as any);
+  }
+
+  async updatePhase(
+    id: string,
+    currentPhase: SyncPhase,
+    completedPhases: SyncPhase[]
+  ): Promise<SyncRunRow> {
+    const query = this.client
+      .from("sync_runs")
+      .update({
+        current_phase: currentPhase,
+        completed_phases: completedPhases,
+      })
+      .eq("id", id)
       .select()
       .single();
 
@@ -43,6 +63,7 @@ export class SupabaseSyncRunRepository extends BaseRepository implements ISyncRu
       .update({
         completed_at: params.completedAt,
         status: "success" as SyncRunStatus,
+        current_phase: "COMPLETED",
         fetched_order_count: params.fetchedOrderCount,
         normalized_order_count: params.normalizedOrderCount,
         incident_count: params.incidentCount,
@@ -70,6 +91,7 @@ export class SupabaseSyncRunRepository extends BaseRepository implements ISyncRu
       .update({
         completed_at: params.completedAt,
         status: "failed" as SyncRunStatus,
+        current_phase: "FAILED",
         duration_ms: params.durationMs,
         error_code: params.errorCode,
         error_message: params.errorMessage,
@@ -79,6 +101,19 @@ export class SupabaseSyncRunRepository extends BaseRepository implements ISyncRu
       .single();
 
     return this.executeSingle<SyncRunRow>(query as any);
+  }
+
+  async getUnfinishedSyncRun(): Promise<SyncRunRow | null> {
+    const query = this.client
+      .from("sync_runs")
+      .select("*")
+      .or("status.eq.running,status.eq.failed")
+      .neq("current_phase", "COMPLETED")
+      .order("started_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    return this.executeOptional<SyncRunRow>(query as any);
   }
 
   async getLatestSyncRun(): Promise<SyncRunRow | null> {

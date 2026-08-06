@@ -6,4 +6,5 @@ export interface IIncidentRepository {
   resolveAbsentIncidents(currentActiveKeys: string[], syncRunId: string, resolvedAt?: string): Promise<number>;
   getOpenIncidents(): Promise<IncidentRow[]>;
   getIncidentById(id: string): Promise<IncidentRow | null>;
+  getIncidentsBySyncRunId(syncRunId: string): Promise<IncidentRow[]>;
 }

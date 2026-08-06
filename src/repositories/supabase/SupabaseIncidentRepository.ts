@@ -83,4 +83,13 @@ export class SupabaseIncidentRepository extends BaseRepository implements IIncid
 
     return this.executeOptional<IncidentRow>(query as any);
   }
+
+  async getIncidentsBySyncRunId(syncRunId: string): Promise<IncidentRow[]> {
+    const query = this.client
+      .from("incidents")
+      .select("*")
+      .eq("last_sync_run_id", syncRunId);
+
+    return this.executeMany<IncidentRow>(query as any);
+  }
 }

@@ -71,4 +71,8 @@ export class MockIncidentRepository implements IIncidentRepository {
   async getIncidentById(id: string): Promise<IncidentRow | null> {
     return this.inMemoryIncidents.find((i) => i.id === id || i.incident_key === id) || null;
   }
+
+  async getIncidentsBySyncRunId(syncRunId: string): Promise<IncidentRow[]> {
+    return this.inMemoryIncidents.filter((i) => i.last_sync_run_id === syncRunId);
+  }
 }

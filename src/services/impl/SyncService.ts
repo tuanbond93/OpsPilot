@@ -7,12 +7,48 @@ import type { IExceptionRepository } from "@/repositories/interfaces/IExceptionR
 import type { IFollowupRepository } from "@/repositories/interfaces/IFollowupRepository";
 import type { IAiJobRepository } from "@/repositories/interfaces/IAiJobRepository";
 import type { PhaseTimingInfo, DetectedBottleneck } from "@/jobs/sync-rillnet";
+import type { SyncPhase, SyncRunRow } from "@/connectors/supabase/types";
 import { RillnetConnector } from "@/connectors/rillnet";
 import { aggregateIncidents, inspectOrderForIncident, REASON_CODE_MAP } from "@/engine/incident";
 import { FollowupEngine } from "@/engine/followup";
 import { ActionQueue } from "@/engine/action-queue";
 import { refresh } from "@/projections/projection-engine";
 import { logRuntimeError, logRuntimeMessage } from "@/observability/runtimeDiagnostics";
+
+export const ORDERED_SYNC_PHASES: SyncPhase[] = [
+  "CREATED",
+  "FETCHING_SNAPSHOT",
+  "PERSISTING_SNAPSHOTS",
+  "PERSISTING_INCIDENTS",
+  "PERSISTING_HISTORY",
+  "PROCESSING_FOLLOWUPS",
+  "ENQUEUE_NOTIFICATIONS",
+  "ENQUEUE_AI",
+  "REFRESHING_PROJECTIONS",
+  "COMPLETED",
+];
+
+export function getSafeResumePhase(
+  requestedPhase: SyncPhase,
+  stateAvailable: { snapshotInRam: boolean; incidentsRehydrated: boolean }
+): { safePhase: SyncPhase; reason?: string } {
+  if (requestedPhase === "CREATED" || requestedPhase === "FETCHING_SNAPSHOT") {
+    return { safePhase: "FETCHING_SNAPSHOT" };
+  }
+  if (requestedPhase === "PERSISTING_SNAPSHOTS" || requestedPhase === "PERSISTING_INCIDENTS") {
+    if (stateAvailable.snapshotInRam) {
+      return { safePhase: requestedPhase };
+    }
+    return { safePhase: "FETCHING_SNAPSHOT", reason: "SNAPSHOT_DATA_NOT_IN_MEMORY" };
+  }
+  if (stateAvailable.incidentsRehydrated) {
+    return { safePhase: requestedPhase };
+  }
+  if (stateAvailable.snapshotInRam) {
+    return { safePhase: "PERSISTING_INCIDENTS", reason: "INCIDENT_STATE_NOT_REHYDRATABLE" };
+  }
+  return { safePhase: "FETCHING_SNAPSHOT", reason: "INCIDENT_STATE_NOT_REHYDRATABLE" };
+}
 
 export class SyncService implements ISyncService {
   constructor(
@@ -30,23 +66,24 @@ export class SyncService implements ISyncService {
     const startTime = Date.now();
     const startedAt = new Date(startTime).toISOString();
 
-    // Instrumentation state
     const phaseTimings: Record<string, number> = {};
     const dbPhases: Record<string, PhaseTimingInfo> = {};
     let totalQueries = 0;
     const phaseStarts = new Map<string, { monotonicMs: number; startedAt: string }>();
 
     function logPhaseStart(name: string): void {
-      const startedAt = new Date().toISOString();
-      phaseStarts.set(name, { monotonicMs: performance.now(), startedAt });
-      logRuntimeMessage("[SyncRuntime] phase=" + name + " event=start startedAt=" + startedAt);
+      const pStartedAt = new Date().toISOString();
+      phaseStarts.set(name, { monotonicMs: performance.now(), startedAt: pStartedAt });
+      logRuntimeMessage(`[SyncRuntime] phase=${name} event=start startedAt=${pStartedAt}`);
     }
 
     function logPhaseEnd(name: string, rowCount: number, status: "success" | "failed" = "success"): void {
       const start = phaseStarts.get(name);
       const finishedAt = new Date().toISOString();
       const durationMs = start ? Math.max(0, Math.round((performance.now() - start.monotonicMs) * 100) / 100) : 0;
-      logRuntimeMessage("[SyncRuntime] phase=" + name + " event=end startedAt=" + (start?.startedAt || "unknown") + " finishedAt=" + finishedAt + " durationMs=" + durationMs + " rowCount=" + rowCount + " status=" + status);
+      logRuntimeMessage(
+        `[SyncRuntime] phase=${name} event=end startedAt=${start?.startedAt || "unknown"} finishedAt=${finishedAt} durationMs=${durationMs} rowCount=${rowCount} status=${status}`
+      );
     }
 
     function recordPhase(
@@ -79,7 +116,6 @@ export class SyncService implements ISyncService {
       );
     }
 
-    // Detect static bottlenecks
     const bottlenecksDetected: DetectedBottleneck[] = [
       {
         category: "DB_AWAITS_INSIDE_LOOP",
@@ -101,209 +137,294 @@ export class SyncService implements ISyncService {
       },
     ];
 
-    // 1. Create sync_runs row (status = running)
-    const tCreateStart = performance.now();
-    logPhaseStart("createSyncRun");
+    // State placeholders across phases
+    let fetchedOrderCount = 0;
+    let normalizedOrderCount = 0;
+    let incidentCount = 0;
+    let resolvedIncidentCount = 0;
+    let sourceUpdatedAt: string | null = null;
+    let snapshotResult: any = { orders: [], totalOrders: 0, fetchedAt: startedAt };
+    let activeExceptions = new Set<string>();
+    let incidents: any[] = [];
+    const keyToIdMap = new Map<string, string>();
+
+    // 1. Resume Check & State Rehydration
     let syncRunId = `local-sync-${Date.now()}`;
-    let createQueries = 0;
+    let completedPhases: SyncPhase[] = [];
+
     if (this.syncRunRepo) {
       try {
-        const syncRunRow = await this.syncRunRepo.createSyncRun(startedAt);
-        syncRunId = syncRunRow.id;
-        createQueries = 1;
+        const unfinishedRun: SyncRunRow | null = await this.syncRunRepo.getUnfinishedSyncRun();
+        if (unfinishedRun && unfinishedRun.id && !unfinishedRun.id.startsWith("local-sync")) {
+          syncRunId = unfinishedRun.id;
+          completedPhases = Array.isArray(unfinishedRun.completed_phases) ? [...unfinishedRun.completed_phases] : ["CREATED"];
+
+          const requestedResume = ORDERED_SYNC_PHASES.find((p) => !completedPhases.includes(p)) || "COMPLETED";
+
+          // Try rehydrating incidents from DB for this sync_run_id
+          let incidentsRehydrated = false;
+          if (this.incidentRepo) {
+            try {
+              const persistedRows = await this.incidentRepo.getIncidentsBySyncRunId(syncRunId);
+              if (persistedRows && persistedRows.length > 0) {
+                incidents = persistedRows.map((row) => ({
+                  incidentId: row.id,
+                  incidentKey: row.incident_key,
+                  warehouseId: row.warehouse_id,
+                  warehouseName: row.warehouse_name || "",
+                  reasonCode: row.reason_code,
+                  reasonName: row.reason_name || "",
+                  status: row.status,
+                  priorityScore: row.priority_score,
+                  firstDetectedAt: row.first_detected_at,
+                  lastDetectedAt: row.last_detected_at,
+                  affectedOrderCount: 0,
+                  sampleOrderCodes: [],
+                  averageAgeHours: 0,
+                  maximumAgeHours: 0,
+                }));
+                incidentCount = incidents.length;
+                for (const row of persistedRows) {
+                  keyToIdMap.set(row.incident_key, row.id);
+                }
+                incidentsRehydrated = true;
+              }
+            } catch {
+              incidentsRehydrated = false;
+            }
+          }
+
+          const snapshotInRam = Array.isArray(snapshotResult.orders) && snapshotResult.orders.length > 0;
+          const { safePhase, reason } = getSafeResumePhase(requestedResume, { snapshotInRam, incidentsRehydrated });
+
+          if (reason) {
+            console.log(`[SyncRecovery] syncRun=${syncRunId} requestedResume=${requestedResume} safeResume=${safePhase} reason=${reason}`);
+          } else {
+            console.log(`[SyncResume] syncRun=${syncRunId} resumeFrom=${safePhase}`);
+            console.log(`[SyncRecovery] previousRunRecovered=true completedPhases=${completedPhases.length}`);
+          }
+
+          // Truncate completedPhases to only include phases strictly prior to safePhase
+          const safeIdx = ORDERED_SYNC_PHASES.indexOf(safePhase);
+          completedPhases = ORDERED_SYNC_PHASES.slice(0, safeIdx);
+        } else {
+          const newRun = await this.syncRunRepo.createSyncRun(startedAt);
+          syncRunId = newRun.id;
+          completedPhases = ["CREATED"];
+          console.log(`[SyncPhase] phase=CREATED status=completed durationMs=0`);
+        }
       } catch {
-        // Fallback local ID
+        completedPhases = ["CREATED"];
       }
+    } else {
+      completedPhases = ["CREATED"];
     }
-    recordPhase("createSyncRun", performance.now() - tCreateStart, createQueries, createQueries, 1, createQueries, "Initial sync_runs row creation");
+
+    const checkpointPhase = async (phase: SyncPhase) => {
+      if (!completedPhases.includes(phase)) {
+        completedPhases.push(phase);
+        if (this.syncRunRepo && !syncRunId.startsWith("local-sync")) {
+          try {
+            await this.syncRunRepo.updatePhase(syncRunId, phase, completedPhases);
+          } catch {
+            // Non-fatal
+          }
+        }
+      }
+    };
 
     try {
-      // 2. Fetch Rillnet snapshot (URL request, download, decompress, parse)
-      const tFetchStart = performance.now();
-      logPhaseStart("fetchSnapshot");
-      const connector = new RillnetConnector();
+      // Phase 2: FETCHING_SNAPSHOT
+      const pFetch = "FETCHING_SNAPSHOT" as SyncPhase;
+      if (completedPhases.includes(pFetch) && snapshotResult.orders && snapshotResult.orders.length > 0) {
+        console.log(`[SyncPhase] phase=${pFetch} status=skipped durationMs=0`);
+      } else {
+        const tFetchStart = performance.now();
+        logPhaseStart("fetchSnapshot");
+        const connector = new RillnetConnector();
 
-      const tUrlStart = performance.now();
-      logPhaseStart("fetchSnapshotUrlOnly");
-      const { downloadUrl, updatedAt } = await connector.fetchSnapshotUrlOnly();
-      logPhaseEnd("fetchSnapshotUrlOnly", 1);
-      const fetchUrlDuration = performance.now() - tUrlStart;
+        const tUrlStart = performance.now();
+        logPhaseStart("fetchSnapshotUrlOnly");
+        const { downloadUrl, updatedAt } = await connector.fetchSnapshotUrlOnly();
+        logPhaseEnd("fetchSnapshotUrlOnly", 1);
+        const fetchUrlDuration = performance.now() - tUrlStart;
 
-      const tDownloadStart = performance.now();
-      logPhaseStart("downloadSnapshot");
-      const buffer = await connector.downloadBufferOnly(downloadUrl);
-      logPhaseEnd("downloadSnapshot", buffer.byteLength);
-      const downloadDuration = performance.now() - tDownloadStart;
+        const tDownloadStart = performance.now();
+        logPhaseStart("downloadSnapshot");
+        const buffer = await connector.downloadBufferOnly(downloadUrl);
+        logPhaseEnd("downloadSnapshot", buffer.byteLength);
+        const downloadDuration = performance.now() - tDownloadStart;
 
-      const tParseStart = performance.now();
-      logPhaseStart("parseSnapshot");
-      const snapshotResult = await connector.parseSnapshotFromBuffer(buffer, updatedAt);
-      logPhaseEnd("parseSnapshot", snapshotResult.totalOrders);
-      const parseDuration = performance.now() - tParseStart;
+        const tParseStart = performance.now();
+        logPhaseStart("parseSnapshot");
+        snapshotResult = await connector.parseSnapshotFromBuffer(buffer, updatedAt);
+        logPhaseEnd("parseSnapshot", snapshotResult.totalOrders);
+        const parseDuration = performance.now() - tParseStart;
 
-      const fetchTotalDuration = performance.now() - tFetchStart;
+        const fetchTotalDuration = performance.now() - tFetchStart;
+        fetchedOrderCount = snapshotResult.totalOrders;
+        normalizedOrderCount = snapshotResult.orders.length;
+        sourceUpdatedAt = snapshotResult.fetchedAt;
 
-      const fetchedOrderCount = snapshotResult.totalOrders;
-      const normalizedOrderCount = snapshotResult.orders.length;
-      const sourceUpdatedAt = snapshotResult.fetchedAt;
+        recordPhase(
+          "fetchSnapshot",
+          fetchTotalDuration,
+          fetchedOrderCount,
+          1,
+          fetchedOrderCount,
+          0,
+          `API request: ${Math.round(fetchUrlDuration)}ms, Download: ${Math.round(downloadDuration)}ms, Decompress/Parse: ${Math.round(parseDuration)}ms`
+        );
 
-      recordPhase(
-        "fetchSnapshot",
-        fetchTotalDuration,
-        fetchedOrderCount,
-        1,
-        fetchedOrderCount,
-        0,
-        `API request: ${Math.round(fetchUrlDuration)}ms, Download: ${Math.round(downloadDuration)}ms, Decompress/Parse: ${Math.round(parseDuration)}ms`
-      );
-
-      // 3. Normalize Orders
-      const tNormStart = performance.now();
-      logPhaseStart("normalizeOrders");
-      recordPhase("normalizeOrders", performance.now() - tNormStart, normalizedOrderCount, 1, normalizedOrderCount, 0, "Mapped raw orders to normalized objects");
-
-      // 4. Load active, non-expired exceptions
-      const tExStart = performance.now();
-      logPhaseStart("loadExceptions");
-      let activeExceptions = new Set<string>();
-      let exQueries = 0;
-      if (this.exceptionRepo) {
-        try {
-          activeExceptions = await this.exceptionRepo.getActiveExceptionOrderCodes(startedAt);
-          exQueries = 1;
-        } catch {
-          // Fallback
-        }
+        await checkpointPhase(pFetch);
+        console.log(`[SyncPhase] phase=${pFetch} status=completed durationMs=${Math.round(fetchTotalDuration)}`);
       }
-      recordPhase("loadExceptions", performance.now() - tExStart, activeExceptions.size, exQueries, activeExceptions.size, exQueries, "Active order exceptions lookup");
 
-      // 5. Apply Rule Engine with active exceptions (Build Incidents)
-      const tIncStart = performance.now();
-      logPhaseStart("buildIncidents");
-      const referenceTimeMs = _options?.referenceTimeMs || new Date(sourceUpdatedAt).getTime() || startTime;
-      const incidents = aggregateIncidents(
-        snapshotResult.orders,
-        undefined,
-        referenceTimeMs,
-        activeExceptions
-      );
-      const incidentCount = incidents.length;
-      recordPhase("buildIncidents", performance.now() - tIncStart, incidentCount, 1, incidentCount, 0, "Aggregated incidents from normalized orders");
+      // Re-normalize and load exceptions if snapshot is available
+      if (snapshotResult.orders && snapshotResult.orders.length > 0) {
+        const tNormStart = performance.now();
+        logPhaseStart("normalizeOrders");
+        normalizedOrderCount = snapshotResult.orders.length;
+        recordPhase("normalizeOrders", performance.now() - tNormStart, normalizedOrderCount, 1, normalizedOrderCount, 0, "Mapped raw orders to normalized objects");
 
-      // 6. Save order snapshots in batches (batch size: 500)
-      const tSnapStart = performance.now();
-      logPhaseStart("persistSnapshots");
-      let snapQueries = 0;
-      let snapRowsProcessed = 0;
-      let snapBatches = 0;
-
-      if (this.orderSnapshotRepo && syncRunId && !syncRunId.startsWith("local-sync")) {
-        try {
-          const snapshotRows: OrderSnapshotRow[] = [];
-          for (const o of snapshotResult.orders) {
-            const orderCode = (o.orderCode || o.id).trim();
-            if (activeExceptions.has(orderCode)) continue;
-
-            const match = inspectOrderForIncident(o, undefined, referenceTimeMs);
-            if (!match) continue;
-
-            const reasonMeta = REASON_CODE_MAP[match.reason];
-
-            snapshotRows.push({
-              sync_run_id: syncRunId,
-              order_code: orderCode,
-              warehouse_id: o.warehouseId || undefined,
-              warehouse_name: o.warehouseName || undefined,
-              source_status: o.status,
-              task_category: o.taskCategory || undefined,
-              reason_code: reasonMeta ? reasonMeta.code : undefined,
-              order_created_at: o.createdAt || undefined,
-              source_updated_at: sourceUpdatedAt,
-              age_hours: match.ageHours ? Math.round(match.ageHours * 10) / 10 : undefined,
-            });
+        const tExStart = performance.now();
+        logPhaseStart("loadExceptions");
+        let exQueries = 0;
+        if (this.exceptionRepo) {
+          try {
+            activeExceptions = await this.exceptionRepo.getActiveExceptionOrderCodes(startedAt);
+            exQueries = 1;
+          } catch {
+            // Fallback
           }
+        }
+        recordPhase("loadExceptions", performance.now() - tExStart, activeExceptions.size, exQueries, activeExceptions.size, exQueries, "Active order exceptions lookup");
 
-          snapRowsProcessed = snapshotRows.length;
-          snapBatches = Math.ceil(snapshotRows.length / 500);
-          snapQueries = snapBatches;
-
-          await this.orderSnapshotRepo.insertBatch(snapshotRows, 500);
-        } catch {
-          // Fallback
+        // Build Incidents in memory if not already rehydrated
+        if (incidents.length === 0) {
+          const referenceTimeMs = _options?.referenceTimeMs || (sourceUpdatedAt ? new Date(sourceUpdatedAt).getTime() : startTime);
+          incidents = aggregateIncidents(snapshotResult.orders || [], undefined, referenceTimeMs, activeExceptions);
+          incidentCount = incidents.length;
         }
       }
-      recordPhase("persistSnapshots", performance.now() - tSnapStart, snapRowsProcessed, snapBatches, 500, snapQueries, "Batched order_snapshots insertion");
 
-      // 7. Upsert current incidents using stable incident_key
-      const tUpsertIncStart = performance.now();
-      logPhaseStart("persistIncidents");
-      let resolvedIncidentCount = 0;
-      let incQueries = 0;
-      const keyToIdMap = new Map<string, string>();
+      // Phase 3: PERSISTING_SNAPSHOTS
+      const pSnap = "PERSISTING_SNAPSHOTS" as SyncPhase;
+      if (completedPhases.includes(pSnap)) {
+        console.log(`[SyncPhase] phase=${pSnap} status=skipped durationMs=0`);
+      } else {
+        const tSnapStart = performance.now();
+        logPhaseStart("persistSnapshots");
+        let snapQueries = 0;
+        let snapRowsProcessed = 0;
+        let snapBatches = 0;
 
-      if (this.incidentRepo && this.incidentHistoryRepo && syncRunId && !syncRunId.startsWith("local-sync")) {
-        try {
-          const savedIncidentRows = await this.incidentRepo.upsertIncidents(incidents, syncRunId);
-          incQueries = 1;
+        if (this.orderSnapshotRepo && syncRunId && !syncRunId.startsWith("local-sync") && snapshotResult.orders) {
+          try {
+            const referenceTimeMs = _options?.referenceTimeMs || (sourceUpdatedAt ? new Date(sourceUpdatedAt).getTime() : startTime);
+            const snapshotRows: OrderSnapshotRow[] = [];
+            for (const o of snapshotResult.orders) {
+              const orderCode = (o.orderCode || o.id).trim();
+              if (activeExceptions.has(orderCode)) continue;
 
-          for (const row of savedIncidentRows) {
-            keyToIdMap.set(row.incident_key, row.id);
+              const match = inspectOrderForIncident(o, undefined, referenceTimeMs);
+              if (!match) continue;
+
+              const reasonMeta = REASON_CODE_MAP[match.reason];
+              snapshotRows.push({
+                sync_run_id: syncRunId,
+                order_code: orderCode,
+                warehouse_id: o.warehouseId || undefined,
+                warehouse_name: o.warehouseName || undefined,
+                source_status: o.status,
+                task_category: o.taskCategory || undefined,
+                reason_code: reasonMeta ? reasonMeta.code : undefined,
+                order_created_at: o.createdAt || undefined,
+                source_updated_at: sourceUpdatedAt || undefined,
+                age_hours: match.ageHours ? Math.round(match.ageHours * 10) / 10 : undefined,
+              });
+            }
+
+            snapRowsProcessed = snapshotRows.length;
+            snapBatches = Math.ceil(snapshotRows.length / 500);
+            snapQueries = snapBatches;
+
+            await this.orderSnapshotRepo.insertBatch(snapshotRows, 500);
+          } catch {
+            // Fallback
           }
-        } catch {
-          // Fallback
         }
+        const snapDuration = performance.now() - tSnapStart;
+        recordPhase("persistSnapshots", snapDuration, snapRowsProcessed, snapBatches, 500, snapQueries, "Batched order_snapshots insertion");
+        await checkpointPhase(pSnap);
+        console.log(`[SyncPhase] phase=${pSnap} status=completed durationMs=${Math.round(snapDuration)}`);
       }
-      recordPhase("persistIncidents", performance.now() - tUpsertIncStart, incidents.length, 1, incidents.length, incQueries, "Upserted active incidents into DB");
 
-      // 8. Insert incident_history rows
-      const tHistStart = performance.now();
-      logPhaseStart("persistHistory");
-      let histQueries = 0;
-      if (this.incidentHistoryRepo && syncRunId && !syncRunId.startsWith("local-sync") && incidents.length > 0) {
-        try {
-          await this.incidentHistoryRepo.insertHistoryRecords(
-            keyToIdMap,
-            incidents,
-            syncRunId,
-            startedAt
-          );
-          histQueries = 1;
-        } catch {
-          // Fallback
+      // Phase 4: PERSISTING_INCIDENTS
+      const pInc = "PERSISTING_INCIDENTS" as SyncPhase;
+      if (completedPhases.includes(pInc) && incidents.length > 0) {
+        console.log(`[SyncPhase] phase=${pInc} status=skipped durationMs=0`);
+      } else {
+        const tUpsertIncStart = performance.now();
+        logPhaseStart("persistIncidents");
+        let incQueries = 0;
+
+        if (this.incidentRepo && syncRunId && !syncRunId.startsWith("local-sync") && incidents.length > 0) {
+          try {
+            const savedIncidentRows = await this.incidentRepo.upsertIncidents(incidents, syncRunId);
+            incQueries = 1;
+            for (const row of savedIncidentRows) {
+              keyToIdMap.set(row.incident_key, row.id);
+            }
+          } catch {
+            // Fallback
+          }
         }
+        const incDuration = performance.now() - tUpsertIncStart;
+        recordPhase("persistIncidents", incDuration, incidents.length, 1, incidents.length, incQueries, "Upserted active incidents into DB");
+        await checkpointPhase(pInc);
+        console.log(`[SyncPhase] phase=${pInc} status=completed durationMs=${Math.round(incDuration)}`);
       }
-      recordPhase("persistHistory", performance.now() - tHistStart, incidents.length, 1, incidents.length, histQueries, "Inserted incident_history snapshot rows");
 
-      // 9. Resolve absent incidents from previous run
-      const tResolveStart = performance.now();
-      logPhaseStart("resolveAbsentIncidents");
-      let resolveQueries = 0;
-      if (this.incidentRepo && syncRunId && !syncRunId.startsWith("local-sync")) {
-        try {
-          const activeKeys = incidents.map((inc) => inc.incidentKey);
-          resolvedIncidentCount = await this.incidentRepo.resolveAbsentIncidents(
-            activeKeys,
-            syncRunId,
-            startedAt
-          );
-          resolveQueries = 1;
-        } catch {
-          // Fallback
+      // Phase 5: PERSISTING_HISTORY
+      const pHist = "PERSISTING_HISTORY" as SyncPhase;
+      if (completedPhases.includes(pHist)) {
+        console.log(`[SyncPhase] phase=${pHist} status=skipped durationMs=0`);
+      } else {
+        const tHistStart = performance.now();
+        logPhaseStart("persistHistory");
+        let histQueries = 0;
+
+        if (this.incidentHistoryRepo && syncRunId && !syncRunId.startsWith("local-sync") && incidents.length > 0) {
+          try {
+            await this.incidentHistoryRepo.insertHistoryRecords(keyToIdMap, incidents, syncRunId, startedAt);
+            histQueries = 1;
+          } catch {
+            // Fallback
+          }
         }
-      }
-      recordPhase("resolveAbsentIncidents", performance.now() - tResolveStart, resolvedIncidentCount, 1, resolvedIncidentCount, resolveQueries, "Resolved absent incidents");
+        const histDuration = performance.now() - tHistStart;
+        recordPhase("persistHistory", histDuration, incidents.length, 1, incidents.length, histQueries, "Inserted incident_history snapshot rows");
 
-      // 10. Batch load incident histories
-      const tLoadHistStart = performance.now();
-      logPhaseStart("loadHistories");
-      let loadHistQueries = 0;
+        if (this.incidentRepo && syncRunId && !syncRunId.startsWith("local-sync")) {
+          try {
+            const activeKeys = incidents.map((inc) => inc.incidentKey);
+            resolvedIncidentCount = await this.incidentRepo.resolveAbsentIncidents(activeKeys, syncRunId, startedAt);
+          } catch {
+            // Fallback
+          }
+        }
+        await checkpointPhase(pHist);
+        console.log(`[SyncPhase] phase=${pHist} status=completed durationMs=${Math.round(histDuration)}`);
+      }
+
+      // Load incident histories for follow-up evaluation
       let historyMap = new Map();
       const incidentDbIds: string[] = [];
-
       if (this.incidentHistoryRepo && incidents.length > 0) {
         try {
           for (const inc of incidents) {
-            const dbId = keyToIdMap.get(inc.incidentKey);
+            const dbId = keyToIdMap.get(inc.incidentKey) || inc.incidentId;
             if (dbId) {
               inc.incidentId = dbId;
               incidentDbIds.push(dbId);
@@ -311,90 +432,101 @@ export class SyncService implements ISyncService {
           }
           if (incidentDbIds.length > 0) {
             historyMap = await this.incidentHistoryRepo.getHistoriesByIncidentIds(incidentDbIds);
-            loadHistQueries = 1;
           }
         } catch {
           // Fallback
         }
       }
-      recordPhase("loadHistories", performance.now() - tLoadHistStart, historyMap.size, 1, incidentDbIds.length, loadHistQueries, "Batch loaded incident histories");
 
-      // 11. Execute Follow-up Engine State Machine using Action Queue (100% Deterministic - ZERO AI!)
-      const tFollowupStart = performance.now();
-      logPhaseStart("processFollowups");
-      let followupQueries = 0;
-      let enqueuedCount = 0;
-      let actionQueueRoundTrips: number | null = null;
+      // Phase 6: PROCESSING_FOLLOWUPS
+      const pFol = "PROCESSING_FOLLOWUPS" as SyncPhase;
+      let followupResults: any[] = [];
 
-      if (this.followupRepo && incidents.length > 0) {
-        try {
+      if (completedPhases.includes(pFol)) {
+        console.log(`[SyncPhase] phase=${pFol} status=skipped durationMs=0`);
+      } else {
+        const tFollowupStart = performance.now();
+        logPhaseStart("processFollowups");
+        let followupQueries = 0;
+
+        if (this.followupRepo && incidents.length > 0) {
+          const referenceTimeMs = _options?.referenceTimeMs || (sourceUpdatedAt ? new Date(sourceUpdatedAt).getTime() : startTime);
           const actQueue = this.actionQueue || new ActionQueue(null);
-
-          // FollowupEngine instantiated with ZERO AI dependencies
           const followupEngine = new FollowupEngine(this.followupRepo, actQueue);
-          const followupResults = await followupEngine.processIncidentFollowups(incidents, historyMap, undefined, referenceTimeMs);
-
+          followupResults = await followupEngine.processIncidentFollowups(incidents, historyMap, undefined, referenceTimeMs);
           const followupMetrics = followupEngine.getLastRunMetrics();
-          followupQueries = followupMetrics
-            ? followupMetrics.caseReads + followupMetrics.caseWrites + followupMetrics.eventWrites
-            : 0;
-          enqueuedCount = followupResults.filter((r) => r.newState.includes("PENDING")).length;
-          actionQueueRoundTrips = followupMetrics
-            ? followupMetrics.actionQueueMetrics.dedupLookups +
-              followupMetrics.actionQueueMetrics.actionInsertCalls +
-              followupMetrics.actionQueueMetrics.auditEventWrites
-            : null;
+          followupQueries = followupMetrics ? followupMetrics.caseReads + followupMetrics.caseWrites + followupMetrics.eventWrites : 0;
+        }
 
-          // 12. Enqueue AI Jobs into background ai_analysis_jobs table asynchronously
-          logPhaseStart("enqueueAiJobs");
-          console.log(`[AI Queue] Repository exists: ${!!this.aiJobRepo}`);
-          console.log(`[AI Queue] Total incidents: ${incidents.length}`);
+        const folDuration = performance.now() - tFollowupStart;
+        recordPhase("processFollowups", folDuration, incidents.length, 1, incidents.length, followupQueries, "Deterministic Follow-up state machine evaluation");
+        await checkpointPhase(pFol);
+        console.log(`[SyncPhase] phase=${pFol} status=completed durationMs=${Math.round(folDuration)}`);
+      }
 
-          let successfulEnqueue = 0;
-          let failedEnqueue = 0;
+      // Phase 7: ENQUEUE_NOTIFICATIONS
+      const pNotif = "ENQUEUE_NOTIFICATIONS" as SyncPhase;
+      if (completedPhases.includes(pNotif)) {
+        console.log(`[SyncPhase] phase=${pNotif} status=skipped durationMs=0`);
+      } else {
+        const tEnqueueStart = performance.now();
+        logPhaseStart("enqueueActions");
+        const enqueuedCount = followupResults.filter((r) => r.newState && r.newState.includes("PENDING")).length;
+        recordPhase("enqueueActions", performance.now() - tEnqueueStart, enqueuedCount, enqueuedCount, 1, 0, "ActionQueue notification action enqueueing");
+        await checkpointPhase(pNotif);
+        console.log(`[SyncPhase] phase=${pNotif} status=completed durationMs=0`);
+      }
 
-          if (this.aiJobRepo) {
-            for (const inc of incidents) {
-              const dbId = keyToIdMap.get(inc.incidentKey) || inc.incidentId;
-              if (dbId) {
-                const priority = inc.priorityScore >= 75 ? "urgent" : inc.priorityScore >= 50 ? "high" : "medium";
-                console.log(`[AI Queue] Enqueue: incidentId=${dbId} incidentKey=${inc.incidentKey} priority=${priority}`);
-                try {
-                  await this.aiJobRepo.enqueueJob(dbId, priority);
-                  successfulEnqueue++;
-                  console.log(`[AI Queue] SUCCESS incidentId=${dbId}`);
-                } catch (e: any) {
-                  failedEnqueue++;
-                  console.error(`[AI Queue] FAILED incidentId=${dbId}\nerror=${e.message || String(e)}\nstack=${e.stack || "N/A"}`);
-                  throw e; // Do not swallow/suppress exceptions
-                }
+      // Phase 8: ENQUEUE_AI
+      const pAi = "ENQUEUE_AI" as SyncPhase;
+      if (completedPhases.includes(pAi)) {
+        console.log(`[SyncPhase] phase=${pAi} status=skipped durationMs=0`);
+      } else {
+        const tAiStart = performance.now();
+        logPhaseStart("enqueueAiJobs");
+        let successfulEnqueue = 0;
+
+        if (this.aiJobRepo && incidents.length > 0) {
+          for (const inc of incidents) {
+            const dbId = keyToIdMap.get(inc.incidentKey) || inc.incidentId;
+            if (dbId) {
+              const priority = inc.priorityScore >= 75 ? "urgent" : inc.priorityScore >= 50 ? "high" : "medium";
+              try {
+                await this.aiJobRepo.enqueueJob(dbId, priority);
+                successfulEnqueue++;
+              } catch (e: any) {
+                console.error(`[AI Queue] FAILED incidentId=${dbId}`, e);
+                throw e;
               }
             }
           }
-
-          console.log(`=========================\nAI Queue Summary\nRepository exists: ${!!this.aiJobRepo}\nIncidents: ${incidents.length}\nSuccessful: ${successfulEnqueue}\nFailed: ${failedEnqueue}\n=========================`);
-          logPhaseEnd("enqueueAiJobs", successfulEnqueue);
-        } catch (err: any) {
-          logPhaseEnd("enqueueAiJobs", 0, "failed");
-          logRuntimeError("SyncService.enqueueAiJobs", err);
-          console.error("[AI Queue] Error occurred in followup/AI queue block:", err);
-          throw err;
         }
+
+        const aiDuration = performance.now() - tAiStart;
+        logPhaseEnd("enqueueAiJobs", successfulEnqueue);
+        await checkpointPhase(pAi);
+        console.log(`[SyncPhase] phase=${pAi} status=completed durationMs=${Math.round(aiDuration)}`);
       }
-      recordPhase("processFollowups", performance.now() - tFollowupStart, incidents.length, 1, incidents.length, followupQueries, "Deterministic Follow-up state machine evaluation & AI Job enqueueing");
 
-      // 12. Enqueue Notification Actions
-      const tEnqueueStart = performance.now();
-      logPhaseStart("enqueueActions");
-      const enqueueQueries = actionQueueRoundTrips ?? enqueuedCount * 3;
-      recordPhase("enqueueActions", performance.now() - tEnqueueStart, enqueuedCount, enqueuedCount, 1, enqueueQueries, "ActionQueue notification action enqueueing");
+      // Phase 9: REFRESHING_PROJECTIONS
+      const pProj = "REFRESHING_PROJECTIONS" as SyncPhase;
+      if (completedPhases.includes(pProj)) {
+        console.log(`[SyncPhase] phase=${pProj} status=skipped durationMs=0`);
+      } else {
+        const tProjStart = performance.now();
+        logPhaseStart("refreshProjections");
+        await refresh({ source: "sync", changedIncidentIds: [], changedWarehouseIds: [] });
+        const projDuration = performance.now() - tProjStart;
+        logPhaseEnd("refreshProjections", 0);
+        await checkpointPhase(pProj);
+        console.log(`[SyncPhase] phase=${pProj} status=completed durationMs=${Math.round(projDuration)}`);
+      }
 
-      // 13. Complete sync_run with status = success
+      // Finalize
       const tFinalizeStart = performance.now();
       logPhaseStart("finalizeSyncRun");
       const completedAt = new Date().toISOString();
       const durationMs = Date.now() - startTime;
-      let finalizeQueries = 0;
 
       if (this.syncRunRepo && !syncRunId.startsWith("local-sync")) {
         try {
@@ -406,17 +538,13 @@ export class SyncService implements ISyncService {
             durationMs,
             sourceUpdatedAt,
           });
-          finalizeQueries = 1;
         } catch {
           // Fallback
         }
       }
-      recordPhase("finalizeSyncRun", performance.now() - tFinalizeStart, 1, 1, 1, finalizeQueries, "Finalized sync_runs status = success");
-
-      console.log(`[SyncRillnet Performance Summary] Total Duration: ${durationMs}ms | Total DB Queries: ${totalQueries}`);
-      logPhaseStart("refreshProjections");
-      await refresh({ source: "sync", changedIncidentIds: [], changedWarehouseIds: [] });
-      logPhaseEnd("refreshProjections", 0);
+      await checkpointPhase("COMPLETED" as SyncPhase);
+      console.log(`[SyncPhase] phase=COMPLETED status=completed durationMs=${durationMs}`);
+      recordPhase("finalizeSyncRun", performance.now() - tFinalizeStart, 1, 1, 1, 1, "Finalized sync_runs status = success");
 
       return {
         ok: true,
@@ -440,9 +568,10 @@ export class SyncService implements ISyncService {
       const completedAt = new Date().toISOString();
       const durationMs = Date.now() - startTime;
       const rawMessage = err instanceof Error ? err.message : String(err);
-
       const sanitizedMessage = rawMessage.replace(/https?:\/\/[^\s]+/g, "[URL REDACTED]");
       const errorCode = err instanceof Error ? err.name : "SyncError";
+
+      console.error(`[SyncPhase] phase=${completedPhases[completedPhases.length - 1] || "FAILED"} status=failed durationMs=${durationMs}`);
 
       if (this.syncRunRepo && !syncRunId.startsWith("local-sync")) {
         try {

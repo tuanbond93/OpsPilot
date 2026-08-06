@@ -1,4 +1,17 @@
 export type SyncRunStatus = "running" | "success" | "failed";
+export type SyncPhase =
+  | "CREATED"
+  | "FETCHING_SNAPSHOT"
+  | "PERSISTING_SNAPSHOTS"
+  | "PERSISTING_INCIDENTS"
+  | "PERSISTING_HISTORY"
+  | "PROCESSING_FOLLOWUPS"
+  | "ENQUEUE_NOTIFICATIONS"
+  | "ENQUEUE_AI"
+  | "REFRESHING_PROJECTIONS"
+  | "COMPLETED"
+  | "FAILED";
+
 export type IncidentDbStatus = "open" | "monitoring" | "resolved" | "ignored";
 export type ExceptionReasonCode =
   | "CUSTOMER_APPOINTMENT"
@@ -12,6 +25,8 @@ export interface SyncRunRow {
   started_at: string;
   completed_at?: string | null;
   status: SyncRunStatus;
+  current_phase?: SyncPhase | null;
+  completed_phases?: SyncPhase[] | null;
   fetched_order_count: number;
   normalized_order_count: number;
   incident_count: number;
