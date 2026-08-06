@@ -2,7 +2,7 @@ import type { IFollowupService } from "../interfaces/IFollowupService";
 import type { IFollowupRepository } from "@/repositories/interfaces/IFollowupRepository";
 import type { IActionQueue } from "@/engine/action-queue/IActionQueue";
 import type { Incident } from "@/engine/incident";
-import type { IncidentHistoryRow } from "@/connectors/supabase/types";
+import type { IncidentHistoryRow } from "@/repositories/interfaces/IIncidentHistoryRepository";
 import type { NotificationActionRow } from "@/engine/action-queue";
 import type { FollowupConfig } from "@/config/followup";
 import { RillnetConnector } from "@/connectors/rillnet";

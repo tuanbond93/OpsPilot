@@ -1,5 +1,5 @@
 import type { Incident } from "@/engine/incident";
-import type { IncidentHistoryRow } from "@/connectors/supabase/types";
+import type { IncidentHistoryRow } from "@/repositories/interfaces/IIncidentHistoryRepository";
 import type { FollowupConfig } from "@/config/followup";
 import type { ProcessedFollowupItem } from "@/engine/followup/followup-engine";
 

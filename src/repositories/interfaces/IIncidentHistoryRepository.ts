@@ -1,6 +1,8 @@
 import type { IncidentHistoryRow } from "@/connectors/supabase/types";
 import type { Incident } from "@/engine/incident";
 
+export type { IncidentHistoryRow };
+
 export interface IIncidentHistoryRepository {
   clearMemory?(): void;
   insertHistoryRecords(

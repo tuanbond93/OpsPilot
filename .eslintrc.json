@@ -1,3 +1,71 @@
 {
-  "extends": "next/core-web-vitals"
+  "extends": "next/core-web-vitals",
+  "overrides": [
+    {
+      "files": ["src/services/impl/**/*.ts"],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "paths": [
+              {
+                "name": "@supabase/supabase-js",
+                "message": "Service layer MUST NOT import @supabase/supabase-js directly."
+              },
+              {
+                "name": "@/connectors/supabase",
+                "message": "Service layer MUST NOT import @/connectors/supabase directly."
+              },
+              {
+                "name": "@/repositories/RepositoryFactory",
+                "message": "Service layer MUST NOT import RepositoryFactory directly. Inject interfaces instead."
+              }
+            ],
+            "patterns": [
+              {
+                "group": ["next/*", "next/server"],
+                "message": "Service layer MUST NOT import Next.js modules."
+              },
+              {
+                "group": ["@/repositories/supabase/*", "@/repositories/mock/*"],
+                "message": "Service layer MUST NOT import concrete repository implementations directly."
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "files": ["src/app/**/*.ts", "src/jobs/**/*.ts"],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "patterns": [
+              {
+                "group": ["@/repositories/supabase/*", "@/repositories/mock/*"],
+                "message": "Routes and jobs MUST NOT import concrete repositories directly. Use ServiceFactory or RepositoryFactory."
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "files": ["src/repositories/**/*.ts"],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "patterns": [
+              {
+                "group": ["@/services/*"],
+                "message": "Repository layer MUST NOT import service layer modules."
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ]
 }
