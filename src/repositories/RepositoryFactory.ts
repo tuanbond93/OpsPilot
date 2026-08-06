@@ -15,6 +15,9 @@ import { MockIncidentRepository } from "./mock/MockIncidentRepository";
 import { SupabaseSyncRunRepository } from "./supabase/SupabaseSyncRunRepository";
 import { MockSyncRunRepository } from "./mock/MockSyncRunRepository";
 
+import { SupabaseFollowupRepository } from "./supabase/SupabaseFollowupRepository";
+import { MockFollowupRepository } from "./mock/MockFollowupRepository";
+
 export class RepositoryFactory {
   private static incidentRepo: IIncidentRepository | null = null;
   private static aiJobRepo: IAiJobRepository | null = null;
@@ -83,9 +86,17 @@ export class RepositoryFactory {
     return this.plannerRepo;
   }
 
-  static getFollowupRepository(): IFollowupRepository {
-    if (!this.followupRepo) {
-      throw new Error("[RepositoryFactory] FollowupRepository not registered");
+  static getFollowupRepository(client?: SupabaseClient | null): IFollowupRepository {
+    if (client) {
+      return new SupabaseFollowupRepository(client);
+    }
+    if (this.followupRepo) return this.followupRepo;
+
+    if (this.shouldProvideMock()) {
+      this.followupRepo = new MockFollowupRepository();
+    } else {
+      const defaultClient = createAdminClient();
+      this.followupRepo = new SupabaseFollowupRepository(defaultClient);
     }
     return this.followupRepo;
   }
