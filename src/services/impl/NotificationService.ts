@@ -1,42 +1,34 @@
-import type { ActionQueue, NotificationActionRow } from "../engine/action-queue";
-import { RetryEngine } from "../engine/action-queue";
-import type { NotificationProvider, ProviderHealth } from "./providers/provider";
-import { ConsoleProvider } from "./providers/console";
-import { TelegramProvider } from "./providers/telegram";
-import { NotificationBuilder } from "./builder";
-import type { IFollowupRepository } from "@/repositories/interfaces/IFollowupRepository";
-import { evaluateNextState } from "../engine/followup";
 
-export interface DispatchSummary {
-  claimedCount: number;
-  sentCount: number;
-  simulatedCount: number;
-  failedCount: number;
-  retriedCount: number;
-}
+import type { INotificationService, DispatchSummary } from "../interfaces/INotificationService";
+import type { IActionQueue } from "../../engine/action-queue/IActionQueue";
+import type { NotificationActionRow } from "../../engine/action-queue/types";
+import { RetryEngine } from "../../engine/action-queue";
+import type { NotificationProvider } from "../../notifications/providers/provider";
+import { ConsoleProvider } from "../../notifications/providers/console";
+import { NotificationBuilder } from "../../notifications/builder";
+import type { IFollowupRepository } from "../../repositories/interfaces/IFollowupRepository";
+import { evaluateNextState } from "../../engine/followup";
 
-export class NotificationDispatcher {
+export class NotificationService implements INotificationService {
   private providers = new Map<string, NotificationProvider>();
 
   constructor(
-    private queue: ActionQueue,
-    private followupRepo?: IFollowupRepository | null,
-    private workerId: string = "dispatcher-worker-1"
+    private queue: IActionQueue,
+    private followupRepo: IFollowupRepository | null,
+    providers: NotificationProvider[] = []
   ) {
-    this.registerProvider(new ConsoleProvider());
-    this.registerProvider(new TelegramProvider());
+    for (const provider of providers) {
+      this.providers.set(provider.name().toLowerCase(), provider);
+    }
   }
 
   registerProvider(provider: NotificationProvider): void {
     this.providers.set(provider.name().toLowerCase(), provider);
   }
 
-  getProvider(name: string): NotificationProvider {
-    return this.providers.get(name.toLowerCase()) || this.providers.get("console") || new ConsoleProvider();
-  }
-
-  async getProvidersHealth(): Promise<ProviderHealth[]> {
-    const healthList: ProviderHealth[] = [];
+  
+  async getProvidersHealth(): Promise<any[]> {
+    const healthList: any[] = [];
     for (const provider of this.providers.values()) {
       try {
         const h = await provider.health();
@@ -52,13 +44,13 @@ export class NotificationDispatcher {
     }
     return healthList;
   }
+  
+  getProvider(name: string): NotificationProvider {
+    return this.providers.get(name.toLowerCase()) || this.providers.get("console") || new ConsoleProvider();
+  }
 
-  /**
-   * Claims and dispatches due pending actions using atomic claim mechanism.
-   * Only DELIVERED outcome transitions status to SENT and confirms Follow-up state.
-   * SIMULATED outcome transitions status to SIMULATED and NEVER confirms Follow-up delivery.
-   */
-  async dispatchPendingActions(
+  async dispatchPending(
+    workerId: string = "dispatcher-worker-1",
     referenceTimeMs: number = Date.now(),
     limit: number = 10
   ): Promise<DispatchSummary> {
@@ -71,27 +63,30 @@ export class NotificationDispatcher {
     };
 
     // 1. Atomically claim due actions
-    const claimedActions = await this.queue.claimPendingActions(this.workerId, limit, 300000, referenceTimeMs);
+    const claimedActions = await this.queue.claimPendingActions(workerId, limit, 300000, referenceTimeMs);
     summary.claimedCount = claimedActions.length;
 
     for (const action of claimedActions) {
       const provider = this.getProvider(action.provider);
-      const formattedText = NotificationBuilder.buildMarkdownText(action);
-
-      let result;
-      try {
-        result = await provider.send(action, formattedText);
-      } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : String(err);
-        result = {
-          outcome: "FAILED" as const,
-          errorCode: "UNHANDLED_EXCEPTION",
-          error: `Unhandled provider exception: ${msg}`,
-        };
+      
+      let result: any;
+      if (!provider) {
+        // Unreachable if fallback to ConsoleProvider is used, but keeping for safety
+      } else {
+        const formattedText = NotificationBuilder.buildMarkdownText(action);
+        try {
+          result = await provider.send(action, formattedText);
+        } catch (err: unknown) {
+          const msg = err instanceof Error ? err.message : String(err);
+          result = {
+            outcome: "FAILED" as const,
+            errorCode: "UNHANDLED_EXCEPTION",
+            error: `Unhandled provider exception: ${msg}`,
+          };
+        }
       }
 
       if (result.outcome === "DELIVERED") {
-        // Real delivery -> Mark SENT, store message ID, trigger Follow-up state confirmation
         summary.sentCount++;
         const nowIso = new Date().toISOString();
 
@@ -108,15 +103,13 @@ export class NotificationDispatcher {
           old_status: "PROCESSING",
           new_status: "SENT",
           attempt_number: action.retry_count + 1,
-          provider: provider.name(),
+          provider: provider?.name() || action.provider,
           provider_message_id: result.providerMessageId || null,
           metadata: { response: result.response },
         });
 
-        // Confirm Follow-up delivery ONLY on real DELIVERED
-        await this.handleFollowupStateConfirmation(action, `${provider.name()}_dispatcher`);
+        await this.handleFollowupStateConfirmation(action, `${provider?.name() || action.provider}_dispatcher`);
       } else if (result.outcome === "SIMULATED") {
-        // Simulation mode -> Mark SIMULATED, store message ID. NEVER confirm Follow-up delivery!
         summary.simulatedCount++;
         const nowIso = new Date().toISOString();
 
@@ -133,7 +126,7 @@ export class NotificationDispatcher {
           old_status: "PROCESSING",
           new_status: "SIMULATED",
           attempt_number: action.retry_count + 1,
-          provider: provider.name(),
+          provider: provider?.name() || action.provider,
           provider_message_id: result.providerMessageId || null,
           metadata: { note: "Simulation mode active. Follow-up state unchanged." },
         });
@@ -169,7 +162,7 @@ export class NotificationDispatcher {
             old_status: "PROCESSING",
             new_status: "PENDING",
             attempt_number: nextRetryCount,
-            provider: provider.name(),
+            provider: provider?.name() || action.provider,
             error_code: result.errorCode || "TRANSIENT_ERROR",
             error_message: result.error || null,
             metadata: { retryAfterSeconds: result.retryAfterSeconds, nextScheduledIso },
@@ -191,7 +184,7 @@ export class NotificationDispatcher {
             old_status: "PROCESSING",
             new_status: "FAILED",
             attempt_number: nextRetryCount,
-            provider: provider.name(),
+            provider: provider?.name() || action.provider,
             error_code: result.errorCode || "PERMANENT_FAILURE",
             error_message: result.error || null,
           });

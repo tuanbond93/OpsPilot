@@ -1,7 +1,8 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
-import type { OrderExceptionRow } from "../types";
+import type { OrderExceptionRow } from "@/connectors/supabase/types";
+import type { IExceptionRepository } from "../interfaces/IExceptionRepository";
 
-export class ExceptionRepository {
+export class SupabaseExceptionRepository implements IExceptionRepository {
   constructor(private client: SupabaseClient) {}
 
   /**

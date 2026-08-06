@@ -1,7 +1,7 @@
 import { createAdminClient } from "../connectors/supabase";
 import { RepositoryFactory } from "@/repositories/RepositoryFactory";
-import { ActionQueue } from "../engine/action-queue";
-import { NotificationDispatcher, type DispatchSummary } from "../notifications";
+import type { DispatchSummary } from "@/services/interfaces/INotificationService";
+import { ServiceFactory } from "@/services/ServiceFactory";
 
 export interface DispatchJobResult {
   ok: boolean;
@@ -22,11 +22,8 @@ export async function runNotificationDispatcherJob(
 
   try {
     const dbClient = createAdminClient();
-    const actionQueue = new ActionQueue(dbClient);
-    const followupRepo = dbClient ? RepositoryFactory.getFollowupRepository(dbClient) : null;
-
-    const dispatcher = new NotificationDispatcher(actionQueue, followupRepo, workerId);
-    const summary = await dispatcher.dispatchPendingActions(referenceTimeMs);
+    const notifService = ServiceFactory.getNotificationService(dbClient);
+    const summary = await notifService.dispatchPending(workerId, referenceTimeMs);
 
     return {
       ok: true,

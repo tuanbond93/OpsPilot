@@ -1,7 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import {
   createAdminClient,
-  IncidentHistoryRepository,
+  
 } from "@/connectors/supabase";
 import { RepositoryFactory } from "@/repositories/RepositoryFactory";
 
@@ -16,7 +16,7 @@ export async function GET(
   try {
     const dbClient = createAdminClient();
     const incidentRepo = RepositoryFactory.getIncidentRepository(dbClient);
-    const historyRepo = new IncidentHistoryRepository(dbClient);
+    const historyRepo = RepositoryFactory.getIncidentHistoryRepository(dbClient);
 
     const incidentRow = await incidentRepo.getIncidentById(incidentId);
 
@@ -36,7 +36,7 @@ export async function GET(
 
     const historyRows = await historyRepo.getIncidentHistory(incidentRow.id);
 
-    const history = historyRows.map((h) => ({
+    const history = historyRows.map((h: any) => ({
       recordedAt: h.recorded_at,
       affectedOrderCount: h.affected_order_count,
       averageAgeHours: h.average_age_hours ? Number(h.average_age_hours) : null,

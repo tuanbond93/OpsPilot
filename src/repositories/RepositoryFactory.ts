@@ -11,12 +11,18 @@ import type { IWarehouseRepository } from "./interfaces/IWarehouseRepository";
 
 import { SupabaseIncidentRepository } from "./supabase/SupabaseIncidentRepository";
 import { MockIncidentRepository } from "./mock/MockIncidentRepository";
+import type { IIncidentHistoryRepository } from "./interfaces/IIncidentHistoryRepository";
+import type { IExceptionRepository } from "./interfaces/IExceptionRepository";
 
 import { SupabaseSyncRunRepository } from "./supabase/SupabaseSyncRunRepository";
 import { MockSyncRunRepository } from "./mock/MockSyncRunRepository";
 
 import { SupabaseFollowupRepository } from "./supabase/SupabaseFollowupRepository";
 import { MockFollowupRepository } from "./mock/MockFollowupRepository";
+import { SupabaseIncidentHistoryRepository } from "./supabase/SupabaseIncidentHistoryRepository";
+import { MockIncidentHistoryRepository } from "./mock/MockIncidentHistoryRepository";
+import { SupabaseExceptionRepository } from "./supabase/SupabaseExceptionRepository";
+import { MockExceptionRepository } from "./mock/MockExceptionRepository";
 
 import { SupabasePlannerRepository } from "./supabase/SupabasePlannerRepository";
 import { MockPlannerRepository } from "./mock/MockPlannerRepository";
@@ -37,6 +43,8 @@ export class RepositoryFactory {
   private static syncRunRepo: ISyncRunRepository | null = null;
   private static warehouseRepo: IWarehouseRepository | null = null;
   private static dashboardRepo: IDashboardRepository | null = null;
+  private static historyRepo: IIncidentHistoryRepository | null = null;
+  private static exceptionRepo: IExceptionRepository | null = null;
 
   // Setters for DI / Custom mock registrations
   static registerIncidentRepository(repo: IIncidentRepository): void {
@@ -65,6 +73,14 @@ export class RepositoryFactory {
 
   static registerWarehouseRepository(repo: IWarehouseRepository): void {
     this.warehouseRepo = repo;
+  }
+
+  static registerIncidentHistoryRepository(repo: IIncidentHistoryRepository): void {
+    this.historyRepo = repo;
+  }
+
+  static registerExceptionRepository(repo: IExceptionRepository): void {
+    this.exceptionRepo = repo;
   }
 
   static registerDashboardRepository(repo: IDashboardRepository): void {
@@ -154,6 +170,22 @@ export class RepositoryFactory {
     return this.syncRunRepo;
   }
 
+  static getIncidentHistoryRepository(client?: SupabaseClient | null): IIncidentHistoryRepository {
+    if (client) return new SupabaseIncidentHistoryRepository(client);
+    if (this.historyRepo) return this.historyRepo;
+    if (this.shouldProvideMock()) this.historyRepo = new MockIncidentHistoryRepository();
+    else this.historyRepo = new SupabaseIncidentHistoryRepository(createAdminClient());
+    return this.historyRepo;
+  }
+
+  static getExceptionRepository(client?: SupabaseClient | null): IExceptionRepository {
+    if (client) return new SupabaseExceptionRepository(client);
+    if (this.exceptionRepo) return this.exceptionRepo;
+    if (this.shouldProvideMock()) this.exceptionRepo = new MockExceptionRepository();
+    else this.exceptionRepo = new SupabaseExceptionRepository(createAdminClient());
+    return this.exceptionRepo;
+  }
+
   static getDashboardRepository(client?: SupabaseClient | null): IDashboardRepository {
     if (client) {
       return new SupabaseDashboardRepository(client);
@@ -193,5 +225,7 @@ export class RepositoryFactory {
     this.syncRunRepo = null;
     this.warehouseRepo = null;
     this.dashboardRepo = null;
+    this.historyRepo = null;
+    this.exceptionRepo = null;
   }
 }

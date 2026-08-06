@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { createAdminClient } from "@/connectors/supabase";
 import { ActionQueue } from "@/engine/action-queue";
-import { NotificationDispatcher } from "@/notifications";
+import { ServiceFactory } from "@/services/ServiceFactory";
 
 export const dynamic = "force-dynamic";
 
@@ -9,8 +9,8 @@ export async function GET() {
   try {
     const dbClient = createAdminClient();
     const queue = new ActionQueue(dbClient);
-    const dispatcher = new NotificationDispatcher(queue);
-    const health = await dispatcher.getProvidersHealth();
+    const notifService = ServiceFactory.getNotificationService();
+    const health = await (notifService as any).getProvidersHealth();
 
     return NextResponse.json({
       ok: true,

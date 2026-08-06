@@ -4,7 +4,7 @@ import { aggregateIncidents } from "@/engine/incident";
 import { RootCauseAgent } from "@/agents/root-cause";
 import {
   createAdminClient,
-  IncidentHistoryRepository,
+  
 } from "@/connectors/supabase";
 import { RepositoryFactory } from "@/repositories/RepositoryFactory";
 
@@ -23,7 +23,7 @@ export async function GET(
   try {
     const dbClient = createAdminClient();
     const incidentRepo = RepositoryFactory.getIncidentRepository(dbClient);
-    const historyRepo = new IncidentHistoryRepository(dbClient);
+    const historyRepo = RepositoryFactory.getIncidentHistoryRepository(dbClient);
 
     const dbInc = await incidentRepo.getIncidentById(incidentId);
     if (dbInc) {

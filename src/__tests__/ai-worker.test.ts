@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import * as supabaseConnector from "../connectors/supabase";
 import { MockAiJobRepository } from "@/repositories/mock/MockAiJobRepository";
+import { ServiceFactory } from "../services/ServiceFactory";
 import { AiAnalysisWorker } from "../jobs/ai-analysis-worker";
 import { RootCauseAgent } from "../agents/root-cause";
 import { syncRillnet } from "../jobs/sync-rillnet";
@@ -132,4 +133,16 @@ describe("Sprint 6.5 — AI Background Worker Tests", () => {
       expect.objectContaining({ category: "AI_CALLS_INSIDE_SYNC_LOOP" })
     );
   }, 15000);
+
+  it("6. Architecture Validation: delegates to AiWorkerService via ServiceFactory", async () => {
+    const worker = new AiAnalysisWorker();
+    const getAiWorkerServiceSpy = vi.spyOn(ServiceFactory, 'getAiWorkerService');
+    
+    // Attempt processing (it will mock or fail, doesn't matter for architecture spy)
+    await worker.processPendingJobs("test-arch-worker", 1);
+    
+    expect(getAiWorkerServiceSpy).toHaveBeenCalled();
+    getAiWorkerServiceSpy.mockRestore();
+  });
+
 });

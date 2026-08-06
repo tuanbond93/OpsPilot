@@ -3,12 +3,14 @@ import { aggregateIncidents, inspectOrderForIncident, REASON_CODE_MAP } from "..
 import {
   createAdminClient,
   OrderSnapshotRepository,
-  IncidentHistoryRepository,
-  ExceptionRepository,
+  
+  
   type OrderSnapshotRow,
 } from "../connectors/supabase";
 import { RepositoryFactory } from "@/repositories/RepositoryFactory";
 import type { ISyncRunRepository } from "@/repositories/interfaces/ISyncRunRepository";
+import type { IIncidentHistoryRepository } from "@/repositories/interfaces/IIncidentHistoryRepository";
+import type { IExceptionRepository } from "@/repositories/interfaces/IExceptionRepository";
 import type { IIncidentRepository } from "@/repositories/interfaces/IIncidentRepository";
 import type { IFollowupRepository } from "@/repositories/interfaces/IFollowupRepository";
 import type { IAiJobRepository } from "@/repositories/interfaces/IAiJobRepository";
@@ -135,16 +137,16 @@ export async function syncRillnet(): Promise<SyncJobResult> {
   let syncRunRepo: ISyncRunRepository | null = null;
   let orderSnapshotRepo: OrderSnapshotRepository | null = null;
   let incidentRepo: IIncidentRepository | null = null;
-  let incidentHistoryRepo: IncidentHistoryRepository | null = null;
-  let exceptionRepo: ExceptionRepository | null = null;
+  let incidentHistoryRepo: IIncidentHistoryRepository | null = null;
+  let exceptionRepo: IExceptionRepository | null = null;
   let aiJobRepo: IAiJobRepository | null = null;
 
   if (isDbAvailable && dbClient) {
     syncRunRepo = RepositoryFactory.getSyncRunRepository(dbClient);
     orderSnapshotRepo = new OrderSnapshotRepository(dbClient);
     incidentRepo = RepositoryFactory.getIncidentRepository(dbClient);
-    incidentHistoryRepo = new IncidentHistoryRepository(dbClient);
-    exceptionRepo = new ExceptionRepository(dbClient);
+    incidentHistoryRepo = RepositoryFactory.getIncidentHistoryRepository(dbClient);
+    exceptionRepo = RepositoryFactory.getExceptionRepository(dbClient);
     aiJobRepo = RepositoryFactory.getAiJobRepository(dbClient);
   }
 

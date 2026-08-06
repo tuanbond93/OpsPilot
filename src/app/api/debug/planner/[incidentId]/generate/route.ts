@@ -1,8 +1,8 @@
 import { NextResponse, type NextRequest } from "next/server";
 import {
   createAdminClient,
-  IncidentHistoryRepository,
-  ExceptionRepository,
+  
+  
 } from "@/connectors/supabase";
 import { RepositoryFactory } from "@/repositories/RepositoryFactory";
 import { ActionQueue } from "@/engine/action-queue";
@@ -36,9 +36,9 @@ export async function POST(
 
     const dbClient = createAdminClient();
     const incidentRepo = RepositoryFactory.getIncidentRepository(dbClient);
-    const historyRepo = new IncidentHistoryRepository(dbClient);
+    const historyRepo = RepositoryFactory.getIncidentHistoryRepository(dbClient);
     const followupRepo = RepositoryFactory.getFollowupRepository(dbClient);
-    const exceptionRepo = new ExceptionRepository(dbClient);
+    const exceptionRepo = RepositoryFactory.getExceptionRepository(dbClient);
     const queue = new ActionQueue(dbClient);
     const plannerRepo = RepositoryFactory.getPlannerRepository(dbClient);
 

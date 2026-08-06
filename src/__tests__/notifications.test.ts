@@ -1,3 +1,5 @@
+import { NotificationService } from "@/services/impl/NotificationService";
+import { ServiceFactory } from "@/services/ServiceFactory";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import {
   ActionQueue,
@@ -10,7 +12,6 @@ import {
   ConsoleProvider,
   TelegramProvider,
   NotificationBuilder,
-  NotificationDispatcher,
 } from "../notifications";
 import fs from "fs";
 
@@ -22,13 +23,38 @@ describe("Sprint 5 Hardened: Notification Platform & Action Governance Tests", (
     delete process.env.ALLOW_MANUAL_ACTION_CONFIRM;
   });
 
+  it("Architecture Validation: delegates to NotificationService via ServiceFactory", async () => {
+    
+    const { runNotificationDispatcherJob } = await import("@/jobs/dispatch-notifications");
+    // We mock ServiceFactory.getNotificationService to return a NoOp / dummy
+    const getNotificationServiceSpy = vi.spyOn(ServiceFactory, 'getNotificationService').mockReturnValue({
+      dispatchPending: vi.fn().mockResolvedValue({
+        claimedCount: 0,
+        sentCount: 0,
+        simulatedCount: 0,
+        failedCount: 0,
+        retriedCount: 0
+      })
+    } as any);
+    
+    // We also need to mock createAdminClient if it's imported, but since we mocked getNotificationService, 
+    // it will just use whatever client and return our mocked service, avoiding any network calls inside dispatchPending.
+    
+    // Run the job
+    const result = await runNotificationDispatcherJob("test-worker");
+    expect(getNotificationServiceSpy).toHaveBeenCalled();
+    expect(result.summary).toBeDefined();
+    getNotificationServiceSpy.mockRestore();
+  });
+
+
   // ===== CORE DISPATCHER TESTS =====
 
   // 1. Rillnet sync enqueues but does not dispatch
   it("1. Rillnet sync job enqueues notification actions but does NOT dispatch", () => {
     const syncJobCode = fs.readFileSync("src/jobs/sync-rillnet.ts", "utf-8");
     expect(syncJobCode).toContain("FollowupEngine");
-    expect(syncJobCode).not.toContain("dispatcher.dispatchPendingActions");
+    expect(syncJobCode).not.toContain("dispatcher.dispatchPending");
   });
 
   // 2. Atomic action claiming prevents double-claiming by concurrent workers
@@ -132,8 +158,8 @@ describe("Sprint 5 Hardened: Notification Platform & Action Governance Tests", (
       insertEvent: vi.fn(),
     } as any;
 
-    const dispatcher = new NotificationDispatcher(queue, followupRepoMock);
-    const summary = await dispatcher.dispatchPendingActions();
+    const dispatcher = new NotificationService(queue, followupRepoMock);
+    const summary = await dispatcher.dispatchPending();
 
     expect(summary.simulatedCount).toBe(1);
     expect(summary.sentCount).toBe(0);
@@ -165,14 +191,14 @@ describe("Sprint 5 Hardened: Notification Platform & Action Governance Tests", (
       insertEvent: vi.fn().mockResolvedValue({ id: "evt-1" }),
     } as any;
 
-    const dispatcher = new NotificationDispatcher(queue, followupRepoMock);
+    const dispatcher = new NotificationService(queue, followupRepoMock);
     dispatcher.registerProvider({
       name: () => "mock_delivered_provider",
       send: async () => ({ outcome: "DELIVERED", providerMessageId: "msg-100" }),
       health: async () => ({ name: "mock", status: "Healthy" }),
     });
 
-    const summary = await dispatcher.dispatchPendingActions();
+    const summary = await dispatcher.dispatchPending();
     expect(summary.sentCount).toBe(1);
     expect(followupRepoMock.upsertCase).toHaveBeenCalled();
   });
@@ -187,8 +213,8 @@ describe("Sprint 5 Hardened: Notification Platform & Action Governance Tests", (
     });
     const action = result && "id" in result ? result : null;
 
-    const dispatcher = new NotificationDispatcher(queue);
-    await dispatcher.dispatchPendingActions();
+    const dispatcher = new NotificationService(queue, null);
+    await dispatcher.dispatchPending();
 
     const events = await queue.getActionEvents(action!.id);
     expect(events.length).toBeGreaterThanOrEqual(3);
@@ -238,14 +264,14 @@ describe("Sprint 5 Hardened: Notification Platform & Action Governance Tests", (
     });
     const action = result && "id" in result ? result : null;
 
-    const dispatcher = new NotificationDispatcher(queue);
+    const dispatcher = new NotificationService(queue, null);
     dispatcher.registerProvider({
       name: () => "mock_delivered_provider",
       send: async () => ({ outcome: "DELIVERED", providerMessageId: "tg-msg-999" }),
       health: async () => ({ name: "mock", status: "Healthy" }),
     });
 
-    await dispatcher.dispatchPendingActions();
+    await dispatcher.dispatchPending();
     const updated = await queue.getActionById(action!.id);
     expect(updated?.status).toBe("SENT");
     expect(updated?.provider_message_id).toBe("tg-msg-999");
@@ -355,8 +381,8 @@ describe("Sprint 5 Hardened: Notification Platform & Action Governance Tests", (
     expect(original).not.toBeNull();
 
     // Dispatch to change status to SIMULATED
-    const dispatcher = new NotificationDispatcher(queue);
-    await dispatcher.dispatchPendingActions();
+    const dispatcher = new NotificationService(queue, null);
+    await dispatcher.dispatchPending();
     const afterDispatch = await queue.getActionById(original!.id);
     expect(afterDispatch?.status).toBe("SIMULATED");
 
@@ -418,8 +444,8 @@ describe("Sprint 5 Hardened: Notification Platform & Action Governance Tests", (
     const action = result && "id" in result && !("deduplicated" in result) ? result : null;
     expect(action).not.toBeNull();
 
-    const dispatcher = new NotificationDispatcher(queue);
-    await dispatcher.dispatchPendingActions();
+    const dispatcher = new NotificationService(queue, null);
+    await dispatcher.dispatchPending();
 
     const simulated = await queue.getActionById(action!.id);
     expect(simulated?.status).toBe("SIMULATED");

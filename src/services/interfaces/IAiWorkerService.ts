@@ -1,4 +1,4 @@
 export interface IAiWorkerService {
   enqueueJob(jobData: any): Promise<void>;
-  processPendingJobs(): Promise<void>;
+  processPendingJobs(workerId?: string, maxJobs?: number): Promise<any>;
 }

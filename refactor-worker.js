@@ -1,3 +1,6 @@
+const fs = require('fs');
+
+const workerCode = `
 import { createAdminClient } from "@/connectors/supabase";
 import { ServiceFactory } from "@/services/ServiceFactory";
 
@@ -22,7 +25,7 @@ export class AiAnalysisWorker {
    * Business logic delegates to AiWorkerService.
    */
   async processPendingJobs(
-    workerId: string = `worker-${Math.random().toString(36).substring(2, 7)}`,
+    workerId: string = \`worker-\${Math.random().toString(36).substring(2, 7)}\`,
     maxJobs: number = 5
   ): Promise<WorkerProcessResult> {
     let dbClient;
@@ -66,3 +69,6 @@ export class AiAnalysisWorker {
     }
   }
 }
+`;
+
+fs.writeFileSync('src/jobs/ai-analysis-worker.ts', workerCode.trim() + '\n');

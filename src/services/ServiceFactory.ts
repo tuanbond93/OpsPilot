@@ -13,7 +13,18 @@ import { NoOpIncidentService } from './impl/NoOpIncidentService';
 import { NoOpFollowupService } from './impl/NoOpFollowupService';
 import { NoOpSyncService } from './impl/NoOpSyncService';
 import { NoOpPlannerService } from './impl/NoOpPlannerService';
-import { NoOpAiWorkerService } from './impl/NoOpAiWorkerService';
+
+import { AiWorkerService } from './impl/AiWorkerService';
+
+import { RootCauseAgent } from '../agents/root-cause';
+import { ActionPlannerAgent } from '../agents/action-planner';
+
+
+import type { INotificationService } from "./interfaces/INotificationService";
+import { NotificationService } from "./impl/NotificationService";
+import { ActionQueue } from "@/engine/action-queue";
+import { ConsoleProvider } from "@/notifications/providers/console";
+import { TelegramProvider } from "@/notifications/providers/telegram";
 import { DashboardService } from './impl/DashboardService';
 import { NoOpProjectionService } from './impl/NoOpProjectionService';
 
@@ -31,7 +42,39 @@ export class ServiceFactory {
     return new NoOpPlannerService();
   }
   public static getAiWorkerService(client?: SupabaseClient): IAiWorkerService {
-    return new NoOpAiWorkerService();
+    if (!client) {
+      throw new Error("SupabaseClient is required to instantiate AiWorkerService");
+    }
+    const aiJobRepo = RepositoryFactory.getAiJobRepository(client);
+    const incidentRepo = RepositoryFactory.getIncidentRepository(client);
+    const followupRepo = RepositoryFactory.getFollowupRepository(client);
+    const plannerRepo = RepositoryFactory.getPlannerRepository(client);
+    
+    // Manually instantiate missing repos
+    const historyRepo = RepositoryFactory.getIncidentHistoryRepository(client);
+    const exceptionRepo = RepositoryFactory.getExceptionRepository(client);
+    
+    // Instantiate agents
+    const rootCauseAgent = new RootCauseAgent();
+    const actionPlannerAgent = new ActionPlannerAgent(plannerRepo);
+
+    return new AiWorkerService(
+      aiJobRepo,
+      incidentRepo,
+      historyRepo,
+      followupRepo,
+      plannerRepo,
+      exceptionRepo,
+      rootCauseAgent,
+      actionPlannerAgent
+    );
+  }
+  
+  public static getNotificationService(client?: SupabaseClient): INotificationService {
+    const queue = new ActionQueue(client);
+    const followupRepo = client ? RepositoryFactory.getFollowupRepository(client) : null;
+    const providers = [new ConsoleProvider(), new TelegramProvider()];
+    return new NotificationService(queue, followupRepo, providers);
   }
   public static getDashboardService(client?: SupabaseClient): IDashboardService {
     return new DashboardService(

@@ -6,6 +6,7 @@ import type {
   ActionStatus,
   AuditEventType,
 } from "./types";
+import type { IActionQueue } from "./IActionQueue";
 import { Deduplicator } from "./deduplicator";
 import { isFallbackAllowed } from "@/connectors/supabase/fallback-policy";
 
@@ -15,7 +16,7 @@ export interface DeduplicationResult {
   reason: "in_memory_duplicate" | "db_unique_constraint";
 }
 
-export class ActionQueue {
+export class ActionQueue implements IActionQueue {
   private inMemoryQueue: NotificationActionRow[] = [];
   private inMemoryEvents: NotificationActionEventRow[] = [];
 

@@ -1,9 +1,10 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
-import type { IncidentHistoryRow } from "../types";
+import type { IncidentHistoryRow } from "@/connectors/supabase/types";
 import type { Incident } from "@/engine/incident";
-import { isFallbackAllowed } from "../fallback-policy";
+import { isFallbackAllowed } from "@/connectors/supabase/fallback-policy";
+import type { IIncidentHistoryRepository } from "../interfaces/IIncidentHistoryRepository";
 
-export class IncidentHistoryRepository {
+export class SupabaseIncidentHistoryRepository implements IIncidentHistoryRepository {
   private inMemoryHistory: IncidentHistoryRow[] = [];
 
   constructor(private client?: SupabaseClient | null) {}

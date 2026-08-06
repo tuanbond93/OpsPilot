@@ -2,7 +2,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import { createAdminClient } from "@/connectors/supabase";
 import { RepositoryFactory } from "@/repositories/RepositoryFactory";
 import { ActionQueue } from "@/engine/action-queue";
-import { NotificationDispatcher } from "@/notifications";
+import { ServiceFactory } from "@/services/ServiceFactory";
 
 export const dynamic = "force-dynamic";
 
@@ -112,9 +112,9 @@ export async function POST(
     });
 
     // 3. Trigger Follow-up State Confirmation
-    const dispatcher = new NotificationDispatcher(queue, followupRepo);
+    const notifService = ServiceFactory.getNotificationService();
     if (updated) {
-      await dispatcher.handleFollowupStateConfirmation(updated, confirmedBy);
+      await (notifService as any).handleFollowupStateConfirmation(updated, confirmedBy);
     }
 
     return NextResponse.json({
