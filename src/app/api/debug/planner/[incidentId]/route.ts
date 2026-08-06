@@ -1,5 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
-import { createAdminClient, PlannerRepository, AiJobRepository } from "@/connectors/supabase";
+import { createAdminClient } from "@/connectors/supabase";
+import { RepositoryFactory } from "@/repositories/RepositoryFactory";
 
 export const dynamic = "force-dynamic";
 
@@ -11,8 +12,8 @@ export async function GET(
 
   try {
     const dbClient = createAdminClient();
-    const repo = new PlannerRepository(dbClient);
-    const aiJobRepo = new AiJobRepository(dbClient);
+    const repo = RepositoryFactory.getPlannerRepository(dbClient);
+    const aiJobRepo = RepositoryFactory.getAiJobRepository(dbClient);
 
     const latestRun = await repo.getLatestPlannerRunByIncidentId(incidentId);
     const aiJob = await aiJobRepo.getLatestJobByIncidentId(incidentId);

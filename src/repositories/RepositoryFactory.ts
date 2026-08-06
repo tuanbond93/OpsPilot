@@ -18,6 +18,16 @@ import { MockSyncRunRepository } from "./mock/MockSyncRunRepository";
 import { SupabaseFollowupRepository } from "./supabase/SupabaseFollowupRepository";
 import { MockFollowupRepository } from "./mock/MockFollowupRepository";
 
+import { SupabasePlannerRepository } from "./supabase/SupabasePlannerRepository";
+import { MockPlannerRepository } from "./mock/MockPlannerRepository";
+
+import { SupabaseAiJobRepository } from "./supabase/SupabaseAiJobRepository";
+import { MockAiJobRepository } from "./mock/MockAiJobRepository";
+
+import type { IDashboardRepository } from "./interfaces/IDashboardRepository";
+import { SupabaseDashboardRepository } from "./supabase/SupabaseDashboardRepository";
+import { MockDashboardRepository } from "./mock/MockDashboardRepository";
+
 export class RepositoryFactory {
   private static incidentRepo: IIncidentRepository | null = null;
   private static aiJobRepo: IAiJobRepository | null = null;
@@ -26,6 +36,7 @@ export class RepositoryFactory {
   private static notificationRepo: INotificationRepository | null = null;
   private static syncRunRepo: ISyncRunRepository | null = null;
   private static warehouseRepo: IWarehouseRepository | null = null;
+  private static dashboardRepo: IDashboardRepository | null = null;
 
   // Setters for DI / Custom mock registrations
   static registerIncidentRepository(repo: IIncidentRepository): void {
@@ -56,6 +67,10 @@ export class RepositoryFactory {
     this.warehouseRepo = repo;
   }
 
+  static registerDashboardRepository(repo: IDashboardRepository): void {
+    this.dashboardRepo = repo;
+  }
+
   // Resolvers
   static getIncidentRepository(client?: SupabaseClient | null): IIncidentRepository {
     if (client) {
@@ -72,16 +87,32 @@ export class RepositoryFactory {
     return this.incidentRepo;
   }
 
-  static getAiJobRepository(): IAiJobRepository {
-    if (!this.aiJobRepo) {
-      throw new Error("[RepositoryFactory] AiJobRepository not registered");
+  static getAiJobRepository(client?: SupabaseClient | null): IAiJobRepository {
+    if (client) {
+      return new SupabaseAiJobRepository(client);
+    }
+    if (this.aiJobRepo) return this.aiJobRepo;
+
+    if (this.shouldProvideMock()) {
+      this.aiJobRepo = new MockAiJobRepository();
+    } else {
+      const defaultClient = createAdminClient();
+      this.aiJobRepo = new SupabaseAiJobRepository(defaultClient);
     }
     return this.aiJobRepo;
   }
 
-  static getPlannerRepository(): IPlannerRepository {
-    if (!this.plannerRepo) {
-      throw new Error("[RepositoryFactory] PlannerRepository not registered");
+  static getPlannerRepository(client?: SupabaseClient | null): IPlannerRepository {
+    if (client) {
+      return new SupabasePlannerRepository(client);
+    }
+    if (this.plannerRepo) return this.plannerRepo;
+
+    if (this.shouldProvideMock()) {
+      this.plannerRepo = new MockPlannerRepository();
+    } else {
+      const defaultClient = createAdminClient();
+      this.plannerRepo = new SupabasePlannerRepository(defaultClient);
     }
     return this.plannerRepo;
   }
@@ -123,6 +154,21 @@ export class RepositoryFactory {
     return this.syncRunRepo;
   }
 
+  static getDashboardRepository(client?: SupabaseClient | null): IDashboardRepository {
+    if (client) {
+      return new SupabaseDashboardRepository(client);
+    }
+    if (this.dashboardRepo) return this.dashboardRepo;
+
+    if (this.shouldProvideMock()) {
+      this.dashboardRepo = new MockDashboardRepository();
+    } else {
+      const defaultClient = createAdminClient();
+      this.dashboardRepo = new SupabaseDashboardRepository(defaultClient);
+    }
+    return this.dashboardRepo;
+  }
+
   static getWarehouseRepository(): IWarehouseRepository {
     if (!this.warehouseRepo) {
       throw new Error("[RepositoryFactory] WarehouseRepository not registered");
@@ -146,5 +192,6 @@ export class RepositoryFactory {
     this.notificationRepo = null;
     this.syncRunRepo = null;
     this.warehouseRepo = null;
+    this.dashboardRepo = null;
   }
 }

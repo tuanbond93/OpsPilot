@@ -1,4 +1,4 @@
-import type { FollowupRepository } from "../../connectors/supabase";
+import type { IFollowupRepository } from "@/repositories/interfaces/IFollowupRepository";
 import type { FollowupState, ProgressAssessment, TransitionResult } from "./types";
 
 export interface ProcessTransitionParams {
@@ -19,7 +19,7 @@ export interface ProcessTransitionParams {
  */
 export async function executeStateTransition(
   params: ProcessTransitionParams,
-  repo?: FollowupRepository | null
+  repo?: IFollowupRepository | null
 ): Promise<{ caseId?: string; transitioned: boolean }> {
   const refTimeIso = new Date(params.referenceTimeMs || Date.now()).toISOString();
 

@@ -1,0 +1,31 @@
+const fs = require('fs');
+const path = require('path');
+
+const interfacesPath = path.join(process.cwd(), 'src', 'services', 'interfaces');
+const implPath = path.join(process.cwd(), 'src', 'services', 'impl');
+
+const files = {
+  'interfaces/IIncidentService.ts': "export interface IIncidentService {\n  getOpenIncidents(): Promise<any[]>;\n  resolveIncident(incidentId: string): Promise<void>;\n}",
+  'interfaces/IFollowupService.ts': "export interface IFollowupService {\n  processFollowups(): Promise<void>;\n  getFollowupHistory(incidentId: string): Promise<any[]>;\n}",
+  'interfaces/ISyncService.ts': "export interface ISyncService {\n  runSync(): Promise<void>;\n  getLatestSyncRun(): Promise<any>;\n}",
+  'interfaces/IPlannerService.ts': "export interface IPlannerService {\n  createPlan(incidentId: string): Promise<any>;\n  getPlanById(planId: string): Promise<any>;\n}",
+  'interfaces/IAiWorkerService.ts': "export interface IAiWorkerService {\n  enqueueJob(jobData: any): Promise<void>;\n  processPendingJobs(): Promise<void>;\n}",
+  'interfaces/IDashboardService.ts': "export interface IDashboardService {\n  getDashboardData(warehouseId?: string): Promise<any>;\n}",
+  'interfaces/IProjectionService.ts': "export interface IProjectionService {\n  rebuildProjections(): Promise<void>;\n}",
+
+  'impl/NoOpIncidentService.ts': "import { IIncidentService } from '../interfaces/IIncidentService';\nexport class NoOpIncidentService implements IIncidentService {\n  async getOpenIncidents(): Promise<any[]> { throw new Error('Not implemented yet: IncidentService.getOpenIncidents'); }\n  async resolveIncident(incidentId: string): Promise<void> { throw new Error('Not implemented yet: IncidentService.resolveIncident'); }\n}",
+  'impl/NoOpFollowupService.ts': "import { IFollowupService } from '../interfaces/IFollowupService';\nexport class NoOpFollowupService implements IFollowupService {\n  async processFollowups(): Promise<void> { throw new Error('Not implemented yet: FollowupService.processFollowups'); }\n  async getFollowupHistory(incidentId: string): Promise<any[]> { throw new Error('Not implemented yet: FollowupService.getFollowupHistory'); }\n}",
+  'impl/NoOpSyncService.ts': "import { ISyncService } from '../interfaces/ISyncService';\nexport class NoOpSyncService implements ISyncService {\n  async runSync(): Promise<void> { throw new Error('Not implemented yet: SyncService.runSync'); }\n  async getLatestSyncRun(): Promise<any> { throw new Error('Not implemented yet: SyncService.getLatestSyncRun'); }\n}",
+  'impl/NoOpPlannerService.ts': "import { IPlannerService } from '../interfaces/IPlannerService';\nexport class NoOpPlannerService implements IPlannerService {\n  async createPlan(incidentId: string): Promise<any> { throw new Error('Not implemented yet: PlannerService.createPlan'); }\n  async getPlanById(planId: string): Promise<any> { throw new Error('Not implemented yet: PlannerService.getPlanById'); }\n}",
+  'impl/NoOpAiWorkerService.ts': "import { IAiWorkerService } from '../interfaces/IAiWorkerService';\nexport class NoOpAiWorkerService implements IAiWorkerService {\n  async enqueueJob(jobData: any): Promise<void> { throw new Error('Not implemented yet: AiWorkerService.enqueueJob'); }\n  async processPendingJobs(): Promise<void> { throw new Error('Not implemented yet: AiWorkerService.processPendingJobs'); }\n}",
+  'impl/NoOpDashboardService.ts': "import { IDashboardService } from '../interfaces/IDashboardService';\nexport class NoOpDashboardService implements IDashboardService {\n  async getDashboardData(warehouseId?: string): Promise<any> { throw new Error('Not implemented yet: DashboardService.getDashboardData'); }\n}",
+  'impl/NoOpProjectionService.ts': "import { IProjectionService } from '../interfaces/IProjectionService';\nexport class NoOpProjectionService implements IProjectionService {\n  async rebuildProjections(): Promise<void> { throw new Error('Not implemented yet: ProjectionService.rebuildProjections'); }\n}",
+
+  'ServiceFactory.ts': "import { SupabaseClient } from '@supabase/supabase-js';\nimport { RepositoryFactory } from '../repositories/RepositoryFactory';\n\nimport { IIncidentService } from './interfaces/IIncidentService';\nimport { IFollowupService } from './interfaces/IFollowupService';\nimport { ISyncService } from './interfaces/ISyncService';\nimport { IPlannerService } from './interfaces/IPlannerService';\nimport { IAiWorkerService } from './interfaces/IAiWorkerService';\nimport { IDashboardService } from './interfaces/IDashboardService';\nimport { IProjectionService } from './interfaces/IProjectionService';\n\nimport { NoOpIncidentService } from './impl/NoOpIncidentService';\nimport { NoOpFollowupService } from './impl/NoOpFollowupService';\nimport { NoOpSyncService } from './impl/NoOpSyncService';\nimport { NoOpPlannerService } from './impl/NoOpPlannerService';\nimport { NoOpAiWorkerService } from './impl/NoOpAiWorkerService';\nimport { NoOpDashboardService } from './impl/NoOpDashboardService';\nimport { NoOpProjectionService } from './impl/NoOpProjectionService';\n\nexport class ServiceFactory {\n  public static getIncidentService(client?: SupabaseClient): IIncidentService {\n    return new NoOpIncidentService();\n  }\n  public static getFollowupService(client?: SupabaseClient): IFollowupService {\n    return new NoOpFollowupService();\n  }\n  public static getSyncService(client?: SupabaseClient): ISyncService {\n    return new NoOpSyncService();\n  }\n  public static getPlannerService(client?: SupabaseClient): IPlannerService {\n    return new NoOpPlannerService();\n  }\n  public static getAiWorkerService(client?: SupabaseClient): IAiWorkerService {\n    return new NoOpAiWorkerService();\n  }\n  public static getDashboardService(client?: SupabaseClient): IDashboardService {\n    return new NoOpDashboardService();\n  }\n  public static getProjectionService(client?: SupabaseClient): IProjectionService {\n    return new NoOpProjectionService();\n  }\n}\n"
+};
+
+for (const [relativePath, content] of Object.entries(files)) {
+  const fullPath = path.join(process.cwd(), 'src', 'services', relativePath);
+  fs.writeFileSync(fullPath, content);
+}
+console.log('Successfully created Service Layer Infrastructure');

@@ -2,15 +2,16 @@ import { RillnetConnector } from "../connectors/rillnet";
 import { aggregateIncidents, inspectOrderForIncident, REASON_CODE_MAP } from "../engine/incident";
 import {
   createAdminClient,
-  SyncRunRepository,
   OrderSnapshotRepository,
-  IncidentRepository,
   IncidentHistoryRepository,
   ExceptionRepository,
-  FollowupRepository,
-  AiJobRepository,
   type OrderSnapshotRow,
 } from "../connectors/supabase";
+import { RepositoryFactory } from "@/repositories/RepositoryFactory";
+import type { ISyncRunRepository } from "@/repositories/interfaces/ISyncRunRepository";
+import type { IIncidentRepository } from "@/repositories/interfaces/IIncidentRepository";
+import type { IFollowupRepository } from "@/repositories/interfaces/IFollowupRepository";
+import type { IAiJobRepository } from "@/repositories/interfaces/IAiJobRepository";
 import { FollowupEngine } from "../engine/followup";
 import { ActionQueue } from "../engine/action-queue";
 import { refresh } from "../projections/projection-engine";
@@ -131,20 +132,20 @@ export async function syncRillnet(): Promise<SyncJobResult> {
     isDbAvailable = false;
   }
 
-  let syncRunRepo: SyncRunRepository | null = null;
+  let syncRunRepo: ISyncRunRepository | null = null;
   let orderSnapshotRepo: OrderSnapshotRepository | null = null;
-  let incidentRepo: IncidentRepository | null = null;
+  let incidentRepo: IIncidentRepository | null = null;
   let incidentHistoryRepo: IncidentHistoryRepository | null = null;
   let exceptionRepo: ExceptionRepository | null = null;
-  let aiJobRepo: AiJobRepository | null = null;
+  let aiJobRepo: IAiJobRepository | null = null;
 
   if (isDbAvailable && dbClient) {
-    syncRunRepo = new SyncRunRepository(dbClient);
+    syncRunRepo = RepositoryFactory.getSyncRunRepository(dbClient);
     orderSnapshotRepo = new OrderSnapshotRepository(dbClient);
-    incidentRepo = new IncidentRepository(dbClient);
+    incidentRepo = RepositoryFactory.getIncidentRepository(dbClient);
     incidentHistoryRepo = new IncidentHistoryRepository(dbClient);
     exceptionRepo = new ExceptionRepository(dbClient);
-    aiJobRepo = new AiJobRepository(dbClient);
+    aiJobRepo = RepositoryFactory.getAiJobRepository(dbClient);
   }
 
   // 1. Create sync_runs row (status = running)
@@ -356,7 +357,7 @@ export async function syncRillnet(): Promise<SyncJobResult> {
 
     if (isDbAvailable && dbClient && incidents.length > 0) {
       try {
-        const followupRepo = new FollowupRepository(dbClient);
+        const followupRepo = RepositoryFactory.getFollowupRepository(dbClient);
         const actionQueue = new ActionQueue(dbClient);
 
         // FollowupEngine instantiated with ZERO AI dependencies

@@ -1,9 +1,23 @@
-import type { PlannerRunRow, PlannerReviewEventRow } from "@/connectors/supabase/types";
+import type { PlannerRunRow, PlannerReviewEventRow, PlannerRunStatus } from "@/connectors/supabase/types";
 
 export interface IPlannerRepository {
-  getLatestRunByIncidentId(incidentId: string): Promise<PlannerRunRow | null>;
-  createRun(run: Partial<PlannerRunRow>): Promise<PlannerRunRow>;
-  updateRunStatus(id: string, status: string, extra?: any): Promise<PlannerRunRow>;
-  appendReviewEvent(event: Omit<PlannerReviewEventRow, "id" | "created_at">): Promise<PlannerReviewEventRow>;
+  createPlannerRun(run: Partial<PlannerRunRow>): Promise<PlannerRunRow>;
+  getPlannerRunById(id: string): Promise<PlannerRunRow | null>;
+  getPlannerRunByContextHashAndVersion(
+    incidentId: string,
+    contextHash: string,
+    promptVersion: number,
+    status?: PlannerRunStatus
+  ): Promise<PlannerRunRow | null>;
+  updatePlannerRunStatus(
+    id: string,
+    status: PlannerRunStatus,
+    reviewedBy?: string,
+    reviewedAt?: string
+  ): Promise<PlannerRunRow | null>;
+  getAllPlannerRuns(incidentId?: string, limit?: number): Promise<PlannerRunRow[]>;
+  getLatestPlannerRunByIncidentId(incidentId: string): Promise<PlannerRunRow | null>;
+  insertReviewEvent(event: Partial<PlannerReviewEventRow>): Promise<PlannerReviewEventRow>;
+  getReviewEventsByRunId(plannerRunId: string): Promise<PlannerReviewEventRow[]>;
   getRecentReviewEvents(limit?: number): Promise<PlannerReviewEventRow[]>;
 }

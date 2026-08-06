@@ -1,5 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
-import { createAdminClient, PlannerRepository, type PlannerRunStatus } from "@/connectors/supabase";
+import { createAdminClient, type PlannerRunStatus } from "@/connectors/supabase";
+import { RepositoryFactory } from "@/repositories/RepositoryFactory";
 
 export const dynamic = "force-dynamic";
 
@@ -74,7 +75,7 @@ export async function POST(
     const note = body.note ? String(body.note).trim() : null;
 
     const dbClient = createAdminClient();
-    const repo = new PlannerRepository(dbClient);
+    const repo = RepositoryFactory.getPlannerRepository(dbClient);
 
     const run = await repo.getPlannerRunById(id);
     if (!run) {

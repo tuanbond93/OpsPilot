@@ -1,16 +1,17 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import * as supabaseConnector from "../connectors/supabase";
-import { AiJobRepository, PlannerRepository } from "@/connectors/supabase";
+import { MockAiJobRepository } from "@/repositories/mock/MockAiJobRepository";
 import { AiAnalysisWorker } from "../jobs/ai-analysis-worker";
 import { RootCauseAgent } from "../agents/root-cause";
 import { syncRillnet } from "../jobs/sync-rillnet";
 
 describe("Sprint 6.5 — AI Background Worker Tests", () => {
-  let mockJobRepo: AiJobRepository;
+  let mockJobRepo: MockAiJobRepository;
 
   beforeEach(() => {
     vi.restoreAllMocks();
-    mockJobRepo = new AiJobRepository(null);
+    mockJobRepo = new MockAiJobRepository();
+    mockJobRepo.clearMemory();
     RootCauseAgent.clearCache();
   });
 

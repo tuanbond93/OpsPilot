@@ -1,14 +1,15 @@
 import {
   createAdminClient,
-  AiJobRepository,
-  IncidentRepository,
   IncidentHistoryRepository,
-  FollowupRepository,
-  PlannerRepository,
   ExceptionRepository,
   type FollowupCaseRow,
   type IncidentHistoryRow,
 } from "@/connectors/supabase";
+import { RepositoryFactory } from "@/repositories/RepositoryFactory";
+import type { IAiJobRepository } from "@/repositories/interfaces/IAiJobRepository";
+import type { IIncidentRepository } from "@/repositories/interfaces/IIncidentRepository";
+import type { IFollowupRepository } from "@/repositories/interfaces/IFollowupRepository";
+import type { IPlannerRepository } from "@/repositories/interfaces/IPlannerRepository";
 import { RootCauseAgent } from "../agents/root-cause";
 import { ActionPlannerAgent } from "../agents/action-planner";
 import type { Incident, IncidentReasonCode } from "../engine/incident";
@@ -28,11 +29,11 @@ export interface WorkerProcessResult {
 
 export class AiAnalysisWorker {
   constructor(
-    private aiJobRepo?: AiJobRepository | null,
-    private incidentRepo?: IncidentRepository | null,
+    private aiJobRepo?: IAiJobRepository | null,
+    private incidentRepo?: IIncidentRepository | null,
     private historyRepo?: IncidentHistoryRepository | null,
-    private followupRepo?: FollowupRepository | null,
-    private plannerRepo?: PlannerRepository | null,
+    private followupRepo?: IFollowupRepository | null,
+    private plannerRepo?: IPlannerRepository | null,
     private exceptionRepo?: ExceptionRepository | null,
     private rootCauseAgent?: RootCauseAgent | null,
     private actionPlannerAgent?: ActionPlannerAgent | null
@@ -59,11 +60,11 @@ export class AiAnalysisWorker {
       // Fallback in-memory
     }
 
-    const jobRepo = this.aiJobRepo || new AiJobRepository(dbClient);
-    const incRepo = this.incidentRepo || (dbClient ? new IncidentRepository(dbClient) : null);
+    const jobRepo = this.aiJobRepo || RepositoryFactory.getAiJobRepository(dbClient);
+    const incRepo = this.incidentRepo || (dbClient ? RepositoryFactory.getIncidentRepository(dbClient) : null);
     const histRepo = this.historyRepo || (dbClient ? new IncidentHistoryRepository(dbClient) : null);
-    const folRepo = this.followupRepo || (dbClient ? new FollowupRepository(dbClient) : null);
-    const planRepo = this.plannerRepo || new PlannerRepository(dbClient);
+    const folRepo = this.followupRepo || (dbClient ? RepositoryFactory.getFollowupRepository(dbClient) : null);
+    const planRepo = this.plannerRepo || RepositoryFactory.getPlannerRepository(dbClient);
     const excRepo = this.exceptionRepo || (dbClient ? new ExceptionRepository(dbClient) : null);
 
     const rcAgent = this.rootCauseAgent || new RootCauseAgent();

@@ -1,5 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
-import { createAdminClient, FollowupRepository } from "@/connectors/supabase";
+import { createAdminClient } from "@/connectors/supabase";
+import { RepositoryFactory } from "@/repositories/RepositoryFactory";
 
 export const dynamic = "force-dynamic";
 
@@ -11,7 +12,7 @@ export async function GET(
 
   try {
     const dbClient = createAdminClient();
-    const repo = new FollowupRepository(dbClient);
+    const repo = RepositoryFactory.getFollowupRepository(dbClient);
 
     const followupCase = await repo.getCaseById(id);
 

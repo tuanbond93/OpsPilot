@@ -1,9 +1,9 @@
 import { NextResponse, type NextRequest } from "next/server";
 import {
   createAdminClient,
-  IncidentRepository,
   IncidentHistoryRepository,
 } from "@/connectors/supabase";
+import { RepositoryFactory } from "@/repositories/RepositoryFactory";
 
 export const dynamic = "force-dynamic";
 
@@ -15,7 +15,7 @@ export async function GET(
 
   try {
     const dbClient = createAdminClient();
-    const incidentRepo = new IncidentRepository(dbClient);
+    const incidentRepo = RepositoryFactory.getIncidentRepository(dbClient);
     const historyRepo = new IncidentHistoryRepository(dbClient);
 
     const incidentRow = await incidentRepo.getIncidentById(incidentId);

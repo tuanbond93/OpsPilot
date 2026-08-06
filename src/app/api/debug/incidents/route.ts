@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
-import { createAdminClient, IncidentRepository } from "@/connectors/supabase";
+import { createAdminClient } from "@/connectors/supabase";
+import { RepositoryFactory } from "@/repositories/RepositoryFactory";
 import { RillnetConnector } from "@/connectors/rillnet";
 import { aggregateIncidents } from "@/engine/incident";
 
@@ -9,7 +10,7 @@ export async function GET() {
   // Strategy 1: Try reading persisted open incidents from Supabase
   try {
     const dbClient = createAdminClient();
-    const repo = new IncidentRepository(dbClient);
+    const repo = RepositoryFactory.getIncidentRepository(dbClient);
     const dbIncidents = await repo.getOpenIncidents();
 
     if (dbIncidents.length > 0) {

@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { evaluateNextState } from "@/engine/followup";
-import { createAdminClient, FollowupRepository } from "@/connectors/supabase";
+import { createAdminClient } from "@/connectors/supabase";
+import { RepositoryFactory } from "@/repositories/RepositoryFactory";
 
 export const dynamic = "force-dynamic";
 
@@ -26,7 +27,7 @@ export async function POST(
     }
 
     const dbClient = createAdminClient();
-    const repo = new FollowupRepository(dbClient);
+    const repo = RepositoryFactory.getFollowupRepository(dbClient);
 
     const followupCase = await repo.getCaseById(id);
     if (!followupCase) {

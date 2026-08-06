@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 import { RepositoryFactory } from "@/repositories/RepositoryFactory";
 import { SupabaseFollowupRepository } from "@/repositories/supabase/SupabaseFollowupRepository";
 import { MockFollowupRepository } from "@/repositories/mock/MockFollowupRepository";
-import { FollowupRepository } from "@/connectors/supabase/repositories/followup-repository";
+
 
 describe("FollowupRepository Refactor Tests", () => {
   beforeEach(() => {
@@ -66,19 +66,5 @@ describe("FollowupRepository Refactor Tests", () => {
 
     const supabaseRepo = new SupabaseFollowupRepository(mockClient);
     await expect(supabaseRepo.getCaseById("id-100")).rejects.toThrow("Supabase lookup error");
-  });
-
-  it("Existing FollowupRepository adapter wrapper still works", async () => {
-    const adapter = new FollowupRepository(null);
-    const caseData = {
-      incident_id: "inc-adapter",
-      incident_key: "inc-key-adapter",
-      current_state: "NEW" as any,
-    };
-    const followupCase = await adapter.upsertCase(caseData);
-    expect(followupCase.incident_id).toBe("inc-adapter");
-
-    const fetched = await adapter.getCaseById(followupCase.id);
-    expect(fetched?.incident_key).toBe("inc-key-adapter");
   });
 });

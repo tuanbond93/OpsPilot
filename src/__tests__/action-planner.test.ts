@@ -11,13 +11,13 @@ import {
   getAllowedTargetRoles,
   getBlockedOptions,
 } from "../agents/action-planner";
-import { PlannerRepository } from "@/connectors/supabase/repositories/planner-repository";
+import { MockPlannerRepository } from "@/repositories/mock/MockPlannerRepository";
 import type { IncidentRow, IncidentHistoryRow, FollowupCaseRow, OrderExceptionRow } from "@/connectors/supabase";
 import type { NotificationActionRow } from "../engine/action-queue";
 import type { RootCauseResult } from "../agents/root-cause/schema";
 
 describe("Sprint 6 Phase 2 Final Hardened: Action Planner Tests", () => {
-  let mockRepo: PlannerRepository;
+  let mockRepo: MockPlannerRepository;
 
   const mockIncident: IncidentRow = {
     id: "123e4567-e89b-12d3-a456-426614174000",
@@ -67,7 +67,7 @@ describe("Sprint 6 Phase 2 Final Hardened: Action Planner Tests", () => {
 
   beforeEach(() => {
     vi.restoreAllMocks();
-    mockRepo = new PlannerRepository(null);
+    mockRepo = new MockPlannerRepository();
   });
 
   // 1. Uniqueness: Concurrent identical generation creates one DRAFT

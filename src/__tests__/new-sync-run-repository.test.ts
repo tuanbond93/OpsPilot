@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 import { RepositoryFactory } from "@/repositories/RepositoryFactory";
 import { SupabaseSyncRunRepository } from "@/repositories/supabase/SupabaseSyncRunRepository";
 import { MockSyncRunRepository } from "@/repositories/mock/MockSyncRunRepository";
-import { SyncRunRepository } from "@/connectors/supabase/repositories/sync-run-repository";
+
 
 describe("SyncRunRepository Refactor Tests", () => {
   beforeEach(() => {
@@ -64,12 +64,14 @@ describe("SyncRunRepository Refactor Tests", () => {
     await expect(supabaseRepo.createSyncRun()).rejects.toThrow("Supabase insert error");
   });
 
-  it("Existing SyncRunRepository adapter wrapper still works", async () => {
-    const adapter = new SyncRunRepository(null);
-    const run = await adapter.createSyncRun();
+  it("MockSyncRunRepository basic operations work", async () => {
+    const mockRepo = new MockSyncRunRepository();
+    const started = new Date().toISOString();
+    const run = await mockRepo.createSyncRun(started);
     expect(run.status).toBe("running");
+    expect(run.started_at).toBe(started);
 
-    const updated = await adapter.updateSuccess(run.id, {
+    const updated = await mockRepo.updateSuccess(run.id, {
       completedAt: new Date().toISOString(),
       fetchedOrderCount: 5,
       normalizedOrderCount: 5,

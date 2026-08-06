@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { GET } from "../app/api/dashboard/route";
+import { ServiceFactory } from "../services/ServiceFactory";
 
 describe("Sprint 7 Hardened — Executive Operations Control Center Tests", () => {
   const originalEnv = process.env;
@@ -109,4 +110,13 @@ describe("Sprint 7 Hardened — Executive Operations Control Center Tests", () =
     const json = await response.json();
     expect(json.writeControlsEnabled).toBe(false);
   });
+
+  it("5. Route delegates to DashboardService", async () => {
+    const spy = vi.spyOn(ServiceFactory, "getDashboardService");
+    const req = new Request("http://localhost:3000/api/dashboard");
+    await GET(req);
+    expect(spy).toHaveBeenCalled();
+    spy.mockRestore();
+  });
+
 });

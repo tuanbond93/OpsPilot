@@ -1,12 +1,13 @@
 import { NextResponse } from "next/server";
-import { createAdminClient, SyncRunRepository } from "@/connectors/supabase";
+import { createAdminClient } from "@/connectors/supabase";
+import { RepositoryFactory } from "@/repositories/RepositoryFactory";
 
 export const dynamic = "force-dynamic";
 
 export async function GET() {
   try {
     const dbClient = createAdminClient();
-    const repo = new SyncRunRepository(dbClient);
+    const repo = RepositoryFactory.getSyncRunRepository(dbClient);
     const runs = await repo.getLatestSyncRuns(10);
 
     // Sanitize output (no raw error stacks)

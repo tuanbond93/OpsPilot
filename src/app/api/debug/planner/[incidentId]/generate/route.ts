@@ -1,12 +1,10 @@
 import { NextResponse, type NextRequest } from "next/server";
 import {
   createAdminClient,
-  IncidentRepository,
   IncidentHistoryRepository,
-  FollowupRepository,
   ExceptionRepository,
-  PlannerRepository,
 } from "@/connectors/supabase";
+import { RepositoryFactory } from "@/repositories/RepositoryFactory";
 import { ActionQueue } from "@/engine/action-queue";
 import { RootCauseAgent } from "@/agents/root-cause";
 import { ActionPlannerAgent } from "@/agents/action-planner";
@@ -37,12 +35,12 @@ export async function POST(
     }
 
     const dbClient = createAdminClient();
-    const incidentRepo = new IncidentRepository(dbClient);
+    const incidentRepo = RepositoryFactory.getIncidentRepository(dbClient);
     const historyRepo = new IncidentHistoryRepository(dbClient);
-    const followupRepo = new FollowupRepository(dbClient);
+    const followupRepo = RepositoryFactory.getFollowupRepository(dbClient);
     const exceptionRepo = new ExceptionRepository(dbClient);
     const queue = new ActionQueue(dbClient);
-    const plannerRepo = new PlannerRepository(dbClient);
+    const plannerRepo = RepositoryFactory.getPlannerRepository(dbClient);
 
     const dbInc = await incidentRepo.getIncidentById(incidentId);
     if (!dbInc) {

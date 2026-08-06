@@ -1,4 +1,5 @@
-import { createAdminClient, FollowupRepository } from "../connectors/supabase";
+import { createAdminClient } from "../connectors/supabase";
+import { RepositoryFactory } from "@/repositories/RepositoryFactory";
 import { ActionQueue } from "../engine/action-queue";
 import { NotificationDispatcher, type DispatchSummary } from "../notifications";
 
@@ -22,7 +23,7 @@ export async function runNotificationDispatcherJob(
   try {
     const dbClient = createAdminClient();
     const actionQueue = new ActionQueue(dbClient);
-    const followupRepo = dbClient ? new FollowupRepository(dbClient) : null;
+    const followupRepo = dbClient ? RepositoryFactory.getFollowupRepository(dbClient) : null;
 
     const dispatcher = new NotificationDispatcher(actionQueue, followupRepo, workerId);
     const summary = await dispatcher.dispatchPendingActions(referenceTimeMs);

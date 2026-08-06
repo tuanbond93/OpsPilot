@@ -1,5 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
-import { createAdminClient, FollowupRepository } from "@/connectors/supabase";
+import { createAdminClient } from "@/connectors/supabase";
+import { RepositoryFactory } from "@/repositories/RepositoryFactory";
 import { ActionQueue } from "@/engine/action-queue";
 import { NotificationDispatcher } from "@/notifications";
 
@@ -65,7 +66,7 @@ export async function POST(
 
     const dbClient = createAdminClient();
     const queue = new ActionQueue(dbClient);
-    const followupRepo = dbClient ? new FollowupRepository(dbClient) : null;
+    const followupRepo = dbClient ? RepositoryFactory.getFollowupRepository(dbClient) : null;
 
     const action = await queue.getActionById(id);
     if (!action) {

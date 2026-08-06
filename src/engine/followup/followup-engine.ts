@@ -1,5 +1,6 @@
 import type { Incident } from "../incident";
-import type { IncidentHistoryRow, FollowupRepository, FollowupCaseRow } from "../../connectors/supabase";
+import type { IncidentHistoryRow, FollowupCaseRow } from "../../connectors/supabase";
+import type { IFollowupRepository } from "@/repositories/interfaces/IFollowupRepository";
 import { evaluateProgressAssessment } from "./assessment";
 import { evaluateNextState } from "./state-machine";
 import { executeStateTransition } from "./transition";
@@ -21,7 +22,7 @@ export interface ProcessedFollowupItem {
 
 export class FollowupEngine {
   constructor(
-    private followupRepo?: FollowupRepository | null,
+    private followupRepo?: IFollowupRepository | null,
     private actionQueue?: ActionQueue | null
   ) {}
 

@@ -4,9 +4,9 @@ import { aggregateIncidents } from "@/engine/incident";
 import { RootCauseAgent } from "@/agents/root-cause";
 import {
   createAdminClient,
-  IncidentRepository,
   IncidentHistoryRepository,
 } from "@/connectors/supabase";
+import { RepositoryFactory } from "@/repositories/RepositoryFactory";
 
 export const dynamic = "force-dynamic";
 
@@ -22,7 +22,7 @@ export async function GET(
   // Strategy 1: Fetch from Supabase DB
   try {
     const dbClient = createAdminClient();
-    const incidentRepo = new IncidentRepository(dbClient);
+    const incidentRepo = RepositoryFactory.getIncidentRepository(dbClient);
     const historyRepo = new IncidentHistoryRepository(dbClient);
 
     const dbInc = await incidentRepo.getIncidentById(incidentId);

@@ -4,8 +4,8 @@ import type {
   OrderExceptionRow,
   FollowupCaseRow,
   FollowupEventRow,
-  PlannerRepository,
 } from "@/connectors/supabase";
+import type { IPlannerRepository } from "@/repositories/interfaces/IPlannerRepository";
 import type { NotificationActionRow } from "../../engine/action-queue";
 import type { RootCauseResult } from "../root-cause/schema";
 import { generate } from "../../ai/provider";
@@ -49,7 +49,7 @@ export interface PlannerAgentResponse {
 }
 
 export class ActionPlannerAgent {
-  constructor(private repository?: PlannerRepository | null) {}
+  constructor(private repository?: IPlannerRepository | null) {}
 
   async analyzeIncident(params: PlannerAgentParams): Promise<PlannerAgentResponse> {
     const refTimeMs = params.referenceTimeMs || Date.now();

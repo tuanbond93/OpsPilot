@@ -4,7 +4,7 @@ import type { NotificationProvider, ProviderHealth } from "./providers/provider"
 import { ConsoleProvider } from "./providers/console";
 import { TelegramProvider } from "./providers/telegram";
 import { NotificationBuilder } from "./builder";
-import type { FollowupRepository } from "../connectors/supabase";
+import type { IFollowupRepository } from "@/repositories/interfaces/IFollowupRepository";
 import { evaluateNextState } from "../engine/followup";
 
 export interface DispatchSummary {
@@ -20,7 +20,7 @@ export class NotificationDispatcher {
 
   constructor(
     private queue: ActionQueue,
-    private followupRepo?: FollowupRepository | null,
+    private followupRepo?: IFollowupRepository | null,
     private workerId: string = "dispatcher-worker-1"
   ) {
     this.registerProvider(new ConsoleProvider());
