@@ -21,12 +21,15 @@ export class RillnetConnector {
     this.client = client || new RillnetClient();
   }
 
-  /**
-   * Fetches, decompresses, parses, and normalizes Rillnet snapshot orders
-   */
-  async fetchSnapshot(): Promise<RillnetFetchResult> {
-    const { downloadUrl, updatedAt } = await this.client.requestSnapshotUrl();
-    const buffer = await this.client.downloadSnapshotBuffer(downloadUrl);
+  async fetchSnapshotUrlOnly(): Promise<{ downloadUrl: string; updatedAt: string }> {
+    return await this.client.requestSnapshotUrl();
+  }
+
+  async downloadBufferOnly(downloadUrl: string): Promise<ArrayBuffer> {
+    return await this.client.downloadSnapshotBuffer(downloadUrl);
+  }
+
+  async parseSnapshotFromBuffer(buffer: ArrayBuffer, updatedAt: string): Promise<RillnetFetchResult> {
     const jsonText = await decompressSnapshot(buffer);
     const rawOrders = parseSnapshot(jsonText);
 
@@ -39,6 +42,15 @@ export class RillnetConnector {
       totalOrders: orders.length,
       orders,
     };
+  }
+
+  /**
+   * Fetches, decompresses, parses, and normalizes Rillnet snapshot orders
+   */
+  async fetchSnapshot(): Promise<RillnetFetchResult> {
+    const { downloadUrl, updatedAt } = await this.client.requestSnapshotUrl();
+    const buffer = await this.client.downloadSnapshotBuffer(downloadUrl);
+    return await this.parseSnapshotFromBuffer(buffer, updatedAt);
   }
 
   /**

@@ -1,6 +1,7 @@
+import createHash from "crypto";
 import { generate, loadPromptMetadata } from "../../ai";
 import type { Incident } from "../../engine/incident";
-import type { IncidentHistoryRow } from "../../connectors/supabase";
+import type { IncidentHistoryRow } from "@/connectors/supabase";
 import { buildRootCauseContext, type DeterministicContext } from "./context-builder";
 import { buildDeterministicEvidence, type EvidenceItem } from "./evidence-builder";
 import { calculateDeterministicRisk, type RiskResult } from "./risk-calculator";
@@ -17,17 +18,28 @@ export interface AgentAnalysisResponse {
     promptVersion: number;
     generatedAt: string;
   };
+  cached?: boolean;
+  contextHash?: string;
 }
 
 export class RootCauseAgent {
+  private static cache = new Map<string, AgentAnalysisResponse>();
+
+  /**
+   * Clears the in-memory cache for unit testing
+   */
+  static clearCache(): void {
+    RootCauseAgent.cache.clear();
+  }
+
   /**
    * Analyzes an operational incident using Event Store metrics & deterministic risk engine.
-   * Explains evidence in operational language without issuing unauthorized operational commands.
+   * Became cache-aware in Sprint 6.5: returns cached result if identical context hash exists.
    */
   async analyzeIncident(
     incident: Incident,
     historyRows: IncidentHistoryRow[] = [],
-    options: { provider?: string; temperature?: number; model?: string } = {}
+    options: { provider?: string; temperature?: number; model?: string; forceRegenerate?: boolean } = {}
   ): Promise<AgentAnalysisResponse> {
     const referenceTimeMs = Date.now();
     const generatedAt = new Date(referenceTimeMs).toISOString();
@@ -50,6 +62,30 @@ export class RootCauseAgent {
       promptMeta = { name: "rootcause", version: 2, language: "vi", content: "" };
     }
 
+    // 5. Compute canonical context hash
+    const canonicalPayload = JSON.stringify({
+      incidentId: incident.incidentId || incident.incidentKey,
+      incidentKey: incident.incidentKey,
+      reasonCode: incident.reasonCode,
+      currentAffectedCount: context.currentAffectedCount,
+      trendAssessment: context.trendAssessment,
+      riskScore: risk.score,
+      riskLevel: risk.level,
+      evidenceCodes: Array.from(validEvidenceCodes).sort(),
+      promptVersion: promptMeta.version,
+    });
+    const contextHash = createHash.createHash("sha256").update(canonicalPayload).digest("hex");
+
+    // 6. Cache Check: Return cached response if context hash matches and forceRegenerate is false
+    if (!options.forceRegenerate && RootCauseAgent.cache.has(contextHash)) {
+      const cachedResult = RootCauseAgent.cache.get(contextHash)!;
+      return {
+        ...cachedResult,
+        cached: true,
+        contextHash,
+      };
+    }
+
     const inputForAI = {
       incidentContext: context,
       verifiedEvidence: evidence,
@@ -59,37 +95,54 @@ export class RootCauseAgent {
 
     const systemPrompt = `You are the Lead Logistics Operations Investigator for OpsPilot. Prompt Version: ${promptMeta.version}. Answer in Vietnamese using strictly the supplied evidence codes and deterministic risk. Return valid JSON only.`;
 
-    let providerName = options.provider || process.env.AI_PROVIDER || "openai";
-    let modelName = options.model || (providerName === "gemini" ? "gemini-1.5-flash" : "gpt-4o-mini");
-
-    let analysis: RootCauseResult;
+    let response;
+    const selectedProvider = options.provider || "openai";
 
     try {
-      const response = await generate("rootcause", inputForAI, {
-        provider: providerName,
-        temperature: options.temperature ?? 0.1,
-        model: modelName,
+      response = await generate("rootcause", JSON.stringify(inputForAI), {
         systemPrompt,
+        temperature: options.temperature ?? 0.2,
+        provider: selectedProvider,
+        model: options.model,
       });
-
-      modelName = response.model || modelName;
-      analysis = parseRootCauseResult(response.text, risk, validEvidenceCodes, context);
-    } catch (err: unknown) {
-      const errorMsg = err instanceof Error ? err.message : String(err);
-      analysis = createFallbackResult(context, risk, `AI explanation offline: ${errorMsg}`);
+    } catch {
+      const fallbackAnalysis = createFallbackResult(context, risk);
+      const fallbackResult: AgentAnalysisResponse = {
+        analysis: fallbackAnalysis,
+        context,
+        evidence,
+        risk,
+        metadata: {
+          provider: "deterministic_fallback",
+          model: "none",
+          promptVersion: promptMeta.version,
+          generatedAt,
+        },
+        cached: false,
+        contextHash,
+      };
+      RootCauseAgent.cache.set(contextHash, fallbackResult);
+      return fallbackResult;
     }
 
-    return {
-      analysis,
+    const analysisResult = parseRootCauseResult(response.text, risk, validEvidenceCodes, context);
+
+    const finalResult: AgentAnalysisResponse = {
+      analysis: analysisResult,
       context,
       evidence,
       risk,
       metadata: {
-        provider: providerName,
-        model: modelName,
+        provider: selectedProvider,
+        model: response.model,
         promptVersion: promptMeta.version,
         generatedAt,
       },
+      cached: false,
+      contextHash,
     };
+
+    RootCauseAgent.cache.set(contextHash, finalResult);
+    return finalResult;
   }
 }

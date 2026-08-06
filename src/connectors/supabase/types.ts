@@ -143,3 +143,50 @@ export interface FollowupEventRow {
   notes?: string | null;
   created_at?: string;
 }
+
+export type PlannerRunStatus = "DRAFT" | "APPROVED" | "REJECTED" | "EXPIRED";
+export type PlannerReviewEventType = "CREATED" | "APPROVED" | "REJECTED" | "EXPIRED" | "REGENERATED";
+
+export interface PlannerRunRow {
+  id: string;
+  incident_id: string;
+  followup_case_id?: string | null;
+  status: PlannerRunStatus;
+  context_hash: string;
+  prompt_version: number;
+  provider: string;
+  model: string;
+  result: Record<string, unknown>;
+  created_at?: string;
+  reviewed_at?: string | null;
+  reviewed_by?: string | null;
+}
+
+export interface PlannerReviewEventRow {
+  id: string;
+  planner_run_id: string;
+  event_type: PlannerReviewEventType;
+  actor: string;
+  note?: string | null;
+  created_at?: string;
+}
+
+export type AiJobStatus = "PENDING" | "PROCESSING" | "COMPLETED" | "FAILED" | "CANCELLED";
+export type AiJobPriority = "low" | "medium" | "high" | "urgent";
+
+export interface AiAnalysisJobRow {
+  id: string;
+  incident_id: string;
+  priority: AiJobPriority;
+  status: AiJobStatus;
+  attempt_count: number;
+  max_attempts: number;
+  scheduled_at: string;
+  started_at?: string | null;
+  completed_at?: string | null;
+  locked_at?: string | null;
+  worker_id?: string | null;
+  last_error?: string | null;
+  created_at?: string;
+  updated_at?: string;
+}

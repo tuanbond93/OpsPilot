@@ -1,34 +1,39 @@
 import { RillnetConnector } from "@/connectors/rillnet";
 import { aggregateIncidents, type Incident } from "@/engine/incident";
-import { createAdminClient, IncidentRepository } from "@/connectors/supabase";
+import { createAdminClient } from "@/connectors/supabase";
 
 export const dynamic = "force-dynamic";
 
 async function getOperationsData(): Promise<Incident[]> {
-  // Strategy 1: Read from Supabase DB server-side
   try {
     const dbClient = createAdminClient();
-    const repo = new IncidentRepository(dbClient);
-    const dbIncidents = await repo.getOpenIncidents();
+    
+    // Phase 6 - Dashboard API Migration: Read strictly from incident_summary read model.
+    const { data: dbIncidents, error } = await dbClient
+      .from("incident_summary")
+      .select("*");
 
-    if (dbIncidents.length > 0) {
-      return dbIncidents.map((inc) => ({
-        incidentId: inc.id,
-        incidentKey: inc.incident_key,
-        warehouseId: inc.warehouse_id,
-        warehouseName: inc.warehouse_name || "Kho chưa xác định",
-        reasonCode: inc.reason_code as any,
-        reasonName: inc.reason_name,
-        status: inc.status as any,
-        priorityScore: inc.priority_score,
-        firstDetectedAt: inc.first_detected_at,
-        lastDetectedAt: inc.last_detected_at,
-        affectedOrderCount: 0,
-        sampleOrderCodes: [],
-        averageAgeHours: null,
-        maximumAgeHours: null,
-        oldestOrderCode: null,
-      }));
+    if (!error && dbIncidents && dbIncidents.length > 0) {
+      return dbIncidents.map((inc: any) => {
+        const riskMap = inc.risk ? (typeof inc.risk === "string" ? JSON.parse(inc.risk) : inc.risk) : { score: 50, level: "medium" };
+        return {
+          incidentId: inc.incident_id,
+          incidentKey: inc.incident_key || `INC-${inc.incident_id.slice(0, 8)}`,
+          warehouseId: inc.warehouse_id || "default",
+          warehouseName: inc.warehouse_name || "Kho hàng",
+          reasonCode: inc.reason_code || "UNKNOWN",
+          reasonName: inc.reason_name || "Lỗi vận hành",
+          status: inc.status || "open",
+          priorityScore: riskMap.score || 50,
+          firstDetectedAt: inc.first_detected_at || new Date().toISOString(),
+          lastDetectedAt: inc.last_detected_at || new Date().toISOString(),
+          affectedOrderCount: inc.affected_order_count || 0,
+          sampleOrderCodes: [],
+          averageAgeHours: inc.average_age_hours || null,
+          maximumAgeHours: inc.maximum_age_hours || null,
+          oldestOrderCode: null,
+        };
+      });
     }
   } catch {
     // Fallback to server-side live snapshot evaluation

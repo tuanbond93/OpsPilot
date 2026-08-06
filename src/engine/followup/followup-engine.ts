@@ -5,7 +5,7 @@ import { evaluateNextState } from "./state-machine";
 import { executeStateTransition } from "./transition";
 import { FollowupMessageBuilder, type StructuredFollowupPayload } from "./message-builder";
 import { DEFAULT_FOLLOWUP_CONFIG, type FollowupConfig } from "../../config/followup";
-import { RootCauseAgent } from "../../agents/root-cause";
+import { ActionQueue, Deduplicator, type ActionType } from "../action-queue";
 
 export interface ProcessedFollowupItem {
   incidentId: string;
@@ -22,14 +22,14 @@ export interface ProcessedFollowupItem {
 export class FollowupEngine {
   constructor(
     private followupRepo?: FollowupRepository | null,
-    private rootCauseAgent?: RootCauseAgent | null
+    private actionQueue?: ActionQueue | null
   ) {}
 
   /**
    * Processes all current operational incidents through the Follow-up State Machine.
    * Uses batched repository queries to prevent N+1 DB overhead.
    * State transitions and escalation decisions are 100% deterministic.
-   * AI (RootCauseAgent) only provides text summary explanations.
+   * NEVER invokes AI directly during sync.
    */
   async processIncidentFollowups(
     incidents: Incident[],
@@ -38,7 +38,6 @@ export class FollowupEngine {
     referenceTimeMs: number = Date.now()
   ): Promise<ProcessedFollowupItem[]> {
     const results: ProcessedFollowupItem[] = [];
-    const rootAgent = this.rootCauseAgent || new RootCauseAgent();
 
     // 1. Batch fetch existing cases using incident_keys to eliminate N+1 queries
     const incidentKeys = incidents.map((inc) => inc.incidentKey || inc.incidentId);
@@ -118,14 +117,8 @@ export class FollowupEngine {
         referenceTimeMs
       );
 
-      // AI provides explanation summary text ONLY
-      let rootCauseSummary = "Theo dõi tồn đọng vận hành.";
-      try {
-        const agentAnalysis = await rootAgent.analyzeIncident(incident, historyRows);
-        rootCauseSummary = agentAnalysis.analysis.summary;
-      } catch {
-        // Fallback
-      }
+      // Deterministic default summary text (AI background worker processes explanations asynchronously)
+      const rootCauseSummary = "Theo dõi tồn đọng vận hành.";
 
       const payload = FollowupMessageBuilder.buildPayload({
         warehouse: incident.warehouseName,
@@ -158,6 +151,28 @@ export class FollowupEngine {
         },
         this.followupRepo
       );
+
+      // Decoupled Action Enqueueing: Create notification action if pending action requested
+      if (this.actionQueue && transitionResult.newState.includes("PENDING")) {
+        let actionType: ActionType = "FIRST_PUSH";
+        if (transitionResult.newState === "SECOND_PUSH_PENDING") actionType = "SECOND_PUSH";
+        if (transitionResult.newState === "ESCALATION_PENDING") actionType = "ESCALATION";
+
+        const dedupKey = Deduplicator.generateKey(incKey, actionType, transitionResult.oldState);
+        await this.actionQueue.enqueueAction({
+          actionType,
+          provider: "console",
+          targetType: actionType === "ESCALATION" ? "MANAGER" : "WAREHOUSE",
+          targetId: incident.warehouseId || incident.warehouseName,
+          payload: {
+            ...payload,
+            incidentId: incident.incidentId,
+            incidentKey: incKey,
+          },
+          deduplicationKey: dedupKey,
+          priority: actionType === "ESCALATION" ? "urgent" : "high",
+        });
+      }
 
       results.push({
         incidentId: incident.incidentId,

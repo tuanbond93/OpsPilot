@@ -1,9 +1,16 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { IncidentHistoryRow } from "../types";
 import type { Incident } from "@/engine/incident";
+import { isFallbackAllowed } from "../fallback-policy";
 
 export class IncidentHistoryRepository {
-  constructor(private client: SupabaseClient) {}
+  private inMemoryHistory: IncidentHistoryRow[] = [];
+
+  constructor(private client?: SupabaseClient | null) {}
+
+  clearMemory(): void {
+    this.inMemoryHistory = [];
+  }
 
   /**
    * Inserts history snapshot for each current incident
@@ -28,71 +35,95 @@ export class IncidentHistoryRepository {
         sync_run_id: syncRunId,
         recorded_at: recordedAt,
         affected_order_count: inc.affectedOrderCount,
-        average_age_hours: inc.averageAgeHours,
-        maximum_age_hours: inc.maximumAgeHours,
-        oldest_order_code: inc.oldestOrderCode,
+        average_age_hours: inc.averageAgeHours ? Math.round(inc.averageAgeHours * 10) / 10 : undefined,
+        maximum_age_hours: inc.maximumAgeHours ? Math.round(inc.maximumAgeHours * 10) / 10 : undefined,
         priority_score: Math.round(inc.priorityScore),
-        sample_order_codes: inc.sampleOrderCodes.slice(0, 5),
+        sample_order_codes: inc.sampleOrderCodes ? inc.sampleOrderCodes.slice(0, 5) : [],
       });
     }
 
     if (rows.length === 0) return 0;
 
-    const { error } = await this.client
-      .from("incident_history")
-      .upsert(rows, {
-        onConflict: "incident_id,sync_run_id",
-        ignoreDuplicates: true,
-      });
+    if (this.client) {
+      try {
+        const { data, error } = await this.client
+          .from("incident_history")
+          .upsert(rows, {
+            onConflict: "incident_id,sync_run_id",
+          })
+          .select();
 
-    if (error) {
-      throw new Error(`IncidentHistoryRepository.insertHistoryRecords failed: ${error.message}`);
+        if (!error && data) return data.length;
+        if (!isFallbackAllowed()) throw error || new Error("Insert history records failed");
+      } catch (err) {
+        if (!isFallbackAllowed()) throw err;
+      }
+    } else if (!isFallbackAllowed()) {
+      throw new Error("SupabaseClient unavailable in production mode");
     }
 
+    this.inMemoryHistory.push(...rows);
     return rows.length;
   }
 
-  async getIncidentHistory(incidentId: string): Promise<IncidentHistoryRow[]> {
-    const { data, error } = await this.client
-      .from("incident_history")
-      .select("*")
-      .eq("incident_id", incidentId)
-      .order("recorded_at", { ascending: false });
-
-    if (error) {
-      throw new Error(`IncidentHistoryRepository.getIncidentHistory failed: ${error.message}`);
-    }
-
-    return (data || []) as IncidentHistoryRow[];
-  }
-
   /**
-   * Batch fetches history records for multiple incident IDs in a single database query.
-   * Prevents N+1 database queries during sync & follow-up processing.
+   * Batch fetches histories for multiple incident IDs in one single query.
+   * Prevents N+1 database queries inside loops.
    */
-  async getHistoriesByIncidentIds(incidentIds: string[]): Promise<Map<string, IncidentHistoryRow[]>> {
-    const historyMap = new Map<string, IncidentHistoryRow[]>();
-    if (incidentIds.length === 0) return historyMap;
-
-    const { data, error } = await this.client
-      .from("incident_history")
-      .select("*")
-      .in("incident_id", incidentIds)
-      .order("recorded_at", { ascending: true });
-
-    if (error) {
-      throw new Error(`IncidentHistoryRepository.getHistoriesByIncidentIds failed: ${error.message}`);
+  async getHistoriesByIncidentIds(
+    incidentIds: string[]
+  ): Promise<Map<string, IncidentHistoryRow[]>> {
+    const resultMap = new Map<string, IncidentHistoryRow[]>();
+    for (const id of incidentIds) {
+      resultMap.set(id, []);
     }
 
-    for (const row of (data || []) as IncidentHistoryRow[]) {
-      const existing = historyMap.get(row.incident_id);
-      if (existing) {
-        existing.push(row);
-      } else {
-        historyMap.set(row.incident_id, [row]);
+    if (incidentIds.length === 0) return resultMap;
+
+    if (this.client) {
+      try {
+        const { data, error } = await this.client
+          .from("incident_history")
+          .select("*")
+          .in("incident_id", incidentIds)
+          .order("incident_id", { ascending: true })
+          .order("recorded_at", { ascending: false });
+
+        if (!error && data) {
+          for (const row of data as IncidentHistoryRow[]) {
+            const list = resultMap.get(row.incident_id);
+            if (list) {
+              list.push(row);
+            }
+          }
+          return resultMap;
+        }
+        if (!isFallbackAllowed()) throw error || new Error("Batch fetch history failed");
+      } catch (err) {
+        if (!isFallbackAllowed()) throw err;
+      }
+    } else if (!isFallbackAllowed()) {
+      throw new Error("SupabaseClient unavailable in production mode");
+    }
+
+    for (const row of this.inMemoryHistory) {
+      if (incidentIds.includes(row.incident_id)) {
+        const list = resultMap.get(row.incident_id);
+        if (list) {
+          list.push(row);
+        }
       }
     }
 
-    return historyMap;
+    return resultMap;
+  }
+
+  async getHistoryByIncidentId(incidentId: string): Promise<IncidentHistoryRow[]> {
+    const map = await this.getHistoriesByIncidentIds([incidentId]);
+    return map.get(incidentId) || [];
+  }
+
+  async getIncidentHistory(incidentId: string): Promise<IncidentHistoryRow[]> {
+    return this.getHistoryByIncidentId(incidentId);
   }
 }

@@ -1,0 +1,192 @@
+import type { SupabaseClient } from "@supabase/supabase-js";
+import type { ProjectionResult } from "./projection-engine";
+
+export interface NotificationSummaryDto {
+  incident_id: string; // UUID
+  pending: number; // Integer
+  sent: number; // Integer
+  failed: number; // Integer
+  retry: number; // Integer
+  simulation: boolean; // Boolean
+  last_delivery: string | null; // Timestamp
+}
+
+/**
+ * Builds and applies the Notification Projection read model.
+ */
+export async function projectNotification(client: SupabaseClient): Promise<ProjectionResult> {
+  const startTime = Date.now();
+  console.log("[Projection][Notification] started");
+
+  try {
+    // 1. Fetch active incidents (status: open or monitoring) to know which ones are present
+    const { data: activeIncidents, error: incidentsError } = await client
+      .from("incidents")
+      .select("id, incident_key")
+      .in("status", ["open", "monitoring"]);
+
+    if (incidentsError) {
+      throw new Error(`Failed to fetch active incidents: ${incidentsError.message}`);
+    }
+
+    const incidentIds = (activeIncidents || []).map((inc) => inc.id);
+    const incidentKeyToIdMap = new Map<string, string>();
+    for (const inc of activeIncidents || []) {
+      incidentKeyToIdMap.set(inc.incident_key, inc.id);
+    }
+
+    console.log(`Source query filters: status in ('open', 'monitoring')`);
+
+    // 2. Query ALL notification actions (no sync_run filter)
+    const { data: notificationActions, error: notificationActionsError } = await client
+      .from("notification_actions")
+      .select("id, target_id, status, provider, provider_response, processed_at, payload, created_at");
+
+    if (notificationActionsError) {
+      throw new Error(`Notification actions query failed: ${notificationActionsError.message}`);
+    }
+
+    console.log(`Total notification_actions in source: ${notificationActions?.length || 0}`);
+
+    // 3. Map notification actions to active incident IDs.
+    // notification_actions has a target_id, but target_id could be a warehouse_id, or payload contains incident_id/incidentKey.
+    const actionsByIncident = new Map<string, typeof notificationActions>();
+    let unmappedCount = 0;
+
+    for (const action of notificationActions || []) {
+      let mappedIncidentId: string | null = null;
+
+      // Check if target_id directly matches an active incident ID
+      if (action.target_id && incidentIds.includes(action.target_id)) {
+        mappedIncidentId = action.target_id;
+      } else if (action.payload && typeof action.payload === "object") {
+        // Try extracting incidentId or incidentKey from payload
+        const payloadObj = action.payload as any;
+        const payloadIncidentId = payloadObj.incidentId || payloadObj.incident_id;
+        const payloadIncidentKey = payloadObj.incidentKey || payloadObj.incident_key;
+
+        if (payloadIncidentId && incidentIds.includes(payloadIncidentId)) {
+          mappedIncidentId = payloadIncidentId;
+        } else if (payloadIncidentKey && incidentKeyToIdMap.has(payloadIncidentKey)) {
+          mappedIncidentId = incidentKeyToIdMap.get(payloadIncidentKey)!;
+        }
+      }
+
+      if (mappedIncidentId) {
+        const list = actionsByIncident.get(mappedIncidentId) || [];
+        list.push(action);
+        actionsByIncident.set(mappedIncidentId, list);
+      } else {
+        unmappedCount++;
+      }
+    }
+
+    console.log(`Loaded notification actions: ${notificationActions?.length || 0}`);
+    console.log(`Distinct incident IDs: ${actionsByIncident.size}`);
+
+    if (unmappedCount > 0) {
+      console.log(`[Projection][Notification] unmapped actions: ${unmappedCount}`);
+    }
+
+    const dtos: NotificationSummaryDto[] = [];
+    const notificationIds: string[] = [];
+
+    for (const incidentId of incidentIds) {
+      const actions = actionsByIncident.get(incidentId) || [];
+      if (actions.length === 0) {
+        continue;
+      }
+
+      let pending = 0;
+      let sent = 0;
+      let failed = 0;
+      let retry = 0;
+      let simulation = false;
+      let lastDelivery: string | null = null;
+
+      for (const action of actions) {
+        const status = action.status || "PENDING";
+        if (status === "PENDING" || status === "PROCESSING") {
+          pending++;
+        } else if (status === "SENT") {
+          sent++;
+        } else if (status === "FAILED" || status === "CANCELLED" || status === "EXPIRED") {
+          failed++;
+        } else if (status === "RETRY") {
+          retry++;
+        }
+
+        // Determine if simulation is true
+        if (
+          action.status === "SIMULATED" ||
+          action.provider === "console" ||
+          (action.provider_response && (action.provider_response as any).simulated === true)
+        ) {
+          simulation = true;
+        }
+
+        // Keep track of the most recent delivery timestamp (processed_at)
+        if (action.processed_at) {
+          if (!lastDelivery || new Date(action.processed_at).getTime() > new Date(lastDelivery).getTime()) {
+            lastDelivery = action.processed_at;
+          }
+        }
+      }
+
+      dtos.push({
+        incident_id: incidentId,
+        pending,
+        sent,
+        failed,
+        retry,
+        simulation,
+        last_delivery: lastDelivery,
+      });
+      notificationIds.push(incidentId);
+    }
+
+    console.log("DTO count: " + dtos.length);
+
+    if (dtos.length === 0) {
+      console.log("[Projection][Notification] finished rowsUpdated=0");
+      console.log("[Projection][Notification] rows.length == 0: constructed dtos array is empty");
+      return {
+        status: "success",
+        rowsUpdated: 0,
+        durationMs: Date.now() - startTime,
+      };
+    }
+
+    console.log("Calling RPC...");
+    const { error: rpcError } = await client.rpc("upsert_notification_summary", {
+      rows: dtos,
+      present_ids: notificationIds,
+    });
+
+    if (rpcError) {
+      console.error("Full RPC Error Object:", JSON.stringify(rpcError, null, 2));
+      throw new Error(`RPC upsert_notification_summary failed: ${rpcError.message}`);
+    }
+
+    console.log("RPC success");
+    const rowsUpdated = dtos.length;
+    console.log(`rowsUpdated=${rowsUpdated}`);
+    console.log("[Projection][Notification] finished");
+
+    return {
+      status: "success",
+      rowsUpdated,
+      durationMs: Date.now() - startTime,
+    };
+  } catch (error: any) {
+    const errorMessage = error.message || String(error);
+    console.error(`[Projection][Notification] failed ${errorMessage}`, error);
+    return {
+      status: "failed",
+      rowsUpdated: 0,
+      durationMs: Date.now() - startTime,
+      errorCode: error.code || "PROJECTION_ERROR",
+      errorMessage,
+    };
+  }
+}

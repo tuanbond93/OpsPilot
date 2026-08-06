@@ -1,9 +1,16 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { IncidentRow, IncidentDbStatus } from "../types";
 import type { Incident } from "@/engine/incident";
+import { isFallbackAllowed } from "../fallback-policy";
 
 export class IncidentRepository {
-  constructor(private client: SupabaseClient) {}
+  private inMemoryIncidents: IncidentRow[] = [];
+
+  constructor(private client?: SupabaseClient | null) {}
+
+  clearMemory(): void {
+    this.inMemoryIncidents = [];
+  }
 
   /**
    * Upserts active incidents using stable incident_key
@@ -28,18 +35,44 @@ export class IncidentRepository {
       resolved_at: null,
     }));
 
-    const { data, error } = await this.client
-      .from("incidents")
-      .upsert(rows, {
-        onConflict: "incident_key",
-      })
-      .select();
+    if (this.client) {
+      try {
+        const { data, error } = await this.client
+          .from("incidents")
+          .upsert(rows, {
+            onConflict: "incident_key",
+          })
+          .select();
 
-    if (error) {
-      throw new Error(`IncidentRepository.upsertIncidents failed: ${error.message}`);
+        if (!error && data) {
+          return data as IncidentRow[];
+        }
+        if (!isFallbackAllowed()) {
+          throw error || new Error("IncidentRepository.upsertIncidents DB call failed");
+        }
+      } catch (err) {
+        if (!isFallbackAllowed()) throw err;
+      }
+    } else if (!isFallbackAllowed()) {
+      throw new Error("SupabaseClient unavailable in production mode");
     }
 
-    return (data || []) as IncidentRow[];
+    // In-memory fallback
+    const resultRows: IncidentRow[] = [];
+    for (const r of rows) {
+      const idx = this.inMemoryIncidents.findIndex((item) => item.incident_key === r.incident_key);
+      const fullRow: IncidentRow = {
+        id: idx >= 0 ? this.inMemoryIncidents[idx].id : `inc-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+        ...r,
+      };
+      if (idx >= 0) {
+        this.inMemoryIncidents[idx] = fullRow;
+      } else {
+        this.inMemoryIncidents.push(fullRow);
+      }
+      resultRows.push(fullRow);
+    }
+    return resultRows;
   }
 
   /**
@@ -50,53 +83,94 @@ export class IncidentRepository {
     syncRunId: string,
     resolvedAt: string = new Date().toISOString()
   ): Promise<number> {
-    let query = this.client
-      .from("incidents")
-      .update({
-        status: "resolved" as IncidentDbStatus,
-        resolved_at: resolvedAt,
-      })
-      .in("status", ["open", "monitoring"]);
+    if (this.client) {
+      try {
+        let query = this.client
+          .from("incidents")
+          .update({
+            status: "resolved" as IncidentDbStatus,
+            resolved_at: resolvedAt,
+          })
+          .in("status", ["open", "monitoring"]);
 
-    if (currentActiveKeys.length > 0) {
-      // In Supabase SQL filter: not in list of active keys
-      query = query.not("incident_key", "in", `(${currentActiveKeys.map((k) => `"${k}"`).join(",")})`);
+        if (currentActiveKeys.length > 0) {
+          query = query.not("incident_key", "in", `(${currentActiveKeys.map((k) => `"${k}"`).join(",")})`);
+        }
+
+        const { data, error } = await query.select();
+        if (!error && data) {
+          return data.length;
+        }
+        if (!isFallbackAllowed()) {
+          throw error || new Error("IncidentRepository.resolveAbsentIncidents DB call failed");
+        }
+      } catch (err) {
+        if (!isFallbackAllowed()) throw err;
+      }
+    } else if (!isFallbackAllowed()) {
+      throw new Error("SupabaseClient unavailable in production mode");
     }
 
-    const { data, error } = await query.select();
-
-    if (error) {
-      throw new Error(`IncidentRepository.resolveAbsentIncidents failed: ${error.message}`);
+    let count = 0;
+    for (const inc of this.inMemoryIncidents) {
+      if ((inc.status === "open" || inc.status === "monitoring") && !currentActiveKeys.includes(inc.incident_key)) {
+        inc.status = "resolved";
+        inc.resolved_at = resolvedAt;
+        count++;
+      }
     }
-
-    return (data || []).length;
+    return count;
   }
 
   async getOpenIncidents(): Promise<IncidentRow[]> {
-    const { data, error } = await this.client
-      .from("incidents")
-      .select("*")
-      .in("status", ["open", "monitoring"])
-      .order("priority_score", { ascending: false });
+    if (this.client) {
+      try {
+        const { data, error } = await this.client
+          .from("incidents")
+          .select("*")
+          .in("status", ["open", "monitoring"])
+          .order("priority_score", { ascending: false });
 
-    if (error) {
-      throw new Error(`IncidentRepository.getOpenIncidents failed: ${error.message}`);
+        if (!error && data) {
+          return data as IncidentRow[];
+        }
+        if (!isFallbackAllowed()) {
+          throw error || new Error("IncidentRepository.getOpenIncidents DB query failed");
+        }
+      } catch (err) {
+        if (!isFallbackAllowed()) throw err;
+      }
+    } else if (!isFallbackAllowed()) {
+      throw new Error("SupabaseClient unavailable in production mode");
     }
 
-    return (data || []) as IncidentRow[];
+    return this.inMemoryIncidents
+      .filter((i) => i.status === "open" || i.status === "monitoring")
+      .sort((a, b) => b.priority_score - a.priority_score);
   }
 
   async getIncidentById(id: string): Promise<IncidentRow | null> {
-    const { data, error } = await this.client
-      .from("incidents")
-      .select("*")
-      .or(`id.eq.${id},incident_key.eq.${id}`)
-      .maybeSingle();
+    if (this.client) {
+      try {
+        const { data, error } = await this.client
+          .from("incidents")
+          .select("*")
+          .or(`id.eq.${id},incident_key.eq.${id}`)
+          .maybeSingle();
 
-    if (error) {
-      return null;
+        if (!error && data) {
+          return data as IncidentRow;
+        }
+        if (!isFallbackAllowed() && error) {
+          throw error;
+        }
+      } catch (err) {
+        if (!isFallbackAllowed()) throw err;
+      }
+    } else if (!isFallbackAllowed()) {
+      throw new Error("SupabaseClient unavailable in production mode");
     }
 
-    return (data as IncidentRow) || null;
+    return this.inMemoryIncidents.find((i) => i.id === id || i.incident_key === id) || null;
   }
 }
