@@ -12,6 +12,7 @@ import { aggregateIncidents, inspectOrderForIncident, REASON_CODE_MAP } from "@/
 import { FollowupEngine } from "@/engine/followup";
 import { ActionQueue } from "@/engine/action-queue";
 import { refresh } from "@/projections/projection-engine";
+import { logRuntimeError, logRuntimeMessage } from "@/observability/runtimeDiagnostics";
 
 export class SyncService implements ISyncService {
   constructor(
@@ -33,6 +34,20 @@ export class SyncService implements ISyncService {
     const phaseTimings: Record<string, number> = {};
     const dbPhases: Record<string, PhaseTimingInfo> = {};
     let totalQueries = 0;
+    const phaseStarts = new Map<string, { monotonicMs: number; startedAt: string }>();
+
+    function logPhaseStart(name: string): void {
+      const startedAt = new Date().toISOString();
+      phaseStarts.set(name, { monotonicMs: performance.now(), startedAt });
+      logRuntimeMessage("[SyncRuntime] phase=" + name + " event=start startedAt=" + startedAt);
+    }
+
+    function logPhaseEnd(name: string, rowCount: number, status: "success" | "failed" = "success"): void {
+      const start = phaseStarts.get(name);
+      const finishedAt = new Date().toISOString();
+      const durationMs = start ? Math.max(0, Math.round((performance.now() - start.monotonicMs) * 100) / 100) : 0;
+      logRuntimeMessage("[SyncRuntime] phase=" + name + " event=end startedAt=" + (start?.startedAt || "unknown") + " finishedAt=" + finishedAt + " durationMs=" + durationMs + " rowCount=" + rowCount + " status=" + status);
+    }
 
     function recordPhase(
       name: string,
@@ -56,6 +71,7 @@ export class SyncService implements ISyncService {
         details,
       };
 
+      logPhaseEnd(name, rowsProcessed);
       console.log(
         `[SyncRillnet Performance Instrumentation] Phase: ${name} | Duration: ${roundedDuration}ms | Queries: ${queryCount} | Rows: ${rowsProcessed} | Batches: ${batchCount} (size: ${batchSize})${
           details ? ` | Note: ${details}` : ""
@@ -68,7 +84,7 @@ export class SyncService implements ISyncService {
       {
         category: "DB_AWAITS_INSIDE_LOOP",
         description:
-          "executeStateTransition() performs sequential single-row upserts to followup_cases and inserts to followup_events inside the active/disappeared incident loops instead of batching.",
+          "FollowupEngine now batches case upserts and event inserts; remaining persistence work is bounded by active and disappeared case/event batches.",
         fileAndLine: "src/engine/followup/followup-engine.ts:149, 231",
       },
       {
@@ -87,6 +103,7 @@ export class SyncService implements ISyncService {
 
     // 1. Create sync_runs row (status = running)
     const tCreateStart = performance.now();
+    logPhaseStart("createSyncRun");
     let syncRunId = `local-sync-${Date.now()}`;
     let createQueries = 0;
     if (this.syncRunRepo) {
@@ -103,18 +120,25 @@ export class SyncService implements ISyncService {
     try {
       // 2. Fetch Rillnet snapshot (URL request, download, decompress, parse)
       const tFetchStart = performance.now();
+      logPhaseStart("fetchSnapshot");
       const connector = new RillnetConnector();
 
       const tUrlStart = performance.now();
+      logPhaseStart("fetchSnapshotUrlOnly");
       const { downloadUrl, updatedAt } = await connector.fetchSnapshotUrlOnly();
+      logPhaseEnd("fetchSnapshotUrlOnly", 1);
       const fetchUrlDuration = performance.now() - tUrlStart;
 
       const tDownloadStart = performance.now();
+      logPhaseStart("downloadSnapshot");
       const buffer = await connector.downloadBufferOnly(downloadUrl);
+      logPhaseEnd("downloadSnapshot", buffer.byteLength);
       const downloadDuration = performance.now() - tDownloadStart;
 
       const tParseStart = performance.now();
+      logPhaseStart("parseSnapshot");
       const snapshotResult = await connector.parseSnapshotFromBuffer(buffer, updatedAt);
+      logPhaseEnd("parseSnapshot", snapshotResult.totalOrders);
       const parseDuration = performance.now() - tParseStart;
 
       const fetchTotalDuration = performance.now() - tFetchStart;
@@ -135,10 +159,12 @@ export class SyncService implements ISyncService {
 
       // 3. Normalize Orders
       const tNormStart = performance.now();
+      logPhaseStart("normalizeOrders");
       recordPhase("normalizeOrders", performance.now() - tNormStart, normalizedOrderCount, 1, normalizedOrderCount, 0, "Mapped raw orders to normalized objects");
 
       // 4. Load active, non-expired exceptions
       const tExStart = performance.now();
+      logPhaseStart("loadExceptions");
       let activeExceptions = new Set<string>();
       let exQueries = 0;
       if (this.exceptionRepo) {
@@ -153,6 +179,7 @@ export class SyncService implements ISyncService {
 
       // 5. Apply Rule Engine with active exceptions (Build Incidents)
       const tIncStart = performance.now();
+      logPhaseStart("buildIncidents");
       const referenceTimeMs = _options?.referenceTimeMs || new Date(sourceUpdatedAt).getTime() || startTime;
       const incidents = aggregateIncidents(
         snapshotResult.orders,
@@ -165,6 +192,7 @@ export class SyncService implements ISyncService {
 
       // 6. Save order snapshots in batches (batch size: 500)
       const tSnapStart = performance.now();
+      logPhaseStart("persistSnapshots");
       let snapQueries = 0;
       let snapRowsProcessed = 0;
       let snapBatches = 0;
@@ -208,6 +236,7 @@ export class SyncService implements ISyncService {
 
       // 7. Upsert current incidents using stable incident_key
       const tUpsertIncStart = performance.now();
+      logPhaseStart("persistIncidents");
       let resolvedIncidentCount = 0;
       let incQueries = 0;
       const keyToIdMap = new Map<string, string>();
@@ -228,6 +257,7 @@ export class SyncService implements ISyncService {
 
       // 8. Insert incident_history rows
       const tHistStart = performance.now();
+      logPhaseStart("persistHistory");
       let histQueries = 0;
       if (this.incidentHistoryRepo && syncRunId && !syncRunId.startsWith("local-sync") && incidents.length > 0) {
         try {
@@ -246,6 +276,7 @@ export class SyncService implements ISyncService {
 
       // 9. Resolve absent incidents from previous run
       const tResolveStart = performance.now();
+      logPhaseStart("resolveAbsentIncidents");
       let resolveQueries = 0;
       if (this.incidentRepo && syncRunId && !syncRunId.startsWith("local-sync")) {
         try {
@@ -264,6 +295,7 @@ export class SyncService implements ISyncService {
 
       // 10. Batch load incident histories
       const tLoadHistStart = performance.now();
+      logPhaseStart("loadHistories");
       let loadHistQueries = 0;
       let historyMap = new Map();
       const incidentDbIds: string[] = [];
@@ -289,8 +321,10 @@ export class SyncService implements ISyncService {
 
       // 11. Execute Follow-up Engine State Machine using Action Queue (100% Deterministic - ZERO AI!)
       const tFollowupStart = performance.now();
+      logPhaseStart("processFollowups");
       let followupQueries = 0;
       let enqueuedCount = 0;
+      let actionQueueRoundTrips: number | null = null;
 
       if (this.followupRepo && incidents.length > 0) {
         try {
@@ -300,10 +334,19 @@ export class SyncService implements ISyncService {
           const followupEngine = new FollowupEngine(this.followupRepo, actQueue);
           const followupResults = await followupEngine.processIncidentFollowups(incidents, historyMap, undefined, referenceTimeMs);
 
-          followupQueries = 1 + incidents.length * 2 + 1;
+          const followupMetrics = followupEngine.getLastRunMetrics();
+          followupQueries = followupMetrics
+            ? followupMetrics.caseReads + followupMetrics.caseWrites + followupMetrics.eventWrites
+            : 0;
           enqueuedCount = followupResults.filter((r) => r.newState.includes("PENDING")).length;
+          actionQueueRoundTrips = followupMetrics
+            ? followupMetrics.actionQueueMetrics.dedupLookups +
+              followupMetrics.actionQueueMetrics.actionInsertCalls +
+              followupMetrics.actionQueueMetrics.auditEventWrites
+            : null;
 
           // 12. Enqueue AI Jobs into background ai_analysis_jobs table asynchronously
+          logPhaseStart("enqueueAiJobs");
           console.log(`[AI Queue] Repository exists: ${!!this.aiJobRepo}`);
           console.log(`[AI Queue] Total incidents: ${incidents.length}`);
 
@@ -330,7 +373,10 @@ export class SyncService implements ISyncService {
           }
 
           console.log(`=========================\nAI Queue Summary\nRepository exists: ${!!this.aiJobRepo}\nIncidents: ${incidents.length}\nSuccessful: ${successfulEnqueue}\nFailed: ${failedEnqueue}\n=========================`);
+          logPhaseEnd("enqueueAiJobs", successfulEnqueue);
         } catch (err: any) {
+          logPhaseEnd("enqueueAiJobs", 0, "failed");
+          logRuntimeError("SyncService.enqueueAiJobs", err);
           console.error("[AI Queue] Error occurred in followup/AI queue block:", err);
           throw err;
         }
@@ -339,11 +385,13 @@ export class SyncService implements ISyncService {
 
       // 12. Enqueue Notification Actions
       const tEnqueueStart = performance.now();
-      const enqueueQueries = enqueuedCount * 3;
+      logPhaseStart("enqueueActions");
+      const enqueueQueries = actionQueueRoundTrips ?? enqueuedCount * 3;
       recordPhase("enqueueActions", performance.now() - tEnqueueStart, enqueuedCount, enqueuedCount, 1, enqueueQueries, "ActionQueue notification action enqueueing");
 
       // 13. Complete sync_run with status = success
       const tFinalizeStart = performance.now();
+      logPhaseStart("finalizeSyncRun");
       const completedAt = new Date().toISOString();
       const durationMs = Date.now() - startTime;
       let finalizeQueries = 0;
@@ -363,10 +411,12 @@ export class SyncService implements ISyncService {
           // Fallback
         }
       }
-      recordPhase("finalize", performance.now() - tFinalizeStart, 1, 1, 1, finalizeQueries, "Finalized sync_runs status = success");
+      recordPhase("finalizeSyncRun", performance.now() - tFinalizeStart, 1, 1, 1, finalizeQueries, "Finalized sync_runs status = success");
 
       console.log(`[SyncRillnet Performance Summary] Total Duration: ${durationMs}ms | Total DB Queries: ${totalQueries}`);
+      logPhaseStart("refreshProjections");
       await refresh({ source: "sync", changedIncidentIds: [], changedWarehouseIds: [] });
+      logPhaseEnd("refreshProjections", 0);
 
       return {
         ok: true,
@@ -386,6 +436,7 @@ export class SyncService implements ISyncService {
         },
       };
     } catch (err: unknown) {
+      logRuntimeError("SyncService.runSync", err);
       const completedAt = new Date().toISOString();
       const durationMs = Date.now() - startTime;
       const rawMessage = err instanceof Error ? err.message : String(err);

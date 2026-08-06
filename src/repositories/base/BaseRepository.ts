@@ -1,4 +1,5 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { logRuntimeError } from "@/observability/runtimeDiagnostics";
 
 export class BaseRepository {
   constructor(protected client: SupabaseClient) {}
@@ -17,7 +18,7 @@ export class BaseRepository {
       }
       return data;
     } catch (err: any) {
-      console.error("[BaseRepository] Error during single-row execution:", err?.message || err);
+      logRuntimeError("BaseRepository.single", err);
       throw err;
     }
   }
@@ -33,7 +34,7 @@ export class BaseRepository {
       if (error) throw error;
       return data || [];
     } catch (err: any) {
-      console.error("[BaseRepository] Error during multi-row execution:", err?.message || err);
+      logRuntimeError("BaseRepository.many", err);
       throw err;
     }
   }
@@ -49,7 +50,7 @@ export class BaseRepository {
       if (error) throw error;
       return data;
     } catch (err: any) {
-      console.error("[BaseRepository] Error during optional-row execution:", err?.message || err);
+      logRuntimeError("BaseRepository.optional", err);
       throw err;
     }
   }

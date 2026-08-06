@@ -6,7 +6,7 @@ import type {
   ActionStatus,
   AuditEventType,
 } from "./types";
-import type { IActionQueue } from "./IActionQueue";
+import type { ActionQueueMetrics, IActionQueue } from "./IActionQueue";
 import { Deduplicator } from "./deduplicator";
 import { isFallbackAllowed } from "@/connectors/supabase/fallback-policy";
 
@@ -19,8 +19,13 @@ export interface DeduplicationResult {
 export class ActionQueue implements IActionQueue {
   private inMemoryQueue: NotificationActionRow[] = [];
   private inMemoryEvents: NotificationActionEventRow[] = [];
+  private metrics: ActionQueueMetrics = { enqueueCalls: 0, dedupLookups: 0, actionInsertCalls: 0, auditEventWrites: 0 };
 
   constructor(private client?: SupabaseClient | null) {}
+
+  getMetricsSnapshot(): ActionQueueMetrics {
+    return { ...this.metrics };
+  }
 
   /**
    * Enqueues a notification action with deduplication check and audit event logging.
@@ -29,6 +34,7 @@ export class ActionQueue implements IActionQueue {
   async enqueueAction(
     params: EnqueueActionParams
   ): Promise<NotificationActionRow | DeduplicationResult | null> {
+    this.metrics.enqueueCalls++;
     const dedupKey = params.deduplicationKey || null;
     const nowIso = new Date().toISOString();
 
@@ -73,6 +79,7 @@ export class ActionQueue implements IActionQueue {
     };
 
     if (this.client) {
+      this.metrics.actionInsertCalls++;
       try {
         const { data, error } = await this.client
           .from("notification_actions")
@@ -166,6 +173,7 @@ export class ActionQueue implements IActionQueue {
    */
   async getActionByDeduplicationKey(dedupKey: string): Promise<NotificationActionRow | null> {
     if (this.client) {
+      this.metrics.dedupLookups++;
       try {
         const { data, error } = await this.client
           .from("notification_actions")
@@ -328,6 +336,8 @@ export class ActionQueue implements IActionQueue {
     const nowIso = new Date().toISOString();
 
     if (this.client) {
+      this.metrics.auditEventWrites++;
+
       try {
         const { data, error } = await this.client
           .from("notification_action_events")

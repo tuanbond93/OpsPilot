@@ -1,13 +1,21 @@
 import type { FollowupCaseRow, FollowupEventRow } from "@/connectors/supabase/types";
-import type { IFollowupRepository } from "../interfaces/IFollowupRepository";
+import type {
+  FollowupCaseUpsert,
+  FollowupEventInsert,
+  IFollowupRepository,
+} from "../interfaces/IFollowupRepository";
 
 export class MockFollowupRepository implements IFollowupRepository {
   private inMemoryCases: FollowupCaseRow[] = [];
   private inMemoryEvents: FollowupEventRow[] = [];
+  private nextCaseId = 1;
+  private nextEventId = 1;
 
   clearMemory(): void {
     this.inMemoryCases = [];
     this.inMemoryEvents = [];
+    this.nextCaseId = 1;
+    this.nextEventId = 1;
   }
 
   seed(cases: FollowupCaseRow[], events: FollowupEventRow[]): void {
@@ -29,12 +37,12 @@ export class MockFollowupRepository implements IFollowupRepository {
     );
   }
 
-  async upsertCase(caseData: Partial<FollowupCaseRow> & { incident_id: string; incident_key: string }): Promise<FollowupCaseRow> {
+  async upsertCase(caseData: FollowupCaseUpsert): Promise<FollowupCaseRow> {
     const now = new Date().toISOString();
     const existingIndex = this.inMemoryCases.findIndex((c) => c.incident_id === caseData.incident_id);
 
     const fullRow: FollowupCaseRow = {
-      id: caseData.id || `fcase-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+      id: caseData.id || `fcase-${this.nextCaseId++}`,
       incident_id: caseData.incident_id,
       incident_key: caseData.incident_key,
       first_detected_at: caseData.first_detected_at || now,
@@ -61,10 +69,18 @@ export class MockFollowupRepository implements IFollowupRepository {
     }
   }
 
-  async insertEvent(eventData: Partial<FollowupEventRow> & { followup_case_id: string }): Promise<FollowupEventRow> {
+  async batchUpsertCases(cases: FollowupCaseUpsert[]): Promise<FollowupCaseRow[]> {
+    const results: FollowupCaseRow[] = [];
+    for (const caseData of cases) {
+      results.push(await this.upsertCase(caseData));
+    }
+    return results;
+  }
+
+  async insertEvent(eventData: FollowupEventInsert): Promise<FollowupEventRow> {
     const now = new Date().toISOString();
     const fullRow: FollowupEventRow = {
-      id: eventData.id || `fevt-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+      id: eventData.id || `fevt-${this.nextEventId++}`,
       followup_case_id: eventData.followup_case_id,
       event_type: eventData.event_type || "CASE_CREATED",
       event_time: eventData.event_time || now,
@@ -79,6 +95,14 @@ export class MockFollowupRepository implements IFollowupRepository {
 
     this.inMemoryEvents.push(fullRow);
     return fullRow;
+  }
+
+  async batchInsertEvents(events: FollowupEventInsert[]): Promise<FollowupEventRow[]> {
+    const results: FollowupEventRow[] = [];
+    for (const eventData of events) {
+      results.push(await this.insertEvent(eventData));
+    }
+    return results;
   }
 
   async getEventsByCaseId(followupCaseId: string): Promise<FollowupEventRow[]> {

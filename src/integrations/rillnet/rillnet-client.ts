@@ -32,15 +32,27 @@ export class RillnetClient implements HealthCheckable {
   }
 
   /**
-   * Helper to perform fetch requests with timeout and retries
+   * Helper to perform fetch and response body consumption with timeout covering BOTH header fetch
+   * AND response body reading, with retry logic and stream resource cleanup.
    */
-  private async fetchWithRetry(url: string, options: RequestInit = {}): Promise<Response> {
+  private async executeWithTimeout<T>(
+    url: string,
+    options: RequestInit = {},
+    reader: (response: Response) => Promise<T>
+  ): Promise<T> {
     let lastError: any = null;
     let delay = 1000;
 
     for (let attempt = 1; attempt <= this.maxRetries; attempt++) {
       const controller = new AbortController();
-      const id = setTimeout(() => controller.abort(), this.timeoutMs);
+      let headerDurationMs = 0;
+      let bodyDurationMs = 0;
+      let headersReceived = false;
+      const tStart = performance.now();
+
+      const id = setTimeout(() => {
+        controller.abort();
+      }, this.timeoutMs);
 
       try {
         const response = await fetch(url, {
@@ -52,28 +64,68 @@ export class RillnetClient implements HealthCheckable {
           },
         });
 
-        clearTimeout(id);
+        const tHeader = performance.now();
+        headerDurationMs = Math.round(tHeader - tStart);
+        headersReceived = true;
 
-        if (response.ok) {
-          this.lastSuccessAt = new Date().toISOString();
-          return response;
+        if (!response.ok) {
+          if (response.body && typeof response.body.cancel === "function") {
+            response.body.cancel().catch(() => {});
+          }
+          throw new Error(`HTTP Error Status: ${response.status}`);
         }
 
-        throw new Error(`HTTP Error Status: ${response.status}`);
+        // Read response body while timeout timer remains ACTIVE
+        let result: T;
+        try {
+          result = await reader(response);
+        } catch (readErr: any) {
+          if (response.body && typeof response.body.cancel === "function") {
+            response.body.cancel().catch(() => {});
+          }
+          throw readErr;
+        }
+
+        bodyDurationMs = Math.round(performance.now() - tHeader);
+        const byteCount =
+          result instanceof ArrayBuffer
+            ? result.byteLength
+            : typeof result === "string"
+            ? result.length
+            : JSON.stringify(result).length;
+
+        console.log(
+          `[RillnetClient] Fetch Success | Attempt: ${attempt}/${this.maxRetries} | HeaderDuration: ${headerDurationMs}ms | BodyDuration: ${bodyDurationMs}ms | Bytes: ${byteCount}`
+        );
+
+        this.lastSuccessAt = new Date().toISOString();
+        return result;
       } catch (err: any) {
-        clearTimeout(id);
         lastError = err;
         this.lastFailureAt = new Date().toISOString();
-        this.lastErrorReason = err?.message || String(err);
+
+        const isAbort = err?.name === "AbortError" || controller.signal.aborted;
+        if (isAbort) {
+          const stage = headersReceived ? "response-body timeout" : "connection/header timeout";
+          this.lastErrorReason = `Rillnet ${stage} after ${this.timeoutMs}ms`;
+          lastError = new Error(this.lastErrorReason, { cause: err });
+        } else {
+          this.lastErrorReason = err?.message || String(err);
+        }
+
+        console.warn(
+          `[RillnetClient] Fetch Failed | Attempt: ${attempt}/${this.maxRetries} | Reason: ${this.lastErrorReason}`
+        );
 
         if (attempt === this.maxRetries) break;
-        // Exponential backoff
         await new Promise((resolve) => setTimeout(resolve, delay));
         delay *= 2;
+      } finally {
+        clearTimeout(id);
       }
     }
 
-    throw new Error(`Rillnet call failed after ${this.maxRetries} attempts. Last error: ${lastError?.message || String(lastError)}`);
+    throw lastError || new Error(`Rillnet call failed after ${this.maxRetries} attempts`);
   }
 
   /**
@@ -81,13 +133,22 @@ export class RillnetClient implements HealthCheckable {
    */
   async requestSnapshotUrl(): Promise<RillnetSnapshotUrlDTO> {
     try {
-      const response = await this.fetchWithRetry(this.endpointApi, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ op: "opssnap" }),
-      });
+      const data = await this.executeWithTimeout(
+        this.endpointApi,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ op: "opssnap" }),
+        },
+        async (res) => {
+          try {
+            return await res.json();
+          } catch (jsonErr: any) {
+            throw new Error(`Malformed JSON response body: ${jsonErr.message}`, { cause: jsonErr });
+          }
+        }
+      );
 
-      const data = await response.json();
       const downloadUrl = data.liveUrl || data.url;
       if (!downloadUrl || typeof downloadUrl !== "string") {
         throw new Error("Response did not contain a valid snapshot download URL");
@@ -109,8 +170,9 @@ export class RillnetClient implements HealthCheckable {
    */
   async downloadSnapshot(url: string): Promise<ArrayBuffer> {
     try {
-      const response = await this.fetchWithRetry(url);
-      return await response.arrayBuffer();
+      return await this.executeWithTimeout(url, {}, async (res) => {
+        return await res.arrayBuffer();
+      });
     } catch (err: any) {
       this.lastFailureAt = new Date().toISOString();
       this.lastErrorReason = err.message;
@@ -123,10 +185,14 @@ export class RillnetClient implements HealthCheckable {
    */
   async fetchWarehouseMeta(): Promise<RillnetMetaDTO> {
     try {
-      const response = await this.fetchWithRetry(this.endpointMeta);
-      return await response.json();
-    } catch (err: any) {
-      // Return empty meta to not block sync
+      return await this.executeWithTimeout(this.endpointMeta, {}, async (res) => {
+        try {
+          return await res.json();
+        } catch (jsonErr: any) {
+          throw new Error(`Malformed metadata JSON: ${jsonErr.message}`, { cause: jsonErr });
+        }
+      });
+    } catch {
       return {};
     }
   }
@@ -136,7 +202,6 @@ export class RillnetClient implements HealthCheckable {
    */
   async health(): Promise<ComponentHealth> {
     try {
-      // Basic lightweight healthcheck by fetching meta with low timeout
       const controller = new AbortController();
       const id = setTimeout(() => controller.abort(), 2000);
       const res = await fetch(this.endpointMeta, { signal: controller.signal });

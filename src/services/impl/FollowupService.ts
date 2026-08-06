@@ -269,7 +269,7 @@ export class FollowupService implements IFollowupService {
     config?: FollowupConfig,
     referenceTimeMs?: number
   ): Promise<ProcessedFollowupItem[]> {
-    const engine = new FollowupEngine(this.followupRepo, this.actionQueue as any);
+    const engine = new FollowupEngine(this.followupRepo, this.actionQueue);
     return engine.processIncidentFollowups(incidents, historyMap, config, referenceTimeMs);
   }
 }
