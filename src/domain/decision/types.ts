@@ -60,6 +60,27 @@ export interface DecisionOutcomeVerification {
   createdAt: string;
 }
 
+export interface VerifiedDecisionMemoryRecord {
+  decision: Decision;
+  verification: DecisionOutcomeVerification;
+}
+
+export interface DecisionMemoryMatch {
+  decisionId: string;
+  outcome: DecisionOutcomeStatus;
+  reasonCode: OutcomeVerificationReasonCode;
+  similarityScore: number;
+  matchingFactors: string[];
+  observedAt: string;
+  source: string;
+}
+
+export interface DecisionMemoryResult {
+  targetDecisionId: string;
+  matches: DecisionMemoryMatch[];
+  nonCausalNotice: string;
+}
+
 export interface DecisionSourceLinks {
   incidentId?: string;
   rootCauseRunId?: string;

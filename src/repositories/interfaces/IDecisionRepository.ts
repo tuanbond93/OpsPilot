@@ -8,6 +8,7 @@ import type {
   DecisionOutcomeVerification,
   RecordOutcomeInput,
   VerifyDecisionOutcomeInput,
+  VerifiedDecisionMemoryRecord,
   TransitionDecisionInput,
 } from "@/domain/decision";
 
@@ -28,4 +29,5 @@ export interface IDecisionRepository {
   getOutcomeObservationContract(decisionId: string): Promise<DecisionOutcomeObservationContract | null>;
   recordVerifiedOutcome(input: VerifyDecisionOutcomeInput & { verification: Omit<DecisionOutcomeVerification, "verificationId" | "createdAt">; observedOutcome: string; inconclusiveReason?: string }): Promise<DecisionMutationResult>;
   getOutcomeVerifications(decisionId: string): Promise<readonly DecisionOutcomeVerification[]>;
+  listVerifiedDecisionMemoryRecords(limit?: number): Promise<readonly VerifiedDecisionMemoryRecord[]>;
 }

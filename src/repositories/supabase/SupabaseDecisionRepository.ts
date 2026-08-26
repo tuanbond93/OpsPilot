@@ -1,6 +1,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { IDecisionRepository, DecisionMutationResult } from "../interfaces/IDecisionRepository";
-import type { CreateDecisionInput, Decision, DecisionAuditEvent, DecisionEvidenceSnapshot, DecisionFollowupSchedule, DecisionOutcomeObservationContract, DecisionOutcomeRecord, DecisionOutcomeVerification, RecordOutcomeInput, TransitionDecisionInput, VerifyDecisionOutcomeInput } from "@/domain/decision";
+import type { CreateDecisionInput, Decision, DecisionAuditEvent, DecisionEvidenceSnapshot, DecisionFollowupSchedule, DecisionOutcomeObservationContract, DecisionOutcomeRecord, DecisionOutcomeVerification, RecordOutcomeInput, TransitionDecisionInput, VerifyDecisionOutcomeInput, VerifiedDecisionMemoryRecord } from "@/domain/decision";
 
 type DbRow = Record<string, any>;
 
@@ -112,5 +112,17 @@ export class SupabaseDecisionRepository implements IDecisionRepository {
       classification: row.classification, reasonCode: row.reason_code, baselineAffectedOrders: row.baseline_affected_orders,
       observedAffectedOrders: row.observed_affected_orders, observedMetrics: row.observed_metrics, observedAt: row.observed_at,
       source: row.source, evidenceRefs: row.evidence_refs, verifiedBy: row.verified_by, createdAt: row.created_at }));
+  }
+
+  async listVerifiedDecisionMemoryRecords(limit = 200): Promise<readonly VerifiedDecisionMemoryRecord[]> {
+    const { data, error } = await this.client.from("decision_outcome_verifications")
+      .select("*, decisions!inner(*, decision_evidence_snapshots(snapshot))").order("observed_at", { ascending: false }).limit(limit);
+    if (error) throw error;
+    return (data || []).map((row) => ({
+      decision: mapDecision(row.decisions, row.decisions.decision_evidence_snapshots?.[0]?.snapshot),
+      verification: { verificationId: row.id, decisionId: row.decision_id, contractId: row.contract_id, classification: row.classification,
+        reasonCode: row.reason_code, baselineAffectedOrders: row.baseline_affected_orders, observedAffectedOrders: row.observed_affected_orders,
+        observedMetrics: row.observed_metrics, observedAt: row.observed_at, source: row.source, evidenceRefs: row.evidence_refs, verifiedBy: row.verified_by, createdAt: row.created_at },
+    }));
   }
 }

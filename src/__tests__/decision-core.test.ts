@@ -115,6 +115,24 @@ describe("Decision Core lifecycle and safety", () => {
     expect((result.data as any).verification).toMatchObject({ classification: "INCONCLUSIVE", reasonCode: "INCONCLUSIVE_PARTIAL_IMPROVEMENT" });
   });
 
+  it("retrieves only verified comparable outcomes and labels them non-causal", async () => {
+    const makeVerified = async (suffix: string, affectedOrders: number) => {
+      const created = await service.create(input({ sourceFingerprint: `memory-${suffix}`, idempotencyKey: `memory-${suffix}`, evidence: { sourceIdentifiers: { incidentId: `memory-${suffix}` }, signalContext: { reasonCode: "BACKLOG" }, actionContext: { candidateType: "ESCALATE" }, operationalFacts: { affectedOrders: 42 } } }));
+      const id = (created.data as any).decisionId;
+      await service.transition({ decisionId: id, targetStatus: "READY_FOR_REVIEW", actor: "manager", idempotencyKey: `memory-ready-${suffix}` });
+      await service.transition({ decisionId: id, targetStatus: "APPROVED", actor: "manager", idempotencyKey: `memory-approve-${suffix}` });
+      await service.recordExecution({ decisionId: id, actor: "operator", idempotencyKey: `memory-execute-${suffix}`, executionReference: `ticket:memory-${suffix}` });
+      const contract = await repository.getOutcomeObservationContract(id);
+      await service.verifyOutcome({ decisionId: id, observedAt: contract!.measurementWindowEnd, source: "rillnet-snapshot", observedMetrics: { affectedOrders }, evidenceRefs: [`snapshot:${suffix}`], actor: "verifier", idempotencyKey: `memory-verify-${suffix}` });
+      return id;
+    };
+    const historicalId = await makeVerified("historical", 0);
+    const target = await service.create(input({ sourceFingerprint: "memory-target", idempotencyKey: "memory-target", evidence: { sourceIdentifiers: { incidentId: "memory-target" }, signalContext: { reasonCode: "BACKLOG" }, actionContext: { candidateType: "ESCALATE" }, operationalFacts: { affectedOrders: 42 } } }));
+    const memory = await service.getMemory((target.data as any).decisionId);
+    expect((memory.data as any).matches).toContainEqual(expect.objectContaining({ decisionId: historicalId, outcome: "SUCCESS", matchingFactors: expect.arrayContaining(["same_reason_code", "same_candidate_type"]) }));
+    expect((memory.data as any).nonCausalNotice).toMatch(/do not establish causation/i);
+  });
+
   it("records only externally performed work and keeps execution idempotent", async () => {
     const created = await service.create(input()); const id = (created.data as any).decisionId;
     await service.transition({ decisionId: id, targetStatus: "READY_FOR_REVIEW", actor: "manager", idempotencyKey: "ready-exec" });

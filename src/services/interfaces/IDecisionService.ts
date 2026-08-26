@@ -16,4 +16,5 @@ export interface IDecisionService {
   recordExecution(input: RecordDecisionExecutionInput): Promise<DecisionServiceResult>;
   recordOutcome(input: RecordOutcomeInput): Promise<DecisionServiceResult>;
   verifyOutcome(input: VerifyDecisionOutcomeInput): Promise<DecisionServiceResult>;
+  getMemory(decisionId: string, limit?: number): Promise<DecisionServiceResult>;
 }

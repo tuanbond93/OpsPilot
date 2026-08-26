@@ -7,6 +7,7 @@ import {
   validateOutcomeInput,
   validateTransitionInput,
   verifyOutcomeObservation,
+  retrieveComparableDecisions,
   type CreateDecisionInput,
   type RecordDecisionExecutionInput,
   type RecordOutcomeInput,
@@ -137,6 +138,14 @@ export class DecisionService implements IDecisionService {
         inconclusiveReason: verification.classification === "INCONCLUSIVE" ? verification.reasonCode : undefined,
       });
       return { ok: true, data: { decision: result.decision, verification }, idempotent: result.idempotent };
+    } catch (error) { return this.failure(error); }
+  }
+
+  async getMemory(decisionId: string, limit = 10): Promise<DecisionServiceResult> {
+    try {
+      const decision = await this.repository.getById(decisionId);
+      if (!decision) throw new DecisionDomainError("NOT_FOUND", `Decision '${decisionId}' not found.`);
+      return { ok: true, data: retrieveComparableDecisions(decision, await this.repository.listVerifiedDecisionMemoryRecords(200), limit) };
     } catch (error) { return this.failure(error); }
   }
 }

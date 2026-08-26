@@ -14,6 +14,7 @@ import {
   type DecisionOutcomeVerification,
   type RecordOutcomeInput,
   type VerifyDecisionOutcomeInput,
+  type VerifiedDecisionMemoryRecord,
   type TransitionDecisionInput,
 } from "@/domain/decision";
 
@@ -194,5 +195,12 @@ export class MockDecisionRepository implements IDecisionRepository {
 
   async getOutcomeVerifications(decisionId: string): Promise<readonly DecisionOutcomeVerification[]> {
     return immutableSnapshot(this.outcomeVerifications.filter((item) => item.decisionId === decisionId));
+  }
+
+  async listVerifiedDecisionMemoryRecords(limit = 200): Promise<readonly VerifiedDecisionMemoryRecord[]> {
+    return immutableSnapshot(this.outcomeVerifications.slice(-limit).flatMap((verification) => {
+      const decision = this.decisions.get(verification.decisionId);
+      return decision ? [{ decision, verification }] : [];
+    }));
   }
 }

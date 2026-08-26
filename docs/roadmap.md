@@ -22,11 +22,11 @@ Delivered and validated:
 5. **LC-04:** automatic, immutable and idempotent Decision follow-up schedule after `EXECUTED`.
 6. **LC-05:** immutable outcome-observation contract with a baseline snapshot, evidence requirements and measurement-window guard.
 7. **LC-06:** deterministic Outcome Verifier from post-execution operational evidence, with abstention for incomplete policy/evidence.
+8. **LC-07:** retrieval-only Decision Memory from verified outcomes, with explicit non-causal guard.
 
 Next sequence:
 
-1. **LC-07 — Decision Memory:** retrieve comparable decisions and verified outcomes without treating correlation as causation.
-2. **LC-08 — Financial Handoff:** send verified operational evidence to P15-B.1; do not calculate money inside Decision Core.
+1. **LC-08 — Financial Handoff:** send verified operational evidence to P15-B.1; do not calculate money inside Decision Core.
 
 Frozen until company access exists: GHN Data API, MCP Gateway and GTalk. `AUTONOMOUS` mode and any new saving/cost semantics remain frozen.
 

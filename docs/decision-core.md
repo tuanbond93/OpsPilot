@@ -110,3 +110,10 @@ so với baseline → `FAILURE`; giảm nhưng chưa về `0`, hoặc metric kh�
 Verifier không gọi AI để đoán, không tự thực thi action, không chấm outcome trước cửa sổ đo
 và không tạo saving/cost. Những metric hay SLA khác chưa có policy phải đi vào
 `INCONCLUSIVE`, không được tự thêm ngưỡng.
+
+## LC-07 — Decision memory
+
+`GET /api/decisions/:decisionId/memory` chỉ truy xuất các Decision có outcome đã được
+LC-06 verifier ghi nhận. Similarity dựa trên source type, risk level, reason code và
+candidate type; mỗi match luôn mang `nonCausalNotice`. Memory không tự thay recommendation,
+không aggregate money và không dùng các outcome do người dùng ghi tay không qua verifier.
