@@ -20,7 +20,11 @@ export class DecisionService implements IDecisionService {
 
   private failure(error: unknown): DecisionServiceResult {
     if (error instanceof DecisionDomainError) return { ok: false, error: error.code, message: error.message };
-    const message = error instanceof Error ? error.message : String(error);
+    const record = error && typeof error === "object" ? error as Record<string, unknown> : null;
+    const objectMessage = record && typeof record.message === "string" ? record.message.trim() : "";
+    const message = error instanceof Error
+      ? error.message
+      : objectMessage || (typeof error === "string" ? error : "Decision operation failed.");
     return { ok: false, error: "DECISION_OPERATION_FAILED", message };
   }
 

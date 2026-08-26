@@ -21,6 +21,12 @@ describe("Decision Core lifecycle and safety", () => {
   beforeEach(() => { repository = new MockDecisionRepository(); service = new DecisionService(repository); delete process.env.ENABLE_DASHBOARD_WRITE_CONTROLS; });
   afterEach(() => { delete process.env.ENABLE_DASHBOARD_WRITE_CONTROLS; vi.unstubAllEnvs(); });
 
+  it("preserves structured repository error messages", async () => {
+    vi.spyOn(repository, "list").mockRejectedValueOnce({ code: "PGRST_TEST", message: "Database verification failed." });
+    const result = await service.list();
+    expect(result).toMatchObject({ ok: false, error: "DECISION_OPERATION_FAILED", message: "Database verification failed." });
+  });
+
   it("defines every valid forward transition and rejects all other pairs", () => {
     const statuses: DecisionStatus[] = ["DRAFT","READY_FOR_REVIEW","APPROVED","REJECTED","EXECUTED","OUTCOME_PENDING","SUCCESS","FAILURE","INCONCLUSIVE"];
     const valid = new Set(["DRAFT>READY_FOR_REVIEW","READY_FOR_REVIEW>APPROVED","READY_FOR_REVIEW>REJECTED","APPROVED>EXECUTED","EXECUTED>OUTCOME_PENDING","OUTCOME_PENDING>SUCCESS","OUTCOME_PENDING>FAILURE","OUTCOME_PENDING>INCONCLUSIVE"]);
