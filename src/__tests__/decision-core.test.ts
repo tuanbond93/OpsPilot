@@ -1,4 +1,5 @@
 import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
+import fs from "node:fs";
 import { canTransition, immutableSnapshot, type CreateDecisionInput, type DecisionStatus } from "@/domain/decision";
 import { MockDecisionRepository } from "@/repositories/mock/MockDecisionRepository";
 import { DecisionService } from "@/services/impl/DecisionService";
@@ -25,6 +26,14 @@ describe("Decision Core lifecycle and safety", () => {
     vi.spyOn(repository, "list").mockRejectedValueOnce({ code: "PGRST_TEST", message: "Database verification failed." });
     const result = await service.list();
     expect(result).toMatchObject({ ok: false, error: "DECISION_OPERATION_FAILED", message: "Database verification failed." });
+  });
+
+  it("casts verifier JSON timestamps before inserting into TIMESTAMPTZ", () => {
+    const initialSql = fs.readFileSync("src/database/migrations/023_decision_outcome_verifier.sql", "utf8");
+    const repairSql = fs.readFileSync("src/database/migrations/025_fix_outcome_verification_timestamp.sql", "utf8");
+    expect(initialSql).toContain("(p_payload->>'observedAt')::timestamptz");
+    expect(repairSql).toContain("observed_at_value TIMESTAMPTZ := (p_payload->>'observedAt')::timestamptz");
+    expect(repairSql).toContain("p_payload->'observedMetrics',observed_at_value");
   });
 
   it("defines every valid forward transition and rejects all other pairs", () => {
