@@ -196,7 +196,10 @@ export interface RecordDecisionExecutionInput {
   decisionId: string;
   actor: string;
   idempotencyKey: string;
-  executionReference: string;
+  /** Server-generated for API callers. Retained as an optional internal override for backwards-compatible service callers. */
+  executionReference?: string;
+  /** Optional reference from an external system; stored in the execution audit metadata until an adapter is available. */
+  externalTicketId?: string;
   performedAt?: string;
   note?: string;
 }

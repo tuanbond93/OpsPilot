@@ -35,7 +35,7 @@ export default function DecisionInboxPage() {
   const [incidentId, setIncidentId] = useState("");
   const [creating, setCreating] = useState(false);
   const [outcomes, setOutcomes] = useState<Record<string, { status: string; observedOutcome: string; measuredAt: string; evidenceRefs: string; inconclusiveReason: string }>>({});
-  const [executions, setExecutions] = useState<Record<string, { executionReference: string; performedAt: string; note: string }>>({});
+  const [executions, setExecutions] = useState<Record<string, { externalTicketId: string; performedAt: string; note: string }>>({});
 
   const load = useCallback(async () => {
     setLoading(true); setError("");
@@ -101,19 +101,18 @@ export default function DecisionInboxPage() {
   }
 
   async function recordExecution(decision: Decision) {
-    const form = executions[decision.decisionId] || { executionReference: "", performedAt: "", note: "" };
+    const form = executions[decision.decisionId] || { externalTicketId: "", performedAt: "", note: "" };
     if (!actor.trim()) { setError("Vui lòng đăng nhập để ghi nhận thực thi."); return; }
-    if (!form.executionReference.trim()) { setError("Execution reference là bắt buộc."); return; }
     setSubmitting(decision.decisionId); setError("");
     try {
       const response = await fetch(`/api/decisions/${decision.decisionId}/execute`, {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           actor: actor.trim(),
-          executionReference: form.executionReference.trim(),
+          externalTicketId: form.externalTicketId.trim() || undefined,
           performedAt: form.performedAt ? new Date(form.performedAt).toISOString() : undefined,
           note: form.note.trim() || undefined,
-          idempotencyKey: `execute:${decision.decisionId}:${form.executionReference.trim()}`,
+          idempotencyKey: `execute:${decision.decisionId}`,
         }),
       });
       const payload = await response.json();
@@ -263,19 +262,19 @@ export default function DecisionInboxPage() {
                 </div></div>}
               {decision.mode === "HUMAN_APPROVAL" && decision.decisionStatus === "APPROVED" && roleCan(role, "MANAGE_DECISION") && <div className="mt-4 rounded-lg border border-emerald-500/25 bg-emerald-500/5 p-4">
                 <h3 className="text-sm font-semibold text-emerald-100">Ghi nhận hành động đã thực hiện bên ngoài</h3>
-                <p className="mt-1 text-xs leading-5 text-slate-400">OpsPilot không thực thi action. Chỉ ghi reference có thể đối soát sau khi người vận hành đã hoàn thành công việc bên ngoài hệ thống.</p>
+                <p className="mt-1 text-xs leading-5 text-slate-400">OpsPilot không thực thi action. Khi xác nhận, hệ thống tự sinh OpsPilot Execution ID để đối soát; mã ticket ngoài hệ thống là tùy chọn.</p>
                 <div className="mt-3 grid gap-3 md:grid-cols-2">
-                  <div><label htmlFor={`execution-ref-${decision.decisionId}`} className="mb-1 block text-xs font-semibold">Execution reference <span className="text-rose-300">(bắt buộc)</span></label>
-                    <input id={`execution-ref-${decision.decisionId}`} value={executions[decision.decisionId]?.executionReference || ""} placeholder="Ticket, biên bản hoặc mã tác vụ"
-                      onChange={(event) => setExecutions((current) => ({ ...current, [decision.decisionId]: { ...(current[decision.decisionId] || { performedAt: "", note: "" }), executionReference: event.target.value } }))}
+                  <div><label htmlFor={`external-ticket-${decision.decisionId}`} className="mb-1 block text-xs font-semibold">Mã ticket ngoài hệ thống <span className="text-slate-500">(tùy chọn)</span></label>
+                    <input id={`external-ticket-${decision.decisionId}`} value={executions[decision.decisionId]?.externalTicketId || ""} placeholder="Ví dụ: GTALK-123 hoặc JIRA-456"
+                      onChange={(event) => setExecutions((current) => ({ ...current, [decision.decisionId]: { ...(current[decision.decisionId] || { performedAt: "", note: "" }), externalTicketId: event.target.value } }))}
                       className="min-h-10 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 text-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-emerald-400" /></div>
                   <div><label htmlFor={`performed-at-${decision.decisionId}`} className="mb-1 block text-xs font-semibold">Thời điểm thực hiện</label>
                     <input id={`performed-at-${decision.decisionId}`} type="datetime-local" value={executions[decision.decisionId]?.performedAt || ""}
-                      onChange={(event) => setExecutions((current) => ({ ...current, [decision.decisionId]: { ...(current[decision.decisionId] || { executionReference: "", note: "" }), performedAt: event.target.value } }))}
+                      onChange={(event) => setExecutions((current) => ({ ...current, [decision.decisionId]: { ...(current[decision.decisionId] || { externalTicketId: "", note: "" }), performedAt: event.target.value } }))}
                       className="min-h-10 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 text-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-emerald-400" /></div>
                   <div className="md:col-span-2"><label htmlFor={`execution-note-${decision.decisionId}`} className="mb-1 block text-xs font-semibold">Ghi chú đối soát</label>
                     <textarea id={`execution-note-${decision.decisionId}`} rows={2} value={executions[decision.decisionId]?.note || ""}
-                      onChange={(event) => setExecutions((current) => ({ ...current, [decision.decisionId]: { ...(current[decision.decisionId] || { executionReference: "", performedAt: "" }), note: event.target.value } }))}
+                      onChange={(event) => setExecutions((current) => ({ ...current, [decision.decisionId]: { ...(current[decision.decisionId] || { externalTicketId: "", performedAt: "" }), note: event.target.value } }))}
                       className="w-full rounded-lg border border-slate-700 bg-slate-950 p-3 text-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-emerald-400" /></div>
                 </div>
                 <button type="button" onClick={() => void recordExecution(decision)} disabled={submitting === decision.decisionId}
@@ -283,7 +282,7 @@ export default function DecisionInboxPage() {
                   <Check aria-hidden="true" size={16}/>{submitting === decision.decisionId ? "Đang lưu…" : "Xác nhận đã thực hiện bên ngoài"}
                 </button>
               </div>}
-              {decision.executionReference && <p className="mt-4 rounded-lg border border-slate-700 bg-slate-950 p-3 text-sm text-slate-300"><strong>Execution reference:</strong> <span className="font-mono text-emerald-200">{decision.executionReference}</span>{decision.executedAt ? ` · Ghi nhận lúc ${new Date(decision.executedAt).toLocaleString("vi-VN")}` : ""}</p>}
+              {decision.executionReference && <p className="mt-4 rounded-lg border border-slate-700 bg-slate-950 p-3 text-sm text-slate-300"><strong>OpsPilot Execution ID:</strong> <span className="font-mono text-emerald-200">{decision.executionReference}</span>{decision.executedAt ? ` · Ghi nhận lúc ${new Date(decision.executedAt).toLocaleString("vi-VN")}` : ""}</p>}
               {decision.followupSchedule && <div className="mt-3 rounded-lg border border-indigo-500/30 bg-indigo-500/5 p-3 text-sm text-indigo-100">
                 <p className="font-semibold">Auto follow-up đã được lên lịch</p>
                 <p className="mt-1 text-slate-300">Kiểm tra lại lúc {new Date(decision.followupSchedule.checkAt).toLocaleString("vi-VN")} · Policy {decision.followupSchedule.policyVersion} · Risk snapshot {decision.followupSchedule.riskLevelAtSchedule}</p>

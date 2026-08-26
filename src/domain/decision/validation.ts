@@ -77,7 +77,8 @@ export function validateExecutionInput(input: RecordDecisionExecutionInput): voi
   requireText(input.decisionId, "decisionId", 200);
   validateActor(input.actor);
   requireText(input.idempotencyKey, "idempotencyKey", 200);
-  requireText(input.executionReference, "executionReference", 500);
+  if (input.executionReference !== undefined) requireText(input.executionReference, "executionReference", 500);
+  if (input.externalTicketId !== undefined) requireText(input.externalTicketId, "externalTicketId", 500);
   if (input.note !== undefined) requireText(input.note, "note", 2000);
   if (input.performedAt !== undefined && !Number.isFinite(Date.parse(input.performedAt))) {
     throw new DecisionDomainError("VALIDATION_ERROR", "performedAt must be a valid timestamp.");

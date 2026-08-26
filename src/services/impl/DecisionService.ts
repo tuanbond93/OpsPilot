@@ -30,6 +30,16 @@ export class DecisionService implements IDecisionService {
     }
   }
 
+  private buildExecutionReference(decisionId: string, performedAt?: string): string {
+    const date = new Date(performedAt || Date.now());
+    const parts = new Intl.DateTimeFormat("en-CA", {
+      timeZone: "Asia/Ho_Chi_Minh", year: "numeric", month: "2-digit", day: "2-digit",
+    }).formatToParts(date);
+    const dateStamp = ["year", "month", "day"].map((type) => parts.find((part) => part.type === type)?.value).join("");
+    const shortDecisionId = decisionId.replace(/[^a-zA-Z0-9]/g, "").slice(0, 8).toUpperCase();
+    return `OPSP-EXE-${dateStamp}-${shortDecisionId || "UNKNOWN"}-01`;
+  }
+
   async create(input: CreateDecisionInput): Promise<DecisionServiceResult> {
     try {
       this.assertWriteAllowed();
@@ -100,15 +110,18 @@ export class DecisionService implements IDecisionService {
       if (actionContext?.disposition === "HUMAN_INVESTIGATION_REQUIRED") {
         throw new DecisionDomainError("EXECUTION_BLOCKED_BY_CRITIC", "Decision requires human investigation and cannot be recorded as executed.");
       }
+      const executionReference = input.executionReference?.trim() || this.buildExecutionReference(input.decisionId, input.performedAt);
       return await this.transition({
         decisionId: input.decisionId,
         targetStatus: "EXECUTED",
         actor: input.actor,
         idempotencyKey: input.idempotencyKey,
-        executionReference: input.executionReference.trim(),
+        executionReference,
         metadata: {
           event: "EXTERNAL_EXECUTION_RECORDED",
           channel: "MANUAL_EXTERNAL",
+          opsPilotExecutionId: executionReference,
+          externalTicketId: input.externalTicketId?.trim() || null,
           performedAt: input.performedAt || null,
           note: input.note?.trim() || null,
         },

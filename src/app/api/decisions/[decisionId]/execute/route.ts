@@ -19,7 +19,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     decisionId,
     actor: resolveActor(scoped.identity, body.actor),
     idempotencyKey: typeof body.idempotencyKey === "string" ? body.idempotencyKey : "",
-    executionReference: typeof body.executionReference === "string" ? body.executionReference : "",
+    externalTicketId: typeof body.externalTicketId === "string" && body.externalTicketId.trim() ? body.externalTicketId : undefined,
     performedAt: typeof body.performedAt === "string" ? body.performedAt : undefined,
     note: typeof body.note === "string" ? body.note : undefined,
   });
