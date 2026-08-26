@@ -90,6 +90,31 @@ describe("Decision Core lifecycle and safety", () => {
     expect(missingEvidence.error).toBe("OUTCOME_EVIDENCE_REQUIRED");
   });
 
+  it("verifies outcome deterministically from post-execution affected-order evidence", async () => {
+    const created = await service.create(input({ sourceFingerprint: "verifier", idempotencyKey: "verifier-create" }));
+    const id = (created.data as any).decisionId;
+    await service.transition({ decisionId: id, targetStatus: "READY_FOR_REVIEW", actor: "manager", idempotencyKey: "verifier-ready" });
+    await service.transition({ decisionId: id, targetStatus: "APPROVED", actor: "manager", idempotencyKey: "verifier-approve" });
+    await service.recordExecution({ decisionId: id, actor: "operator", idempotencyKey: "verifier-execute", executionReference: "ticket:verifier" });
+    const contract = await repository.getOutcomeObservationContract(id);
+    const result = await service.verifyOutcome({ decisionId: id, observedAt: contract!.measurementWindowEnd, source: "rillnet-snapshot", observedMetrics: { affectedOrders: 0 }, evidenceRefs: ["snapshot:after"], actor: "verifier", idempotencyKey: "verifier-run" });
+    expect(result.ok).toBe(true);
+    expect((result.data as any).verification).toMatchObject({ classification: "SUCCESS", reasonCode: "SUCCESS_RESOLVED", baselineAffectedOrders: 42, observedAffectedOrders: 0 });
+    expect((result.data as any).decision).toMatchObject({ decisionStatus: "SUCCESS", financialImpact: { status: "NOT_EVALUATED" } });
+    expect(await repository.getOutcomeVerifications(id)).toHaveLength(1);
+  });
+
+  it("abstains as INCONCLUSIVE when operations improve but are not resolved", async () => {
+    const created = await service.create(input({ sourceFingerprint: "verifier-inconclusive", idempotencyKey: "verifier-inconclusive-create" }));
+    const id = (created.data as any).decisionId;
+    await service.transition({ decisionId: id, targetStatus: "READY_FOR_REVIEW", actor: "manager", idempotencyKey: "verifier-inconclusive-ready" });
+    await service.transition({ decisionId: id, targetStatus: "APPROVED", actor: "manager", idempotencyKey: "verifier-inconclusive-approve" });
+    await service.recordExecution({ decisionId: id, actor: "operator", idempotencyKey: "verifier-inconclusive-execute", executionReference: "ticket:inconclusive" });
+    const contract = await repository.getOutcomeObservationContract(id);
+    const result = await service.verifyOutcome({ decisionId: id, observedAt: contract!.measurementWindowEnd, source: "rillnet-snapshot", observedMetrics: { affectedOrders: 8 }, evidenceRefs: ["snapshot:partial"], actor: "verifier", idempotencyKey: "verifier-inconclusive-run" });
+    expect((result.data as any).verification).toMatchObject({ classification: "INCONCLUSIVE", reasonCode: "INCONCLUSIVE_PARTIAL_IMPROVEMENT" });
+  });
+
   it("records only externally performed work and keeps execution idempotent", async () => {
     const created = await service.create(input()); const id = (created.data as any).decisionId;
     await service.transition({ decisionId: id, targetStatus: "READY_FOR_REVIEW", actor: "manager", idempotencyKey: "ready-exec" });

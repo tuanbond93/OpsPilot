@@ -1,4 +1,4 @@
-import type { CreateDecisionInput, RecordDecisionExecutionInput, RecordOutcomeInput, TransitionDecisionInput } from "@/domain/decision";
+import type { CreateDecisionInput, RecordDecisionExecutionInput, RecordOutcomeInput, TransitionDecisionInput, VerifyDecisionOutcomeInput } from "@/domain/decision";
 
 export interface DecisionServiceResult<T = unknown> {
   ok: boolean;
@@ -15,4 +15,5 @@ export interface IDecisionService {
   transition(input: TransitionDecisionInput): Promise<DecisionServiceResult>;
   recordExecution(input: RecordDecisionExecutionInput): Promise<DecisionServiceResult>;
   recordOutcome(input: RecordOutcomeInput): Promise<DecisionServiceResult>;
+  verifyOutcome(input: VerifyDecisionOutcomeInput): Promise<DecisionServiceResult>;
 }

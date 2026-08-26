@@ -11,7 +11,9 @@ import {
   type DecisionFollowupSchedule,
   type DecisionOutcomeObservationContract,
   type DecisionOutcomeRecord,
+  type DecisionOutcomeVerification,
   type RecordOutcomeInput,
+  type VerifyDecisionOutcomeInput,
   type TransitionDecisionInput,
 } from "@/domain/decision";
 
@@ -21,6 +23,7 @@ export class MockDecisionRepository implements IDecisionRepository {
   private outcomes: DecisionOutcomeRecord[] = [];
   private followupSchedules: DecisionFollowupSchedule[] = [];
   private outcomeObservationContracts: DecisionOutcomeObservationContract[] = [];
+  private outcomeVerifications: DecisionOutcomeVerification[] = [];
 
   clearMemory(): void {
     this.decisions.clear();
@@ -28,6 +31,7 @@ export class MockDecisionRepository implements IDecisionRepository {
     this.outcomes = [];
     this.followupSchedules = [];
     this.outcomeObservationContracts = [];
+    this.outcomeVerifications = [];
   }
 
   async create(input: CreateDecisionInput): Promise<DecisionMutationResult> {
@@ -170,5 +174,25 @@ export class MockDecisionRepository implements IDecisionRepository {
   async getOutcomeObservationContract(decisionId: string): Promise<DecisionOutcomeObservationContract | null> {
     const contract = this.outcomeObservationContracts.find((item) => item.decisionId === decisionId);
     return contract ? immutableSnapshot(contract) : null;
+  }
+
+  async recordVerifiedOutcome(input: VerifyDecisionOutcomeInput & { verification: Omit<DecisionOutcomeVerification, "verificationId" | "createdAt">; observedOutcome: string; inconclusiveReason?: string }): Promise<DecisionMutationResult> {
+    const existing = this.outcomeVerifications.find((item) => item.decisionId === input.decisionId && item.evidenceRefs.join("|") === input.evidenceRefs.join("|") && item.observedAt === input.observedAt);
+    if (existing) {
+      const decision = this.decisions.get(input.decisionId);
+      if (!decision) throw new DecisionDomainError("NOT_FOUND", `Decision '${input.decisionId}' not found.`);
+      return { decision: immutableSnapshot(decision), idempotent: true };
+    }
+    const result = await this.recordOutcome({
+      decisionId: input.decisionId, status: input.verification.classification, observedOutcome: input.observedOutcome,
+      measuredAt: input.observedAt, evidenceRefs: input.evidenceRefs, inconclusiveReason: input.inconclusiveReason,
+      actor: input.actor, idempotencyKey: input.idempotencyKey,
+    });
+    if (!result.idempotent) this.outcomeVerifications.push(immutableSnapshot({ ...input.verification, verificationId: crypto.randomUUID(), createdAt: new Date().toISOString() }));
+    return result;
+  }
+
+  async getOutcomeVerifications(decisionId: string): Promise<readonly DecisionOutcomeVerification[]> {
+    return immutableSnapshot(this.outcomeVerifications.filter((item) => item.decisionId === decisionId));
   }
 }

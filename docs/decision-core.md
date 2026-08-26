@@ -99,3 +99,14 @@ Với `HUMAN_APPROVAL`, outcome chỉ được ghi tại hoặc sau khi cửa s�
 evidence reference. LC-05 chưa tự phân loại outcome; đó là trách nhiệm LC-06. Baseline có
 nguồn là snapshot lúc Decision được tạo, nên Outcome Verifier phải đánh giá freshness và
 đủ dữ liệu trước khi dùng nó để kết luận.
+
+## LC-06 — Outcome verifier
+
+`POST /api/decisions/:decisionId/verify` nhận operational snapshot sau cửa sổ đo và
+evidence refs, rồi ghi verification provenance cùng outcome trong một database transaction.
+Với metric `affectedOrders`, rule deterministic là: `0` → `SUCCESS`; không giảm hoặc tăng
+so với baseline → `FAILURE`; giảm nhưng chưa về `0`, hoặc metric không đủ → `INCONCLUSIVE`.
+
+Verifier không gọi AI để đoán, không tự thực thi action, không chấm outcome trước cửa sổ đo
+và không tạo saving/cost. Những metric hay SLA khác chưa có policy phải đi vào
+`INCONCLUSIVE`, không được tự thêm ngưỡng.

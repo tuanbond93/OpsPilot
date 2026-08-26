@@ -42,6 +42,24 @@ export interface DecisionOutcomeObservationContract {
   createdAt: string;
 }
 
+export type OutcomeVerificationReasonCode = "SUCCESS_RESOLVED" | "FAILURE_NO_IMPROVEMENT" | "INCONCLUSIVE_PARTIAL_IMPROVEMENT" | "INCONCLUSIVE_METRIC_UNAVAILABLE";
+
+export interface DecisionOutcomeVerification {
+  verificationId: string;
+  decisionId: string;
+  contractId: string;
+  classification: DecisionOutcomeStatus;
+  reasonCode: OutcomeVerificationReasonCode;
+  baselineAffectedOrders?: number | null;
+  observedAffectedOrders?: number | null;
+  observedMetrics: Readonly<Record<string, unknown>>;
+  observedAt: string;
+  source: string;
+  evidenceRefs: string[];
+  verifiedBy: string;
+  createdAt: string;
+}
+
 export interface DecisionSourceLinks {
   incidentId?: string;
   rootCauseRunId?: string;
@@ -160,4 +178,14 @@ export interface RecordDecisionExecutionInput {
   executionReference: string;
   performedAt?: string;
   note?: string;
+}
+
+export interface VerifyDecisionOutcomeInput {
+  decisionId: string;
+  observedAt: string;
+  source: string;
+  observedMetrics: { affectedOrders?: number };
+  evidenceRefs: string[];
+  actor: string;
+  idempotencyKey: string;
 }

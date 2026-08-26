@@ -6,10 +6,12 @@ import {
   validateExecutionInput,
   validateOutcomeInput,
   validateTransitionInput,
+  verifyOutcomeObservation,
   type CreateDecisionInput,
   type RecordDecisionExecutionInput,
   type RecordOutcomeInput,
   type TransitionDecisionInput,
+  type VerifyDecisionOutcomeInput,
 } from "@/domain/decision";
 
 export class DecisionService implements IDecisionService {
@@ -45,7 +47,7 @@ export class DecisionService implements IDecisionService {
     try {
       const decision = await this.repository.getById(decisionId);
       if (!decision) throw new DecisionDomainError("NOT_FOUND", `Decision '${decisionId}' not found.`);
-      return { ok: true, data: { decision, auditEvents: await this.repository.getAuditEvents(decisionId), outcomes: await this.repository.getOutcomes(decisionId), followupSchedules: await this.repository.getFollowupSchedules(decisionId), outcomeObservationContract: await this.repository.getOutcomeObservationContract(decisionId) } };
+      return { ok: true, data: { decision, auditEvents: await this.repository.getAuditEvents(decisionId), outcomes: await this.repository.getOutcomes(decisionId), followupSchedules: await this.repository.getFollowupSchedules(decisionId), outcomeObservationContract: await this.repository.getOutcomeObservationContract(decisionId), outcomeVerifications: await this.repository.getOutcomeVerifications(decisionId) } };
     } catch (error) { return this.failure(error); }
   }
 
@@ -110,6 +112,31 @@ export class DecisionService implements IDecisionService {
           note: input.note?.trim() || null,
         },
       });
+    } catch (error) { return this.failure(error); }
+  }
+
+  async verifyOutcome(input: VerifyDecisionOutcomeInput): Promise<DecisionServiceResult> {
+    try {
+      this.assertWriteAllowed();
+      if (!input.source.trim()) throw new DecisionDomainError("VALIDATION_ERROR", "source is required.");
+      if (!input.idempotencyKey.trim()) throw new DecisionDomainError("VALIDATION_ERROR", "idempotencyKey is required.");
+      if (!Number.isFinite(Date.parse(input.observedAt))) throw new DecisionDomainError("VALIDATION_ERROR", "observedAt must be a valid timestamp.");
+      const decision = await this.repository.getById(input.decisionId);
+      if (!decision) throw new DecisionDomainError("NOT_FOUND", `Decision '${input.decisionId}' not found.`);
+      if (decision.mode !== "HUMAN_APPROVAL") throw new DecisionDomainError("OUTCOME_VERIFIER_HUMAN_APPROVAL_ONLY", "Automatic verification is only available for human-approved executed decisions.");
+      const contract = await this.repository.getOutcomeObservationContract(input.decisionId);
+      if (!contract) throw new DecisionDomainError("OUTCOME_OBSERVATION_CONTRACT_REQUIRED", "An outcome observation contract is required before verification.");
+      const verification = verifyOutcomeObservation(contract, input);
+      const observedOutcome = verification.classification === "SUCCESS"
+        ? "Affected orders reached zero in the post-execution operational snapshot."
+        : verification.classification === "FAILURE"
+          ? "Affected orders did not improve versus the baseline snapshot."
+          : "Available operational evidence does not establish a verified successful or failed outcome.";
+      const result = await this.repository.recordVerifiedOutcome({
+        ...input, verification, observedOutcome,
+        inconclusiveReason: verification.classification === "INCONCLUSIVE" ? verification.reasonCode : undefined,
+      });
+      return { ok: true, data: { decision: result.decision, verification }, idempotent: result.idempotent };
     } catch (error) { return this.failure(error); }
   }
 }

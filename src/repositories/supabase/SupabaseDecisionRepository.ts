@@ -1,6 +1,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { IDecisionRepository, DecisionMutationResult } from "../interfaces/IDecisionRepository";
-import type { CreateDecisionInput, Decision, DecisionAuditEvent, DecisionEvidenceSnapshot, DecisionFollowupSchedule, DecisionOutcomeObservationContract, DecisionOutcomeRecord, RecordOutcomeInput, TransitionDecisionInput } from "@/domain/decision";
+import type { CreateDecisionInput, Decision, DecisionAuditEvent, DecisionEvidenceSnapshot, DecisionFollowupSchedule, DecisionOutcomeObservationContract, DecisionOutcomeRecord, DecisionOutcomeVerification, RecordOutcomeInput, TransitionDecisionInput, VerifyDecisionOutcomeInput } from "@/domain/decision";
 
 type DbRow = Record<string, any>;
 
@@ -99,5 +99,18 @@ export class SupabaseDecisionRepository implements IDecisionRepository {
     const { data, error } = await this.client.from("decision_outcome_observation_contracts").select("*").eq("decision_id", decisionId).maybeSingle();
     if (error) throw error;
     return data ? mapOutcomeObservationContract(data) : null;
+  }
+
+  recordVerifiedOutcome(input: VerifyDecisionOutcomeInput & { verification: Omit<DecisionOutcomeVerification, "verificationId" | "createdAt">; observedOutcome: string; inconclusiveReason?: string }) {
+    return this.rpc("record_verified_decision_outcome", input);
+  }
+
+  async getOutcomeVerifications(decisionId: string): Promise<readonly DecisionOutcomeVerification[]> {
+    const { data, error } = await this.client.from("decision_outcome_verifications").select("*").eq("decision_id", decisionId).order("created_at");
+    if (error) throw error;
+    return (data || []).map((row) => ({ verificationId: row.id, decisionId: row.decision_id, contractId: row.contract_id,
+      classification: row.classification, reasonCode: row.reason_code, baselineAffectedOrders: row.baseline_affected_orders,
+      observedAffectedOrders: row.observed_affected_orders, observedMetrics: row.observed_metrics, observedAt: row.observed_at,
+      source: row.source, evidenceRefs: row.evidence_refs, verifiedBy: row.verified_by, createdAt: row.created_at }));
   }
 }

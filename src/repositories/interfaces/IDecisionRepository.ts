@@ -5,7 +5,9 @@ import type {
   DecisionFollowupSchedule,
   DecisionOutcomeObservationContract,
   DecisionOutcomeRecord,
+  DecisionOutcomeVerification,
   RecordOutcomeInput,
+  VerifyDecisionOutcomeInput,
   TransitionDecisionInput,
 } from "@/domain/decision";
 
@@ -24,4 +26,6 @@ export interface IDecisionRepository {
   getOutcomes(decisionId: string): Promise<readonly DecisionOutcomeRecord[]>;
   getFollowupSchedules(decisionId: string): Promise<readonly DecisionFollowupSchedule[]>;
   getOutcomeObservationContract(decisionId: string): Promise<DecisionOutcomeObservationContract | null>;
+  recordVerifiedOutcome(input: VerifyDecisionOutcomeInput & { verification: Omit<DecisionOutcomeVerification, "verificationId" | "createdAt">; observedOutcome: string; inconclusiveReason?: string }): Promise<DecisionMutationResult>;
+  getOutcomeVerifications(decisionId: string): Promise<readonly DecisionOutcomeVerification[]>;
 }
