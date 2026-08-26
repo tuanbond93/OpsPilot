@@ -4,11 +4,12 @@ Last Updated: 2026-08-26
 
 ## Season 2 — Level C Decision System
 
-- Current state: **VALIDATED THROUGH LC-07**; runtime/database rollout evidence is not yet recorded.
+- Current state: **VALIDATED THROUGH LC-07**; Supabase migration schema verified, while end-to-end pilot runtime evidence is still pending.
 - Current branch: `codex/season2-safe-checkpoint`
 - Safe worktree checkpoint: `4211b1a` — Season 2 decision platform and worktree hygiene.
 - Latest implementation checkpoint: LC-04 automatic Decision follow-up scheduling.
 - Worktree at handoff: clean; generated builds, logs, dependency backups, `tmp/` and `*.tsbuildinfo` are ignored but not deleted.
+- Migration evidence: on 2026-08-26, Supabase read-only checks returned HTTP 200 for `decisions`, `decision_followup_schedules`, `decision_outcome_observation_contracts`, and `decision_outcome_verifications`.
 - Quality evidence: TypeScript PASS; ESLint PASS; **56 test files / 331 tests PASS**; Next.js production build PASS.
 - Integration freeze: GHN Data API, MCP Gateway and GTalk remain out of scope until company access is granted.
 - Financial boundary: Decision Core remains `NOT_EVALUATED`; P15-B.1 remains the financial authority.
