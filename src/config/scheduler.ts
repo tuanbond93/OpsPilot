@@ -1,6 +1,7 @@
 import { syncRillnet } from "../jobs/sync-rillnet";
 import { AiAnalysisWorker } from "../jobs/ai-analysis-worker";
 import { runNotificationDispatcherJob } from "../jobs/dispatch-notifications";
+import { runDecisionFollowupShadowJob } from "../jobs/decision-followup-shadow";
 import type { DeclarativeJob } from "../integrations/scheduler";
 
 export const SCHEDULER_JOBS: DeclarativeJob[] = [
@@ -44,6 +45,20 @@ export const SCHEDULER_JOBS: DeclarativeJob[] = [
         success: res.ok,
         details: `Claimed: ${res.summary.claimedCount}, Sent: ${res.summary.sentCount}, Simulated: ${res.summary.simulatedCount}, Failed: ${res.summary.failedCount}`,
         error: res.error,
+      };
+    },
+  },
+  {
+    name: "decision-followup-shadow",
+    description: "LC-10 shadow-only capture of due Decision follow-up evidence; never verifies outcomes or executes operations",
+    schedule: "15 3 * * *",
+    enabled: true,
+    handler: async () => {
+      const res = await runDecisionFollowupShadowJob();
+      return {
+        success: res.ok && res.failedCount === 0,
+        details: `Scanned: ${res.scannedCount}, evidence captured: ${res.capturedCount}, awaiting evidence: ${res.awaitingEvidenceCount}, skipped: ${res.skippedCount}`,
+        error: res.errors.length ? res.errors.join(" | ") : undefined,
       };
     },
   },

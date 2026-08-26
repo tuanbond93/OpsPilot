@@ -26,6 +26,7 @@ interface OutcomePreview {
   source?: string | null;
   evidenceRefs?: string[];
   evidenceKind?: "SNAPSHOT" | "INCIDENT_RESOLVED" | null;
+  shadowFollowup?: { occurredAt: string; observationState: "READY_TO_VERIFY" | "AWAITING_POST_WINDOW_EVIDENCE"; observedAt: string | null; observedAffectedOrders: number | null; source: string | null } | null;
   verification?: { classification: string; reason_code: string; observed_at: string; evidence_refs: string[]; observed_affected_orders: number | null } | null;
 }
 
@@ -376,6 +377,7 @@ export default function DecisionInboxPage() {
                   {preview.state === "READY_TO_VERIFY" && <><p className="mt-1 text-slate-300">Baseline: <strong>{preview.baselineAffectedOrders ?? "không có"}</strong> đơn · {preview.evidenceKind === "INCIDENT_RESOLVED" ? "Sự cố đã được giải quyết" : "Snapshot mới"}: <strong>{preview.observedAffectedOrders ?? "không có"}</strong> đơn{preview.observedAt ? ` · ${new Date(preview.observedAt).toLocaleString("vi-VN")}` : ""}.</p><p className="mt-1 text-xs text-slate-400">Nguồn: {preview.source}. Bấm Verify để hệ thống phân loại theo rule và lưu evidence/audit.</p>{roleCan(role, "RECORD_OUTCOME") && <button type="button" onClick={() => void verifyOutcome(decision, preview)} disabled={submitting === decision.decisionId || preview.observedAffectedOrders === null} className="mt-3 inline-flex min-h-10 items-center rounded-lg bg-violet-600 px-4 text-sm font-semibold text-white hover:bg-violet-500 disabled:opacity-60">{submitting === decision.decisionId ? "Đang verify…" : "Verify outcome"}</button>}</>}
                   {preview.state === "VERIFIED" && <p className="mt-1 text-slate-300">Đã verify: <strong>{preview.verification?.classification}</strong> · {preview.verification?.reason_code} · Snapshot {preview.verification?.observed_affected_orders ?? "không có"} đơn.</p>}
                   {preview.state === "NO_CONTRACT" && <p className="mt-1 text-amber-200">Chưa có Outcome Observation Contract để verify.</p>}
+                  {preview.shadowFollowup && <p role="status" aria-atomic="true" className="mt-2 text-xs text-cyan-200">LC-10 SHADOW: {preview.shadowFollowup.observationState === "READY_TO_VERIFY" ? `đã ghi evidence ${preview.shadowFollowup.observedAffectedOrders ?? "—"} đơn` : "đã kiểm tra nhưng chưa có evidence hợp lệ"} · {new Date(preview.shadowFollowup.occurredAt).toLocaleString("vi-VN")}. Chưa tự verify hoặc thay đổi outcome.</p>}
                 </>; })()}
               </div>}
               {decision.followupSchedule && <div className="mt-3 rounded-lg border border-indigo-500/30 bg-indigo-500/5 p-3 text-sm text-indigo-100">

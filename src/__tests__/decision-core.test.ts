@@ -4,6 +4,7 @@ import { canTransition, immutableSnapshot, type CreateDecisionInput, type Decisi
 import { MockDecisionRepository } from "@/repositories/mock/MockDecisionRepository";
 import { DecisionService } from "@/services/impl/DecisionService";
 import { selectPostWindowOutcomeEvidence } from "@/domain/decision/outcome-evidence";
+import { buildDecisionFollowupShadowPlan } from "@/domain/decision/followup-shadow";
 
 function input(overrides: Partial<CreateDecisionInput> = {}): CreateDecisionInput {
   return {
@@ -43,6 +44,13 @@ describe("Decision Core lifecycle and safety", () => {
       .toMatchObject({ kind: "INCIDENT_RESOLVED", observedAffectedOrders: 0, source: "incident_resolution:incident-1" });
     expect(selectPostWindowOutcomeEvidence(boundary, null, { incidentId: "incident-1", status: "resolved", resolvedAt: "2026-08-26T09:20:06.000Z" })).toBeNull();
     expect(selectPostWindowOutcomeEvidence(boundary, null, { incidentId: "incident-1", status: "open", resolvedAt: "2026-08-26T14:20:06.000Z" })).toBeNull();
+  });
+
+  it("keeps LC-10 follow-up capture in shadow mode without a decision transition", () => {
+    const plan = buildDecisionFollowupShadowPlan({ scheduleId: "schedule-1", checkAt: "2026-08-26T10:00:00Z", now: "2026-08-26T11:00:00Z", decisionStatus: "EXECUTED", decisionMode: "HUMAN_APPROVAL", evidence: { kind: "INCIDENT_RESOLVED", observedAffectedOrders: 0, observedAt: "2026-08-26T10:30:00Z", source: "incident_resolution:incident-1", evidenceRefs: ["incident_resolution:incident-1:2026-08-26T10:30:00Z"] } });
+    expect(plan).toMatchObject({ kind: "OBSERVE", observationState: "READY_TO_VERIFY", idempotencyKey: "lc10-shadow:schedule-1:INCIDENT_RESOLVED:2026-08-26T10:30:00Z" });
+    expect(buildDecisionFollowupShadowPlan({ scheduleId: "schedule-1", checkAt: "2026-08-26T12:00:00Z", now: "2026-08-26T11:00:00Z", decisionStatus: "EXECUTED", decisionMode: "HUMAN_APPROVAL", evidence: null })).toMatchObject({ kind: "SKIP", reason: "FOLLOWUP_NOT_DUE" });
+    expect(buildDecisionFollowupShadowPlan({ scheduleId: "schedule-1", checkAt: "2026-08-26T10:00:00Z", now: "2026-08-26T11:00:00Z", decisionStatus: "OUTCOME_PENDING", decisionMode: "HUMAN_APPROVAL", evidence: null })).toMatchObject({ kind: "SKIP", reason: "DECISION_NOT_EXECUTED" });
   });
 
   it("defines every valid forward transition and rejects all other pairs", () => {

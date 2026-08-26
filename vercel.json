@@ -7,6 +7,10 @@
     {
       "path": "/api/cron/process-ai-jobs",
       "schedule": "0 3 * * *"
+    },
+    {
+      "path": "/api/cron/decision-followups",
+      "schedule": "15 3 * * *"
     }
   ]
 }
