@@ -2,6 +2,7 @@ import type {
   CreateDecisionInput,
   Decision,
   DecisionAuditEvent,
+  DecisionFollowupSchedule,
   DecisionOutcomeRecord,
   RecordOutcomeInput,
   TransitionDecisionInput,
@@ -20,4 +21,5 @@ export interface IDecisionRepository {
   recordOutcome(input: RecordOutcomeInput): Promise<DecisionMutationResult>;
   getAuditEvents(decisionId: string): Promise<readonly DecisionAuditEvent[]>;
   getOutcomes(decisionId: string): Promise<readonly DecisionOutcomeRecord[]>;
+  getFollowupSchedules(decisionId: string): Promise<readonly DecisionFollowupSchedule[]>;
 }

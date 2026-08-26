@@ -1,10 +1,11 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { IDecisionRepository, DecisionMutationResult } from "../interfaces/IDecisionRepository";
-import type { CreateDecisionInput, Decision, DecisionAuditEvent, DecisionEvidenceSnapshot, DecisionOutcomeRecord, RecordOutcomeInput, TransitionDecisionInput } from "@/domain/decision";
+import type { CreateDecisionInput, Decision, DecisionAuditEvent, DecisionEvidenceSnapshot, DecisionFollowupSchedule, DecisionOutcomeRecord, RecordOutcomeInput, TransitionDecisionInput } from "@/domain/decision";
 
 type DbRow = Record<string, any>;
 
 function mapDecision(row: DbRow, evidence?: DecisionEvidenceSnapshot): Decision {
+  const scheduleRow = row.decision_followup_schedules?.[0];
   return {
     decisionId: row.id, sourceLinks: row.source_links, sourceFingerprint: row.source_fingerprint,
     idempotencyKey: row.idempotency_key, problem: row.problem, rootCause: row.root_cause,
@@ -15,8 +16,20 @@ function mapDecision(row: DbRow, evidence?: DecisionEvidenceSnapshot): Decision 
     approvedAt: row.approved_at, rejectedBy: row.rejected_by, rejectedAt: row.rejected_at,
     rejectReason: row.reject_reason, executedBy: row.executed_by, executedAt: row.executed_at,
     executionReference: row.execution_reference, outcomeStatus: row.outcome_status, outcomeRecordedAt: row.outcome_recorded_at,
+    followupSchedule: scheduleRow ? mapFollowupSchedule(scheduleRow) : null,
   };
 }
+
+function mapFollowupSchedule(row: DbRow): DecisionFollowupSchedule {
+  return {
+    scheduleId: row.id, decisionId: row.decision_id, executionAuditEventId: row.execution_audit_event_id,
+    status: row.status, checkAt: row.check_at, policyVersion: row.policy_version,
+    riskLevelAtSchedule: row.risk_level_at_schedule, scheduledBy: row.scheduled_by,
+    idempotencyKey: row.idempotency_key, createdAt: row.created_at,
+  };
+}
+
+const DECISION_SELECT = "*, decision_evidence_snapshots(snapshot), decision_followup_schedules(*)";
 
 export class SupabaseDecisionRepository implements IDecisionRepository {
   constructor(private readonly client: SupabaseClient) {}
@@ -33,7 +46,7 @@ export class SupabaseDecisionRepository implements IDecisionRepository {
   }
 
   async getById(decisionId: string): Promise<Decision | null> {
-    const { data, error } = await this.client.from("decisions").select("*, decision_evidence_snapshots(snapshot)").eq("id", decisionId).maybeSingle();
+    const { data, error } = await this.client.from("decisions").select(DECISION_SELECT).eq("id", decisionId).maybeSingle();
     if (error) throw error;
     if (!data) return null;
     const snapshot = data.decision_evidence_snapshots?.[0]?.snapshot;
@@ -41,7 +54,7 @@ export class SupabaseDecisionRepository implements IDecisionRepository {
   }
 
   async list(limit = 100): Promise<Decision[]> {
-    const { data, error } = await this.client.from("decisions").select("*, decision_evidence_snapshots(snapshot)").order("created_at", { ascending: false }).limit(limit);
+    const { data, error } = await this.client.from("decisions").select(DECISION_SELECT).order("created_at", { ascending: false }).limit(limit);
     if (error) throw error;
     return (data || []).map((row) => mapDecision(row, row.decision_evidence_snapshots?.[0]?.snapshot));
   }
@@ -62,5 +75,11 @@ export class SupabaseDecisionRepository implements IDecisionRepository {
     return (data || []).map((row) => ({ outcomeId: row.id, decisionId: row.decision_id, status: row.status,
       observedOutcome: row.observed_outcome, measuredAt: row.measured_at, evidenceRefs: row.evidence_refs,
       inconclusiveReason: row.inconclusive_reason, recordedBy: row.recorded_by, recordedAt: row.recorded_at }));
+  }
+
+  async getFollowupSchedules(decisionId: string): Promise<readonly DecisionFollowupSchedule[]> {
+    const { data, error } = await this.client.from("decision_followup_schedules").select("*").eq("decision_id", decisionId).order("created_at");
+    if (error) throw error;
+    return (data || []).map(mapFollowupSchedule);
   }
 }

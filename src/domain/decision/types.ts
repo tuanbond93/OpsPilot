@@ -13,6 +13,20 @@ export type DecisionStatus =
 
 export type DecisionRiskLevel = "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
 export type DecisionOutcomeStatus = "SUCCESS" | "FAILURE" | "INCONCLUSIVE";
+export type DecisionFollowupScheduleStatus = "SCHEDULED";
+
+export interface DecisionFollowupSchedule {
+  scheduleId: string;
+  decisionId: string;
+  executionAuditEventId: string;
+  status: DecisionFollowupScheduleStatus;
+  checkAt: string;
+  policyVersion: "LC04_V1";
+  riskLevelAtSchedule: DecisionRiskLevel;
+  scheduledBy: string;
+  idempotencyKey: string;
+  createdAt: string;
+}
 
 export interface DecisionSourceLinks {
   incidentId?: string;
@@ -61,6 +75,7 @@ export interface Decision {
   executionReference?: string | null;
   outcomeStatus?: DecisionOutcomeStatus | null;
   outcomeRecordedAt?: string | null;
+  followupSchedule?: DecisionFollowupSchedule | null;
 }
 
 export interface DecisionAuditEvent {

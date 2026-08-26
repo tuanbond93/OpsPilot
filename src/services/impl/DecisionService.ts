@@ -45,7 +45,7 @@ export class DecisionService implements IDecisionService {
     try {
       const decision = await this.repository.getById(decisionId);
       if (!decision) throw new DecisionDomainError("NOT_FOUND", `Decision '${decisionId}' not found.`);
-      return { ok: true, data: { decision, auditEvents: await this.repository.getAuditEvents(decisionId), outcomes: await this.repository.getOutcomes(decisionId) } };
+      return { ok: true, data: { decision, auditEvents: await this.repository.getAuditEvents(decisionId), outcomes: await this.repository.getOutcomes(decisionId), followupSchedules: await this.repository.getFollowupSchedules(decisionId) } };
     } catch (error) { return this.failure(error); }
   }
 

@@ -284,6 +284,11 @@ export default function DecisionInboxPage() {
                 </button>
               </div>}
               {decision.executionReference && <p className="mt-4 rounded-lg border border-slate-700 bg-slate-950 p-3 text-sm text-slate-300"><strong>Execution reference:</strong> <span className="font-mono text-emerald-200">{decision.executionReference}</span>{decision.executedAt ? ` · Ghi nhận lúc ${new Date(decision.executedAt).toLocaleString("vi-VN")}` : ""}</p>}
+              {decision.followupSchedule && <div className="mt-3 rounded-lg border border-indigo-500/30 bg-indigo-500/5 p-3 text-sm text-indigo-100">
+                <p className="font-semibold">Auto follow-up đã được lên lịch</p>
+                <p className="mt-1 text-slate-300">Kiểm tra lại lúc {new Date(decision.followupSchedule.checkAt).toLocaleString("vi-VN")} · Policy {decision.followupSchedule.policyVersion} · Risk snapshot {decision.followupSchedule.riskLevelAtSchedule}</p>
+                <p className="mt-1 text-xs text-slate-500">Đây là lịch thu thập bằng chứng, chưa phải kết luận outcome hay giá trị tài chính.</p>
+              </div>}
             </article>;
           })}
         </section>

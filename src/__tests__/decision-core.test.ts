@@ -86,6 +86,23 @@ describe("Decision Core lifecycle and safety", () => {
     expect((first.data as any)).toMatchObject({ decisionStatus: "EXECUTED", executionReference: "ticket:OPS-123", executedBy: "operator" });
     const audit = await repository.getAuditEvents(id);
     expect(audit.at(-1)?.metadata).toMatchObject({ event: "EXTERNAL_EXECUTION_RECORDED", channel: "MANUAL_EXTERNAL", performedAt: "2026-08-26T03:00:00.000Z" });
+    const schedules = await repository.getFollowupSchedules(id);
+    expect(schedules).toHaveLength(1);
+    expect(schedules[0]).toMatchObject({ decisionId: id, status: "SCHEDULED", policyVersion: "LC04_V1", riskLevelAtSchedule: "HIGH", scheduledBy: "operator", idempotencyKey: "execute-1:followup" });
+    expect(new Date(schedules[0].checkAt).getTime() - new Date(schedules[0].createdAt).getTime()).toBe(120 * 60_000);
+    expect((await repository.getById(id))?.followupSchedule?.scheduleId).toBe(schedules[0].scheduleId);
+  });
+
+  it.each([
+    ["CRITICAL", 60], ["HIGH", 120], ["MEDIUM", 240], ["LOW", 480],
+  ] as const)("schedules %s risk follow-up after %i minutes", async (riskLevel, expectedMinutes) => {
+    const created = await service.create(input({ riskLevel, sourceFingerprint: `risk:${riskLevel}`, idempotencyKey: `create:${riskLevel}` }));
+    const id = (created.data as any).decisionId;
+    await service.transition({ decisionId: id, targetStatus: "READY_FOR_REVIEW", actor: "manager", idempotencyKey: `ready:${riskLevel}` });
+    await service.transition({ decisionId: id, targetStatus: "APPROVED", actor: "manager", idempotencyKey: `approve:${riskLevel}` });
+    await service.recordExecution({ decisionId: id, actor: "operator", idempotencyKey: `execute:${riskLevel}`, executionReference: `ticket:${riskLevel}` });
+    const [schedule] = await repository.getFollowupSchedules(id);
+    expect(new Date(schedule.checkAt).getTime() - new Date(schedule.createdAt).getTime()).toBe(expectedMinutes * 60_000);
   });
 
   it("blocks execution when the critic requires human investigation", async () => {
@@ -96,6 +113,7 @@ describe("Decision Core lifecycle and safety", () => {
     const result = await service.recordExecution({ decisionId: id, actor: "operator", idempotencyKey: "guarded-execute", executionReference: "ticket:unsafe" });
     expect(result.error).toBe("EXECUTION_BLOCKED_BY_CRITIC");
     expect((await repository.getById(id))?.decisionStatus).toBe("APPROVED");
+    expect(await repository.getFollowupSchedules(id)).toHaveLength(0);
   });
 
   it("records SHADOW actual outcome without approval or execution transition", async () => {

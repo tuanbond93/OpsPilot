@@ -76,3 +76,14 @@ Apply [017_decision_core.sql](../src/database/migrations/017_decision_core.sql) 
 - Audit/evidence/outcome không được update/delete.
 - Actor được ghi nhận và validate nhưng chưa có RBAC/session identity verification thực sự.
 - Migration application và Supabase runtime verification là deployment responsibilities, chưa được giả định là hoàn tất chỉ vì file migration tồn tại.
+
+## LC-04 — Automatic follow-up scheduling
+
+Khi audit event `EXECUTED` được ghi thành công, Decision Core tự tạo đúng một
+`decision_followup_schedules` record trong cùng transaction database. Lịch kiểm tra
+được tính cố định theo risk snapshot: CRITICAL 60 phút, HIGH 120 phút, MEDIUM 240 phút,
+LOW 480 phút. Retry execution không tạo lịch trùng.
+
+Schedule chỉ trả lời “khi nào cần lấy bằng chứng mới”. Nó không tự thực thi action,
+không tự kết luận outcome và không tính expected/realized saving. Outcome observation
+contract thuộc LC-05; financial authority vẫn là P15-B.1.

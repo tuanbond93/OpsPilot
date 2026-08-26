@@ -1,11 +1,13 @@
 import type { IDecisionRepository, DecisionMutationResult } from "../interfaces/IDecisionRepository";
 import {
   assertDecisionTransition,
+  buildDecisionFollowupSchedule,
   DecisionDomainError,
   immutableSnapshot,
   type CreateDecisionInput,
   type Decision,
   type DecisionAuditEvent,
+  type DecisionFollowupSchedule,
   type DecisionOutcomeRecord,
   type RecordOutcomeInput,
   type TransitionDecisionInput,
@@ -15,11 +17,13 @@ export class MockDecisionRepository implements IDecisionRepository {
   private decisions = new Map<string, Decision>();
   private auditEvents: DecisionAuditEvent[] = [];
   private outcomes: DecisionOutcomeRecord[] = [];
+  private followupSchedules: DecisionFollowupSchedule[] = [];
 
   clearMemory(): void {
     this.decisions.clear();
     this.auditEvents = [];
     this.outcomes = [];
+    this.followupSchedules = [];
   }
 
   async create(input: CreateDecisionInput): Promise<DecisionMutationResult> {
@@ -82,12 +86,21 @@ export class MockDecisionRepository implements IDecisionRepository {
     if (input.targetStatus === "APPROVED") Object.assign(updated, { approvedBy: input.actor, approvedAt: now });
     if (input.targetStatus === "REJECTED") Object.assign(updated, { rejectedBy: input.actor, rejectedAt: now, rejectReason: input.rejectReason });
     if (input.targetStatus === "EXECUTED") Object.assign(updated, { executedBy: input.actor, executedAt: now, executionReference: input.executionReference || null });
-    this.decisions.set(input.decisionId, updated);
+    const eventId = crypto.randomUUID();
     this.auditEvents.push(immutableSnapshot({
-      eventId: crypto.randomUUID(), decisionId: input.decisionId, idempotencyKey: input.idempotencyKey,
+      eventId, decisionId: input.decisionId, idempotencyKey: input.idempotencyKey,
       actor: input.actor, occurredAt: now, previousStatus, newStatus: input.targetStatus,
       metadata: immutableSnapshot(input.metadata || {}),
     }));
+    if (input.targetStatus === "EXECUTED") {
+      const schedule = immutableSnapshot(buildDecisionFollowupSchedule({
+        decisionId: input.decisionId, executionAuditEventId: eventId, riskLevel: updated.riskLevel,
+        scheduledBy: input.actor, idempotencyKey: `${input.idempotencyKey}:followup`, executedAt: now,
+      }));
+      this.followupSchedules.push(schedule);
+      updated.followupSchedule = schedule;
+    }
+    this.decisions.set(input.decisionId, updated);
     return { decision: immutableSnapshot(updated), idempotent: false };
   }
 
@@ -141,5 +154,9 @@ export class MockDecisionRepository implements IDecisionRepository {
 
   async getOutcomes(decisionId: string): Promise<readonly DecisionOutcomeRecord[]> {
     return immutableSnapshot(this.outcomes.filter((item) => item.decisionId === decisionId));
+  }
+
+  async getFollowupSchedules(decisionId: string): Promise<readonly DecisionFollowupSchedule[]> {
+    return immutableSnapshot(this.followupSchedules.filter((item) => item.decisionId === decisionId));
   }
 }
