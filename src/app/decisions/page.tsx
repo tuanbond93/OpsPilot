@@ -17,6 +17,17 @@ interface PilotIncident {
   maximumAgeHours: number | null;
 }
 
+interface OutcomePreview {
+  state: "NO_CONTRACT" | "WAITING_MEASUREMENT_WINDOW" | "READY_TO_VERIFY" | "VERIFIED";
+  measurementWindowEnd?: string;
+  baselineAffectedOrders?: number | null;
+  observedAffectedOrders?: number | null;
+  observedAt?: string | null;
+  source?: string | null;
+  evidenceRefs?: string[];
+  verification?: { classification: string; reason_code: string; observed_at: string; evidence_refs: string[]; observed_affected_orders: number | null } | null;
+}
+
 const badge: Record<string, string> = {
   READY_FOR_REVIEW: "border-amber-400/40 bg-amber-400/10 text-amber-300",
   APPROVED: "border-emerald-400/40 bg-emerald-400/10 text-emerald-300",
@@ -39,6 +50,7 @@ export default function DecisionInboxPage() {
   const [executions, setExecutions] = useState<Record<string, { externalTicketId: string; performedAt: string; note: string }>>({});
   const [workOrders, setWorkOrders] = useState<Record<string, ExecutionWorkOrder | null>>({});
   const [workOrderForms, setWorkOrderForms] = useState<Record<string, { owner: string; dueAt: string; actionItems: string }>>({});
+  const [outcomePreviews, setOutcomePreviews] = useState<Record<string, OutcomePreview>>({});
 
   const load = useCallback(async () => {
     setLoading(true); setError("");
@@ -58,6 +70,13 @@ export default function DecisionInboxPage() {
         return [item.decisionId, response.ok ? workOrderPayload.data || null : null] as const;
       }));
       setWorkOrders(Object.fromEntries(entries));
+      const pending = nextDecisions.filter((item: Decision) => item.mode === "HUMAN_APPROVAL" && ["EXECUTED", "OUTCOME_PENDING", "SUCCESS", "FAILURE", "INCONCLUSIVE"].includes(item.decisionStatus));
+      const previews = await Promise.all(pending.map(async (item: Decision) => {
+        const response = await fetch(`/api/decisions/${item.decisionId}/outcome-preview`, { cache: "no-store" });
+        const previewPayload = await response.json();
+        return [item.decisionId, response.ok ? previewPayload.data : { state: "NO_CONTRACT" }] as const;
+      }));
+      setOutcomePreviews(Object.fromEntries(previews));
       setIncidents(dashboardResponse.ok ? (dashboard.incidents?.items || []) : []);
     } catch (caught) { setError(caught instanceof Error ? caught.message : String(caught)); }
     finally { setLoading(false); }
@@ -152,6 +171,19 @@ export default function DecisionInboxPage() {
     try {
       const response = await fetch(`/api/decisions/${decision.decisionId}/work-order/status`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ actor: actor.trim(), targetStatus, idempotencyKey: `work-order:${decision.decisionId}:${targetStatus}` }) });
       const payload = await response.json(); handleApiAccess(response, payload, "Không thể cập nhật work order."); await load();
+    } catch (caught) { setError(caught instanceof Error ? caught.message : String(caught)); }
+    finally { setSubmitting(null); }
+  }
+
+  async function verifyOutcome(decision: Decision, preview: OutcomePreview) {
+    if (!actor.trim()) { setError("Vui lòng đăng nhập để verify outcome."); return; }
+    if (preview.state !== "READY_TO_VERIFY" || preview.observedAffectedOrders === null || !preview.observedAt || !preview.source || !preview.evidenceRefs?.length) {
+      setError("Chưa có đủ dữ liệu sau cửa sổ đo để verify outcome."); return;
+    }
+    setSubmitting(decision.decisionId); setError("");
+    try {
+      const response = await fetch(`/api/decisions/${decision.decisionId}/verify`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ actor: actor.trim(), observedAt: preview.observedAt, source: preview.source, observedMetrics: { affectedOrders: preview.observedAffectedOrders }, evidenceRefs: preview.evidenceRefs, idempotencyKey: `verify:${decision.decisionId}:${preview.observedAt}` }) });
+      const payload = await response.json(); handleApiAccess(response, payload, "Không thể verify outcome."); await load();
     } catch (caught) { setError(caught instanceof Error ? caught.message : String(caught)); }
     finally { setSubmitting(null); }
   }
@@ -335,6 +367,15 @@ export default function DecisionInboxPage() {
                 </button>
               </div>}
               {decision.executionReference && <p className="mt-4 rounded-lg border border-slate-700 bg-slate-950 p-3 text-sm text-slate-300"><strong>OpsPilot Execution ID:</strong> <span className="font-mono text-emerald-200">{decision.executionReference}</span>{decision.executedAt ? ` · Ghi nhận lúc ${new Date(decision.executedAt).toLocaleString("vi-VN")}` : ""}</p>}
+              {outcomePreviews[decision.decisionId] && <div className="mt-3 rounded-lg border border-violet-500/30 bg-violet-500/5 p-3 text-sm text-violet-100">
+                {(() => { const preview = outcomePreviews[decision.decisionId]; return <>
+                  <p className="font-semibold">Outcome Verification</p>
+                  {preview.state === "WAITING_MEASUREMENT_WINDOW" && <p className="mt-1 text-slate-300">Chưa đến cửa sổ đo. Có thể verify từ {preview.measurementWindowEnd ? new Date(preview.measurementWindowEnd).toLocaleString("vi-VN") : "thời điểm chưa xác định"}.</p>}
+                  {preview.state === "READY_TO_VERIFY" && <><p className="mt-1 text-slate-300">Baseline: <strong>{preview.baselineAffectedOrders ?? "không có"}</strong> đơn · Snapshot mới: <strong>{preview.observedAffectedOrders ?? "không có"}</strong> đơn{preview.observedAt ? ` · ${new Date(preview.observedAt).toLocaleString("vi-VN")}` : ""}.</p><p className="mt-1 text-xs text-slate-400">Nguồn: {preview.source}. Bấm Verify để hệ thống phân loại theo rule và lưu evidence/audit.</p>{roleCan(role, "RECORD_OUTCOME") && <button type="button" onClick={() => void verifyOutcome(decision, preview)} disabled={submitting === decision.decisionId || preview.observedAffectedOrders === null} className="mt-3 inline-flex min-h-10 items-center rounded-lg bg-violet-600 px-4 text-sm font-semibold text-white hover:bg-violet-500 disabled:opacity-60">{submitting === decision.decisionId ? "Đang verify…" : "Verify outcome"}</button>}</>}
+                  {preview.state === "VERIFIED" && <p className="mt-1 text-slate-300">Đã verify: <strong>{preview.verification?.classification}</strong> · {preview.verification?.reason_code} · Snapshot {preview.verification?.observed_affected_orders ?? "không có"} đơn.</p>}
+                  {preview.state === "NO_CONTRACT" && <p className="mt-1 text-amber-200">Chưa có Outcome Observation Contract để verify.</p>}
+                </>; })()}
+              </div>}
               {decision.followupSchedule && <div className="mt-3 rounded-lg border border-indigo-500/30 bg-indigo-500/5 p-3 text-sm text-indigo-100">
                 <p className="font-semibold">Auto follow-up đã được lên lịch</p>
                 <p className="mt-1 text-slate-300">Kiểm tra lại lúc {new Date(decision.followupSchedule.checkAt).toLocaleString("vi-VN")} · Policy {decision.followupSchedule.policyVersion} · Risk snapshot {decision.followupSchedule.riskLevelAtSchedule}</p>
