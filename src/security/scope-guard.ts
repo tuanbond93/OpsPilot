@@ -8,6 +8,9 @@ type Identity = NonNullable<Awaited<ReturnType<typeof authorizeApiRequest>> exte
 
 export function warehouseAllowedForIdentity(identity: Identity | null, warehouseId: unknown) {
   if (!identity) return true;
+  // Admins have system-wide visibility. Older Decision rows may predate the
+  // warehouseId evidence field; do not hide those rows from the admin inbox.
+  if (identity.role === "ADMIN" && (warehouseId === undefined || warehouseId === null || warehouseId === "")) return true;
   return canAccessWarehouse(resolveDataScope(identity.role, identity.appMetadata, identity.userMetadata), warehouseId);
 }
 

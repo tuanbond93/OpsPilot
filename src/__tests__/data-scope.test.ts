@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { canAccessWarehouse, resolveDataScope, selectWarehouseIds } from "@/security/data-scope";
+import { warehouseAllowedForIdentity } from "@/security/scope-guard";
 import assignmentData from "@/data/warehouse-assignments.generated.json";
 
 describe("warehouse/PIC data scope", () => {
@@ -21,6 +22,12 @@ describe("warehouse/PIC data scope", () => {
     expect(scope.mode).toBe("UNASSIGNED");
     expect(scope.warehouseIds).toEqual([]);
     expect(canAccessWarehouse(scope, "20985000")).toBe(false);
+  });
+
+  it("keeps legacy decisions visible to ADMIN when warehouse evidence is missing", () => {
+    const identity = { role: "ADMIN", appMetadata: {}, userMetadata: {} } as any;
+    expect(warehouseAllowedForIdentity(identity, undefined)).toBe(true);
+    expect(warehouseAllowedForIdentity(identity, null)).toBe(true);
   });
 
   it("intersects zone, PIC and warehouse selections with the account scope", () => {
