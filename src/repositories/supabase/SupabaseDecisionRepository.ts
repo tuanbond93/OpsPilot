@@ -4,13 +4,25 @@ import type { CreateDecisionInput, Decision, DecisionAuditEvent, DecisionEvidenc
 
 type DbRow = Record<string, any>;
 
+export function normalizeDecisionEvidence(value: unknown, capturedAt?: string): DecisionEvidenceSnapshot {
+  const raw = value && typeof value === "object" ? value as DbRow : {};
+  return {
+    sourceIdentifiers: raw.sourceIdentifiers && typeof raw.sourceIdentifiers === "object" ? raw.sourceIdentifiers : {},
+    signalContext: raw.signalContext && typeof raw.signalContext === "object" ? raw.signalContext : undefined,
+    rootCauseContext: raw.rootCauseContext && typeof raw.rootCauseContext === "object" ? raw.rootCauseContext : undefined,
+    actionContext: raw.actionContext && typeof raw.actionContext === "object" ? raw.actionContext : undefined,
+    operationalFacts: raw.operationalFacts && typeof raw.operationalFacts === "object" ? raw.operationalFacts : {},
+    capturedAt: typeof raw.capturedAt === "string" ? raw.capturedAt : capturedAt || new Date(0).toISOString(),
+  };
+}
+
 function mapDecision(row: DbRow, evidence?: DecisionEvidenceSnapshot): Decision {
   const scheduleRow = row.decision_followup_schedules?.[0];
   const contractRow = row.decision_outcome_observation_contracts?.[0];
   return {
     decisionId: row.id, sourceLinks: row.source_links, sourceFingerprint: row.source_fingerprint,
     idempotencyKey: row.idempotency_key, problem: row.problem, rootCause: row.root_cause,
-    recommendedAction: row.recommended_action, alternatives: row.alternatives || [], evidence: evidence || row.evidence,
+    recommendedAction: row.recommended_action, alternatives: row.alternatives || [], evidence: normalizeDecisionEvidence(evidence || row.evidence, row.created_at),
     confidence: Number(row.confidence), riskLevel: row.risk_level, decisionStatus: row.decision_status,
     mode: row.decision_mode, financialImpact: { status: "NOT_EVALUATED" }, createdAt: row.created_at,
     updatedAt: row.updated_at, decisionDeadline: row.decision_deadline, approvedBy: row.approved_by,
