@@ -7,7 +7,7 @@ export interface DecisionFollowupShadowJobResult {
 }
 
 /** LC-10 capture only: never verifies outcomes, transitions decisions, dispatches work, or writes financial values. */
-export async function runDecisionFollowupShadowJob(referenceTimeMs = Date.now()): Promise<DecisionFollowupShadowJobResult> {
+export async function runDecisionFollowupShadowJob(referenceTimeMs = Date.now(), actor = "decision-followup-runner"): Promise<DecisionFollowupShadowJobResult> {
   const timestamp = new Date(referenceTimeMs).toISOString();
   const result: DecisionFollowupShadowJobResult = { ok: true, timestamp, scannedCount: 0, capturedCount: 0, awaitingEvidenceCount: 0, skippedCount: 0, failedCount: 0, errors: [] };
   try {
@@ -37,7 +37,7 @@ export async function runDecisionFollowupShadowJob(referenceTimeMs = Date.now())
         const plan = buildDecisionFollowupShadowPlan({ scheduleId: schedule.id, checkAt: schedule.check_at, now: timestamp, decisionStatus: decision.decision_status, decisionMode: decision.decision_mode, evidence });
         if (plan.kind === "SKIP") { result.skippedCount += 1; continue; }
         const { error: auditError } = await db.from("decision_audit_events").upsert({
-          decision_id: decision.id, idempotency_key: plan.idempotencyKey, actor: "decision-followup-runner",
+          decision_id: decision.id, idempotency_key: plan.idempotencyKey, actor,
           previous_status: decision.decision_status, new_status: decision.decision_status,
           metadata: { event: "LC10_SHADOW_FOLLOWUP_OBSERVED", runnerMode: "SHADOW", observationState: plan.observationState, scheduleId: schedule.id, scheduleCheckAt: schedule.check_at, observedAt: plan.evidence?.observedAt || null, observedAffectedOrders: plan.evidence?.observedAffectedOrders ?? null, source: plan.evidence?.source || null, evidenceRefs: plan.evidence?.evidenceRefs || [] },
         }, { onConflict: "decision_id,idempotency_key", ignoreDuplicates: true });

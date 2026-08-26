@@ -111,6 +111,17 @@ interface TimelineItem {
   actor: string | null;
 }
 
+interface ShadowFollowupRunItem {
+  eventId: string;
+  decisionId: string;
+  actor: string;
+  occurredAt: string;
+  observationState: "READY_TO_VERIFY" | "AWAITING_POST_WINDOW_EVIDENCE";
+  observedAt: string | null;
+  observedAffectedOrders: number | null;
+  source: string | null;
+}
+
 interface HealthIndicator {
   status: "green" | "yellow" | "red" | "unknown";
   healthReason: string;
@@ -288,6 +299,20 @@ export default function ExecutiveDashboardPage() {
   const [syncMessage, setSyncMessage] = useState<string | null>(null);
   const [syncElapsedSeconds, setSyncElapsedSeconds] = useState(0);
   const [syncPhase, setSyncPhase] = useState("CREATED");
+  const [shadowRuns, setShadowRuns] = useState<ShadowFollowupRunItem[]>([]);
+  const [shadowRunning, setShadowRunning] = useState(false);
+  const [shadowRunMessage, setShadowRunMessage] = useState<string | null>(null);
+
+  const fetchShadowRuns = useCallback(async () => {
+    try {
+      const response = await fetch("/api/decision-followups/shadow-runs", { cache: "no-store" });
+      const result = await response.json();
+      handleApiAccess(response, result, "Không thể tải lịch sử LC-10.");
+      setShadowRuns(result.data || []);
+    } catch {
+      setShadowRuns([]);
+    }
+  }, []);
 
   const selectedScope = selectedWarehouse
     ? selectedWarehouse
@@ -361,9 +386,10 @@ export default function ExecutiveDashboardPage() {
 
   useEffect(() => {
     fetchDashboardData();
+    void fetchShadowRuns();
     const interval = setInterval(fetchDashboardData, 30000);
     return () => clearInterval(interval);
-  }, [fetchDashboardData]);
+  }, [fetchDashboardData, fetchShadowRuns]);
 
   useEffect(() => {
     if (!syncing) return;
@@ -394,6 +420,24 @@ export default function ExecutiveDashboardPage() {
       setSyncMessage(`Không thể đồng bộ: ${syncError instanceof Error ? syncError.message : String(syncError)}`);
     } finally {
       setSyncing(false);
+    }
+  }
+
+  async function handleShadowFollowupRun() {
+    if (!session.can("MANAGE_SYSTEM")) { setShadowRunMessage("Chỉ ADMIN được chạy LC-10 SHADOW thủ công."); return; }
+    setShadowRunMessage(null);
+    setShadowRunning(true);
+    try {
+      const response = await fetch("/api/decision-followups/shadow-runs", { method: "POST" });
+      const result = await response.json();
+      handleApiAccess(response, result, "Không thể chạy LC-10 SHADOW.");
+      const summary = result.data;
+      setShadowRunMessage(`LC-10 SHADOW hoàn tất: quét ${summary.scannedCount}, ghi evidence ${summary.capturedCount}, chờ evidence ${summary.awaitingEvidenceCount}, lỗi ${summary.failedCount}. Không có outcome nào được tự verify.`);
+      await fetchShadowRuns();
+    } catch (runError: unknown) {
+      setShadowRunMessage(`Không thể chạy LC-10 SHADOW: ${runError instanceof Error ? runError.message : String(runError)}`);
+    } finally {
+      setShadowRunning(false);
     }
   }
 
@@ -571,10 +615,14 @@ export default function ExecutiveDashboardPage() {
             🔄 Làm mới ({timings?.totalMs || 0}ms)
           </button>
           <button type="button" onClick={() => void handleFreshSync()} disabled={syncing || !session.can("MANAGE_SYSTEM")} title={!session.can("MANAGE_SYSTEM") ? "Chỉ ADMIN được đồng bộ thủ công" : "Đồng bộ và tái tạo bằng chứng từ snapshot Rillnet"} aria-describedby={syncing ? "sync-progress" : undefined} className="inline-flex min-h-11 items-center gap-2 whitespace-nowrap rounded-xl bg-blue-600 px-4 text-xs font-semibold text-white transition hover:bg-blue-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-300 disabled:cursor-not-allowed disabled:opacity-50"><span aria-hidden="true" className={syncing ? "animate-spin motion-reduce:animate-none" : ""}>↻</span>{syncing ? `Đang đồng bộ ${String(Math.floor(syncElapsedSeconds/60)).padStart(2,"0")}:${String(syncElapsedSeconds%60).padStart(2,"0")}` : "Đồng bộ dữ liệu mới"}</button>
+          <button type="button" onClick={() => void handleShadowFollowupRun()} disabled={shadowRunning || !session.can("MANAGE_SYSTEM")} title={!session.can("MANAGE_SYSTEM") ? "Chỉ ADMIN được chạy LC-10 SHADOW" : "Chỉ thu evidence follow-up đến hạn; không tự verify outcome"} aria-describedby={shadowRunning ? "shadow-run-progress" : undefined} className="inline-flex min-h-11 items-center gap-2 whitespace-nowrap rounded-xl border border-cyan-400/50 bg-cyan-500/10 px-4 text-xs font-semibold text-cyan-100 transition hover:bg-cyan-500/20 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cyan-300 disabled:cursor-not-allowed disabled:opacity-50"><span aria-hidden="true" className={shadowRunning ? "animate-spin motion-reduce:animate-none" : ""}>↻</span>{shadowRunning ? "Đang chạy LC-10…" : "Chạy LC-10 SHADOW"}</button>
         </div>
       </header>
 
       {syncing && <div id="sync-progress" role="status" aria-live="polite" className="rounded-xl border border-blue-500/30 bg-blue-500/10 p-4 text-sm text-blue-100"><div className="flex flex-wrap items-center justify-between gap-2"><strong>{syncPhaseLabels[syncPhase] || "Đang đồng bộ dữ liệu"}</strong><span className="font-mono text-blue-200">{String(Math.floor(syncElapsedSeconds/60)).padStart(2,"0")}:{String(syncElapsedSeconds%60).padStart(2,"0")}</span></div><div className="mt-3 h-1.5 overflow-hidden rounded-full bg-slate-800" aria-hidden="true"><div className="h-full w-1/3 animate-pulse rounded-full bg-blue-400 motion-reduce:animate-none" /></div><p className="mt-2 text-blue-200/80">Snapshot gần nhất vẫn đang được hiển thị; bạn có thể tiếp tục sử dụng các màn hình khác.</p></div>}{syncMessage && <div role="status" className={`rounded-xl border p-3 text-sm ${syncMessage.startsWith("Không thể") ? "border-rose-500/30 bg-rose-500/10 text-rose-200" : "border-emerald-500/30 bg-emerald-500/10 text-emerald-200"}`}>{syncMessage}</div>}
+      {shadowRunning && <div id="shadow-run-progress" role="status" aria-live="polite" aria-busy="true" className="rounded-xl border border-cyan-500/30 bg-cyan-500/10 p-3 text-sm text-cyan-100">Đang quét follow-up đến hạn và ghi evidence ở chế độ SHADOW. Decision, outcome và PnL sẽ không bị thay đổi.</div>}
+      {shadowRunMessage && <div role={shadowRunMessage.startsWith("Không thể") || shadowRunMessage.startsWith("Chỉ ADMIN") ? "alert" : "status"} aria-live="polite" className={`rounded-xl border p-3 text-sm ${shadowRunMessage.startsWith("Không thể") || shadowRunMessage.startsWith("Chỉ ADMIN") ? "border-rose-500/30 bg-rose-500/10 text-rose-200" : "border-cyan-500/30 bg-cyan-500/10 text-cyan-100"}`}>{shadowRunMessage}</div>}
+      {shadowRuns.length > 0 && <section className="rounded-xl border border-cyan-500/20 bg-slate-900/70 p-4"><div className="flex flex-wrap items-center justify-between gap-2"><div><h2 className="text-sm font-bold text-cyan-100">LC-10 SHADOW — lịch sử evidence</h2><p className="mt-1 text-xs text-slate-400">Các lượt chạy chỉ thu evidence; không phải outcome verdict.</p></div><Link href="/decisions" className="text-xs font-semibold text-cyan-200 hover:text-cyan-100">Mở Decision Inbox →</Link></div><ul className="mt-3 space-y-2">{shadowRuns.slice(0, 5).map((run) => <li key={run.eventId} className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-800 bg-slate-950/60 px-3 py-2 text-xs"><span className={run.observationState === "READY_TO_VERIFY" ? "font-semibold text-emerald-200" : "font-semibold text-amber-200"}>{run.observationState === "READY_TO_VERIFY" ? `Evidence ${run.observedAffectedOrders ?? "—"} đơn` : "Chờ evidence"}</span><span className="font-mono text-slate-400">{run.decisionId.slice(0, 8)}</span><span className="text-slate-400">{new Date(run.occurredAt).toLocaleString("vi-VN")}</span></li>)}</ul></section>}
 
       {actionMessage && (
         <div className="p-3 bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-xs rounded-xl font-semibold flex items-center justify-between">
