@@ -122,3 +122,12 @@ export interface RecordOutcomeInput {
   actor: string;
   idempotencyKey: string;
 }
+
+export interface RecordDecisionExecutionInput {
+  decisionId: string;
+  actor: string;
+  idempotencyKey: string;
+  executionReference: string;
+  performedAt?: string;
+  note?: string;
+}

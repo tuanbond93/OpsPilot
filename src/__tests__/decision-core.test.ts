@@ -74,6 +74,30 @@ describe("Decision Core lifecycle and safety", () => {
     expect(JSON.stringify(await repository.getOutcomes(id))).not.toMatch(/saving|cost|financial/i);
   });
 
+  it("records only externally performed work and keeps execution idempotent", async () => {
+    const created = await service.create(input()); const id = (created.data as any).decisionId;
+    await service.transition({ decisionId: id, targetStatus: "READY_FOR_REVIEW", actor: "manager", idempotencyKey: "ready-exec" });
+    await service.transition({ decisionId: id, targetStatus: "APPROVED", actor: "manager", idempotencyKey: "approve-exec" });
+    const execution = { decisionId: id, actor: "operator", idempotencyKey: "execute-1", executionReference: "ticket:OPS-123", performedAt: "2026-08-26T03:00:00.000Z", note: "Completed by warehouse lead" };
+    const first = await service.recordExecution(execution);
+    const retry = await service.recordExecution(execution);
+    expect(first.ok).toBe(true); expect(first.idempotent).toBe(false);
+    expect(retry.ok).toBe(true); expect(retry.idempotent).toBe(true);
+    expect((first.data as any)).toMatchObject({ decisionStatus: "EXECUTED", executionReference: "ticket:OPS-123", executedBy: "operator" });
+    const audit = await repository.getAuditEvents(id);
+    expect(audit.at(-1)?.metadata).toMatchObject({ event: "EXTERNAL_EXECUTION_RECORDED", channel: "MANUAL_EXTERNAL", performedAt: "2026-08-26T03:00:00.000Z" });
+  });
+
+  it("blocks execution when the critic requires human investigation", async () => {
+    const guarded = input({ evidence: { sourceIdentifiers: { incidentId: "incident-guarded" }, operationalFacts: {}, actionContext: { disposition: "HUMAN_INVESTIGATION_REQUIRED" } }, sourceFingerprint: "guarded", idempotencyKey: "guarded-create" });
+    const created = await service.create(guarded); const id = (created.data as any).decisionId;
+    await service.transition({ decisionId: id, targetStatus: "READY_FOR_REVIEW", actor: "manager", idempotencyKey: "guarded-ready" });
+    await service.transition({ decisionId: id, targetStatus: "APPROVED", actor: "manager", idempotencyKey: "guarded-approve" });
+    const result = await service.recordExecution({ decisionId: id, actor: "operator", idempotencyKey: "guarded-execute", executionReference: "ticket:unsafe" });
+    expect(result.error).toBe("EXECUTION_BLOCKED_BY_CRITIC");
+    expect((await repository.getById(id))?.decisionStatus).toBe("APPROVED");
+  });
+
   it("records SHADOW actual outcome without approval or execution transition", async () => {
     const created = await service.create(input({ mode: "SHADOW", sourceFingerprint: "shadow-2", idempotencyKey: "shadow-2" }));
     const id = (created.data as any).decisionId;

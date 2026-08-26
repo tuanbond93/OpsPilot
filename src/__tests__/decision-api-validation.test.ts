@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { validateCreateDecision, validateOutcomeInput, validateTransitionInput } from "@/domain/decision";
+import { validateCreateDecision, validateExecutionInput, validateOutcomeInput, validateTransitionInput } from "@/domain/decision";
 
 describe("Decision API input contract", () => {
   it("rejects malformed create payload fields", () => {
@@ -19,5 +19,11 @@ describe("Decision API input contract", () => {
     expect(() => validateOutcomeInput({ decisionId: "d", status: "SUCCESS", observedOutcome: "ok", measuredAt: "not-a-date", actor: "observer", idempotencyKey: "o" })).toThrow(/measuredAt/);
     expect(() => validateOutcomeInput({ decisionId: "d", status: "INCONCLUSIVE", observedOutcome: "unknown", measuredAt: new Date().toISOString(), actor: "observer", idempotencyKey: "o" })).toThrow(/inconclusiveReason/);
     expect(() => validateOutcomeInput({ decisionId: "d", status: "UNKNOWN", observedOutcome: "unknown", measuredAt: new Date().toISOString(), actor: "observer", idempotencyKey: "o" } as any)).toThrow(/status/);
+  });
+
+  it("requires an auditable external execution reference", () => {
+    expect(() => validateExecutionInput({ decisionId: "d", actor: "manager", idempotencyKey: "exec-1", executionReference: "" })).toThrow(/executionReference/);
+    expect(() => validateExecutionInput({ decisionId: "d", actor: "manager", idempotencyKey: "exec-1", executionReference: "ticket-1", performedAt: "invalid" })).toThrow(/performedAt/);
+    expect(() => validateExecutionInput({ decisionId: "d", actor: "manager", idempotencyKey: "exec-1", executionReference: "ticket-1", performedAt: new Date().toISOString() })).not.toThrow();
   });
 });

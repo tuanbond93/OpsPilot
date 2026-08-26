@@ -3,9 +3,11 @@ import type { IDecisionService, DecisionServiceResult } from "../interfaces/IDec
 import {
   DecisionDomainError,
   validateCreateDecision,
+  validateExecutionInput,
   validateOutcomeInput,
   validateTransitionInput,
   type CreateDecisionInput,
+  type RecordDecisionExecutionInput,
   type RecordOutcomeInput,
   type TransitionDecisionInput,
 } from "@/domain/decision";
@@ -70,6 +72,32 @@ export class DecisionService implements IDecisionService {
       validateOutcomeInput(input);
       const result = await this.repository.recordOutcome(input);
       return { ok: true, data: result.decision, idempotent: result.idempotent };
+    } catch (error) { return this.failure(error); }
+  }
+
+  async recordExecution(input: RecordDecisionExecutionInput): Promise<DecisionServiceResult> {
+    try {
+      this.assertWriteAllowed();
+      validateExecutionInput(input);
+      const current = await this.repository.getById(input.decisionId);
+      if (!current) throw new DecisionDomainError("NOT_FOUND", `Decision '${input.decisionId}' not found.`);
+      const actionContext = current.evidence.actionContext as Record<string, unknown> | undefined;
+      if (actionContext?.disposition === "HUMAN_INVESTIGATION_REQUIRED") {
+        throw new DecisionDomainError("EXECUTION_BLOCKED_BY_CRITIC", "Decision requires human investigation and cannot be recorded as executed.");
+      }
+      return await this.transition({
+        decisionId: input.decisionId,
+        targetStatus: "EXECUTED",
+        actor: input.actor,
+        idempotencyKey: input.idempotencyKey,
+        executionReference: input.executionReference.trim(),
+        metadata: {
+          event: "EXTERNAL_EXECUTION_RECORDED",
+          channel: "MANUAL_EXTERNAL",
+          performedAt: input.performedAt || null,
+          note: input.note?.trim() || null,
+        },
+      });
     } catch (error) { return this.failure(error); }
   }
 }

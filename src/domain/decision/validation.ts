@@ -1,5 +1,5 @@
 import { DecisionDomainError } from "./state-machine";
-import type { CreateDecisionInput, DecisionMode, DecisionOutcomeStatus, DecisionRiskLevel, DecisionStatus, RecordOutcomeInput, TransitionDecisionInput } from "./types";
+import type { CreateDecisionInput, DecisionMode, DecisionOutcomeStatus, DecisionRiskLevel, DecisionStatus, RecordDecisionExecutionInput, RecordOutcomeInput, TransitionDecisionInput } from "./types";
 
 const MAX_TEXT = 10_000;
 const MAX_ACTOR = 200;
@@ -71,6 +71,17 @@ export function validateOutcomeInput(input: RecordOutcomeInput): void {
     throw new DecisionDomainError("VALIDATION_ERROR", "measuredAt must be a valid timestamp.");
   }
   if (input.status === "INCONCLUSIVE") requireText(input.inconclusiveReason, "inconclusiveReason", 2000);
+}
+
+export function validateExecutionInput(input: RecordDecisionExecutionInput): void {
+  requireText(input.decisionId, "decisionId", 200);
+  validateActor(input.actor);
+  requireText(input.idempotencyKey, "idempotencyKey", 200);
+  requireText(input.executionReference, "executionReference", 500);
+  if (input.note !== undefined) requireText(input.note, "note", 2000);
+  if (input.performedAt !== undefined && !Number.isFinite(Date.parse(input.performedAt))) {
+    throw new DecisionDomainError("VALIDATION_ERROR", "performedAt must be a valid timestamp.");
+  }
 }
 
 export function immutableSnapshot<T>(value: T): T {

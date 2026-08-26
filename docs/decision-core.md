@@ -49,6 +49,22 @@ Final Decision được review độc lập bởi deterministic Decision Critic 
 
 Critic không chọn option thay Final Decision Engine, không gọi execution, không verify outcome và không sinh financial semantics.
 
+## LC-03 execution recording boundary
+
+Decision `HUMAN_APPROVAL` ở trạng thái `APPROVED` có thể được chuyển sang `EXECUTED` qua:
+
+```text
+POST /api/decisions/:decisionId/execute
+{
+  "executionReference": "ticket-or-external-record",
+  "performedAt": "optional ISO timestamp",
+  "note": "optional reconciliation note",
+  "idempotencyKey": "stable retry key"
+}
+```
+
+Endpoint chỉ ghi nhận công việc đã diễn ra bên ngoài bằng `MANUAL_EXTERNAL`; nó không gửi lệnh vận hành. Reference là bắt buộc, transition và audit có idempotency, SHADOW vẫn read-only, và decision bị Critic chuyển sang `HUMAN_INVESTIGATION_REQUIRED` không thể được ghi executed.
+
 ## Database rollout gate
 
 Apply [017_decision_core.sql](../src/database/migrations/017_decision_core.sql) trước khi bật `DECISION_PERSISTENCE=supabase`. Migration tạo decisions, immutable evidence snapshots, immutable audit events, outcome records, unique source/idempotency keys và RPC transaction boundaries.
