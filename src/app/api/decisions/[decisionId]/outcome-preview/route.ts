@@ -22,13 +22,13 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
   const measurementReady = Date.now() >= new Date(measurementWindowEnd).getTime();
   let latestHistory: Record<string, any> | null = null;
   if (decision.incident_id) {
-    const { data } = await db.from("incident_history").select("id,affected_order_count,recorded_at,sync_run_id").eq("incident_id", decision.incident_id).order("recorded_at", { ascending: false }).limit(1).maybeSingle();
+    const { data } = await db.from("incident_history").select("id,affected_order_count,recorded_at,sync_run_id").eq("incident_id", decision.incident_id).gte("recorded_at", measurementWindowEnd).order("recorded_at", { ascending: false }).limit(1).maybeSingle();
     latestHistory = data;
   }
   const observed = Number(latestHistory?.affected_order_count);
   const observedAffectedOrders = Number.isFinite(observed) ? observed : null;
   return NextResponse.json({ ok: true, data: {
-    state: verification ? "VERIFIED" : measurementReady ? "READY_TO_VERIFY" : "WAITING_MEASUREMENT_WINDOW",
+    state: verification ? "VERIFIED" : !measurementReady ? "WAITING_MEASUREMENT_WINDOW" : latestHistory ? "READY_TO_VERIFY" : "AWAITING_POST_WINDOW_EVIDENCE",
     measurementWindowEnd, baselineAffectedOrders, observedAffectedOrders,
     observedAt: latestHistory?.recorded_at || null,
     source: latestHistory ? `incident_history:${latestHistory.sync_run_id || latestHistory.id}` : null,

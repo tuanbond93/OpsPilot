@@ -18,7 +18,7 @@ interface PilotIncident {
 }
 
 interface OutcomePreview {
-  state: "NO_CONTRACT" | "WAITING_MEASUREMENT_WINDOW" | "READY_TO_VERIFY" | "VERIFIED";
+  state: "NO_CONTRACT" | "WAITING_MEASUREMENT_WINDOW" | "AWAITING_POST_WINDOW_EVIDENCE" | "READY_TO_VERIFY" | "VERIFIED";
   measurementWindowEnd?: string;
   baselineAffectedOrders?: number | null;
   observedAffectedOrders?: number | null;
@@ -371,6 +371,7 @@ export default function DecisionInboxPage() {
                 {(() => { const preview = outcomePreviews[decision.decisionId]; return <>
                   <p className="font-semibold">Outcome Verification</p>
                   {preview.state === "WAITING_MEASUREMENT_WINDOW" && <p className="mt-1 text-slate-300">Chưa đến cửa sổ đo. Có thể verify từ {preview.measurementWindowEnd ? new Date(preview.measurementWindowEnd).toLocaleString("vi-VN") : "thời điểm chưa xác định"}.</p>}
+                  {preview.state === "AWAITING_POST_WINDOW_EVIDENCE" && <p className="mt-1 text-amber-200">Chưa có snapshot sau cửa sổ đo. Hãy đồng bộ dữ liệu mới rồi làm mới trang; snapshot trước {preview.measurementWindowEnd ? new Date(preview.measurementWindowEnd).toLocaleString("vi-VN") : "giờ đo"} sẽ không được dùng để verify.</p>}
                   {preview.state === "READY_TO_VERIFY" && <><p className="mt-1 text-slate-300">Baseline: <strong>{preview.baselineAffectedOrders ?? "không có"}</strong> đơn · Snapshot mới: <strong>{preview.observedAffectedOrders ?? "không có"}</strong> đơn{preview.observedAt ? ` · ${new Date(preview.observedAt).toLocaleString("vi-VN")}` : ""}.</p><p className="mt-1 text-xs text-slate-400">Nguồn: {preview.source}. Bấm Verify để hệ thống phân loại theo rule và lưu evidence/audit.</p>{roleCan(role, "RECORD_OUTCOME") && <button type="button" onClick={() => void verifyOutcome(decision, preview)} disabled={submitting === decision.decisionId || preview.observedAffectedOrders === null} className="mt-3 inline-flex min-h-10 items-center rounded-lg bg-violet-600 px-4 text-sm font-semibold text-white hover:bg-violet-500 disabled:opacity-60">{submitting === decision.decisionId ? "Đang verify…" : "Verify outcome"}</button>}</>}
                   {preview.state === "VERIFIED" && <p className="mt-1 text-slate-300">Đã verify: <strong>{preview.verification?.classification}</strong> · {preview.verification?.reason_code} · Snapshot {preview.verification?.observed_affected_orders ?? "không có"} đơn.</p>}
                   {preview.state === "NO_CONTRACT" && <p className="mt-1 text-amber-200">Chưa có Outcome Observation Contract để verify.</p>}
