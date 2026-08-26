@@ -52,6 +52,9 @@ import { MockCopilotRepository } from "./mock/MockCopilotRepository";
 import type { IDecisionRepository } from "./interfaces/IDecisionRepository";
 import { SupabaseDecisionRepository } from "./supabase/SupabaseDecisionRepository";
 import { MockDecisionRepository } from "./mock/MockDecisionRepository";
+import type { IExecutionWorkOrderRepository } from "./interfaces/IExecutionWorkOrderRepository";
+import { SupabaseExecutionWorkOrderRepository } from "./supabase/SupabaseExecutionWorkOrderRepository";
+import { MockExecutionWorkOrderRepository } from "./mock/MockExecutionWorkOrderRepository";
 
 export class RepositoryFactory {
   private static incidentRepo: IIncidentRepository | null = null;
@@ -68,6 +71,7 @@ export class RepositoryFactory {
   private static orderSnapshotRepo: IOrderSnapshotRepository | null = null;
   private static syncLockRepo: ISyncLockRepository | null = null;
   private static decisionRepo: IDecisionRepository | null = null;
+  private static executionWorkOrderRepo: IExecutionWorkOrderRepository | null = null;
 
   static registerDecisionRepository(repo: IDecisionRepository): void {
     this.decisionRepo = repo;
@@ -319,6 +323,15 @@ export class RepositoryFactory {
     return this.decisionRepo;
   }
 
+  static getExecutionWorkOrderRepository(client?: SupabaseClient): IExecutionWorkOrderRepository {
+    if (client) return new SupabaseExecutionWorkOrderRepository(client);
+    if (this.executionWorkOrderRepo) return this.executionWorkOrderRepo;
+    this.executionWorkOrderRepo = this.shouldProvideMock()
+      ? new MockExecutionWorkOrderRepository()
+      : new SupabaseExecutionWorkOrderRepository(createAdminClient());
+    return this.executionWorkOrderRepo;
+  }
+
   static clear(): void {
     this.incidentRepo = null;
     this.aiJobRepo = null;
@@ -334,5 +347,6 @@ export class RepositoryFactory {
     this.orderSnapshotRepo = null;
     this.syncLockRepo = null;
     this.decisionRepo = null;
+    this.executionWorkOrderRepo = null;
   }
 }

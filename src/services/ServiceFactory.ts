@@ -40,6 +40,7 @@ import type { IDecisionService } from './interfaces/IDecisionService';
 import { DecisionService } from './impl/DecisionService';
 import type { IDecisionPilotService } from './interfaces/IDecisionPilotService';
 import { DecisionPilotService } from './impl/DecisionPilotService';
+import { ExecutionWorkOrderService } from "./impl/ExecutionWorkOrderService";
 
 export class ServiceFactory {
   public static getDecisionService(client?: SupabaseClient): IDecisionService {
@@ -53,6 +54,12 @@ export class ServiceFactory {
       RepositoryFactory.getFollowupRepository(client),
       RepositoryFactory.getPlannerRepository(client),
       this.getDecisionService(client)
+    );
+  }
+  public static getExecutionWorkOrderService(client?: SupabaseClient): ExecutionWorkOrderService {
+    return new ExecutionWorkOrderService(
+      RepositoryFactory.getDecisionRepository(client),
+      RepositoryFactory.getExecutionWorkOrderRepository(client)
     );
   }
   public static getCopilotService(client?: SupabaseClient): ICopilotService {

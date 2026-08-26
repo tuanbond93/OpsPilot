@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { Check, CircleAlert, Eye, Plus, RefreshCw, X } from "lucide-react";
 import type { Decision } from "@/domain/decision";
+import type { ExecutionWorkOrder } from "@/domain/execution-work-order";
 import { repairOperationalText } from "@/app/_components/operationalText";
 import { createClient } from "@/lib/supabase/client";
 import { roleCan, roleFromMetadata, type OpsRole } from "@/security/roles";
@@ -36,6 +37,8 @@ export default function DecisionInboxPage() {
   const [creating, setCreating] = useState(false);
   const [outcomes, setOutcomes] = useState<Record<string, { status: string; observedOutcome: string; measuredAt: string; evidenceRefs: string; inconclusiveReason: string }>>({});
   const [executions, setExecutions] = useState<Record<string, { externalTicketId: string; performedAt: string; note: string }>>({});
+  const [workOrders, setWorkOrders] = useState<Record<string, ExecutionWorkOrder | null>>({});
+  const [workOrderForms, setWorkOrderForms] = useState<Record<string, { owner: string; dueAt: string; actionItems: string }>>({});
 
   const load = useCallback(async () => {
     setLoading(true); setError("");
@@ -46,7 +49,15 @@ export default function DecisionInboxPage() {
       ]);
       const [payload, dashboard] = await Promise.all([decisionResponse.json(), dashboardResponse.json()]);
       handleApiAccess(decisionResponse, payload, "Không thể tải Decision Inbox.");
-      setDecisions(payload.data || []);
+      const nextDecisions = payload.data || [];
+      setDecisions(nextDecisions);
+      const approved = nextDecisions.filter((item: Decision) => item.mode === "HUMAN_APPROVAL" && item.decisionStatus === "APPROVED");
+      const entries = await Promise.all(approved.map(async (item: Decision) => {
+        const response = await fetch(`/api/decisions/${item.decisionId}/work-order`, { cache: "no-store" });
+        const workOrderPayload = await response.json();
+        return [item.decisionId, response.ok ? workOrderPayload.data || null : null] as const;
+      }));
+      setWorkOrders(Object.fromEntries(entries));
       setIncidents(dashboardResponse.ok ? (dashboard.incidents?.items || []) : []);
     } catch (caught) { setError(caught instanceof Error ? caught.message : String(caught)); }
     finally { setLoading(false); }
@@ -118,6 +129,29 @@ export default function DecisionInboxPage() {
       const payload = await response.json();
       handleApiAccess(response, payload, "Không thể ghi nhận thực thi.");
       await load();
+    } catch (caught) { setError(caught instanceof Error ? caught.message : String(caught)); }
+    finally { setSubmitting(null); }
+  }
+
+  async function createWorkOrder(decision: Decision) {
+    const form = workOrderForms[decision.decisionId] || { owner: "", dueAt: "", actionItems: "" };
+    const actionItems = form.actionItems.split("\n").map((item) => item.trim()).filter(Boolean);
+    if (!actor.trim()) { setError("Vui lòng đăng nhập để tạo work order."); return; }
+    if (!form.owner.trim() || !form.dueAt || actionItems.length === 0) { setError("Owner, hạn xử lý và ít nhất một hạng mục action là bắt buộc."); return; }
+    setSubmitting(decision.decisionId); setError("");
+    try {
+      const response = await fetch(`/api/decisions/${decision.decisionId}/work-order`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ actor: actor.trim(), owner: form.owner.trim(), dueAt: new Date(form.dueAt).toISOString(), actionItems, idempotencyKey: `work-order:${decision.decisionId}` }) });
+      const payload = await response.json(); handleApiAccess(response, payload, "Không thể tạo work order."); await load();
+    } catch (caught) { setError(caught instanceof Error ? caught.message : String(caught)); }
+    finally { setSubmitting(null); }
+  }
+
+  async function transitionWorkOrder(decision: Decision, targetStatus: "IN_PROGRESS" | "COMPLETED") {
+    if (!actor.trim()) { setError("Vui lòng đăng nhập để cập nhật work order."); return; }
+    setSubmitting(decision.decisionId); setError("");
+    try {
+      const response = await fetch(`/api/decisions/${decision.decisionId}/work-order/status`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ actor: actor.trim(), targetStatus, idempotencyKey: `work-order:${decision.decisionId}:${targetStatus}` }) });
+      const payload = await response.json(); handleApiAccess(response, payload, "Không thể cập nhật work order."); await load();
     } catch (caught) { setError(caught instanceof Error ? caught.message : String(caught)); }
     finally { setSubmitting(null); }
   }
@@ -199,6 +233,7 @@ export default function DecisionInboxPage() {
         <section aria-label="Danh sách decision" className="grid gap-4">
           {decisions.map((decision) => {
             const reviewable = decision.mode === "HUMAN_APPROVAL" && decision.decisionStatus === "READY_FOR_REVIEW";
+            const workOrder = workOrders[decision.decisionId];
             return <article key={decision.decisionId} className="rounded-xl border border-slate-800 bg-slate-900 p-4 shadow-lg sm:p-5">
               <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
                 <div className="min-w-0"><div className="flex flex-wrap gap-2 text-xs font-bold">
@@ -260,7 +295,24 @@ export default function DecisionInboxPage() {
                   <button type="button" onClick={() => void review(decision, "approve")} disabled={submitting === decision.decisionId}
                     className="inline-flex min-h-11 items-center justify-center gap-2 rounded-lg bg-emerald-600 px-4 font-semibold text-white hover:bg-emerald-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-300 disabled:opacity-60"><Check aria-hidden="true" size={17}/> {submitting === decision.decisionId ? "Đang xử lý…" : "Approve"}</button>
                 </div></div>}
-              {decision.mode === "HUMAN_APPROVAL" && decision.decisionStatus === "APPROVED" && roleCan(role, "MANAGE_DECISION") && <div className="mt-4 rounded-lg border border-emerald-500/25 bg-emerald-500/5 p-4">
+              {decision.mode === "HUMAN_APPROVAL" && decision.decisionStatus === "APPROVED" && roleCan(role, "MANAGE_DECISION") && !workOrder && <div className="mt-4 rounded-lg border border-cyan-500/25 bg-cyan-500/5 p-4">
+                <h3 className="text-sm font-semibold text-cyan-100">Tạo Execution Work Order</h3>
+                <p className="mt-1 text-xs leading-5 text-slate-400">Tự sinh mã OPSP-WO trước khi giao việc. OpsPilot chỉ ghi nhận work order, không tự gửi hoặc điều phối hành động.</p>
+                <div className="mt-3 grid gap-3 md:grid-cols-2">
+                  <div><label htmlFor={`work-owner-${decision.decisionId}`} className="mb-1 block text-xs font-semibold">Owner <span className="text-rose-300">(bắt buộc)</span></label><input id={`work-owner-${decision.decisionId}`} value={workOrderForms[decision.decisionId]?.owner || ""} onChange={(event) => setWorkOrderForms((current) => ({ ...current, [decision.decisionId]: { ...(current[decision.decisionId] || { dueAt: "", actionItems: "" }), owner: event.target.value } }))} placeholder="Email, đội hoặc đầu mối chịu trách nhiệm" className="min-h-10 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 text-sm" /></div>
+                  <div><label htmlFor={`work-due-${decision.decisionId}`} className="mb-1 block text-xs font-semibold">Hạn xử lý <span className="text-rose-300">(bắt buộc)</span></label><input id={`work-due-${decision.decisionId}`} type="datetime-local" value={workOrderForms[decision.decisionId]?.dueAt || ""} onChange={(event) => setWorkOrderForms((current) => ({ ...current, [decision.decisionId]: { ...(current[decision.decisionId] || { owner: "", actionItems: "" }), dueAt: event.target.value } }))} className="min-h-10 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 text-sm" /></div>
+                  <div className="md:col-span-2"><label htmlFor={`work-actions-${decision.decisionId}`} className="mb-1 block text-xs font-semibold">Hạng mục action <span className="text-rose-300">(mỗi dòng một việc)</span></label><textarea id={`work-actions-${decision.decisionId}`} rows={4} value={workOrderForms[decision.decisionId]?.actionItems || ""} onChange={(event) => setWorkOrderForms((current) => ({ ...current, [decision.decisionId]: { ...(current[decision.decisionId] || { owner: "", dueAt: "" }), actionItems: event.target.value } }))} placeholder={repairOperationalText(decision.recommendedAction)} className="w-full rounded-lg border border-slate-700 bg-slate-950 p-3 text-sm" /></div>
+                </div>
+                <button type="button" onClick={() => void createWorkOrder(decision)} disabled={submitting === decision.decisionId} className="mt-3 inline-flex min-h-10 items-center justify-center rounded-lg bg-cyan-600 px-4 text-sm font-semibold text-white hover:bg-cyan-500 disabled:opacity-60">{submitting === decision.decisionId ? "Đang tạo…" : "Tạo work order"}</button>
+              </div>}
+              {workOrder && <div className="mt-4 rounded-lg border border-cyan-500/25 bg-cyan-500/5 p-4 text-sm">
+                <div className="flex flex-wrap items-center justify-between gap-2"><h3 className="font-semibold text-cyan-100">Execution Work Order <span className="font-mono text-cyan-300">{workOrder.workOrderCode}</span></h3><span className="rounded-full border border-cyan-400/40 px-2 py-1 text-xs font-bold text-cyan-200">{workOrder.status}</span></div>
+                <p className="mt-2 text-slate-300">Owner: <strong>{workOrder.owner}</strong> · Hạn: {new Date(workOrder.dueAt).toLocaleString("vi-VN")}</p>
+                <ol className="mt-2 list-decimal space-y-1 pl-5 text-slate-300">{workOrder.actionItems.map((item, index) => <li key={`${workOrder.workOrderId}-${index}`}>{repairOperationalText(item)}</li>)}</ol>
+                {roleCan(role, "MANAGE_DECISION") && workOrder.status === "OPEN" && <button type="button" onClick={() => void transitionWorkOrder(decision, "IN_PROGRESS")} disabled={submitting === decision.decisionId} className="mt-3 inline-flex min-h-10 items-center justify-center rounded-lg border border-cyan-400/50 px-4 text-sm font-semibold text-cyan-100 hover:bg-cyan-500/10 disabled:opacity-60">Bắt đầu thực hiện</button>}
+                {roleCan(role, "MANAGE_DECISION") && workOrder.status === "IN_PROGRESS" && <button type="button" onClick={() => void transitionWorkOrder(decision, "COMPLETED")} disabled={submitting === decision.decisionId} className="mt-3 inline-flex min-h-10 items-center justify-center rounded-lg bg-cyan-600 px-4 text-sm font-semibold text-white hover:bg-cyan-500 disabled:opacity-60">Xác nhận work order hoàn tất</button>}
+              </div>}
+              {decision.mode === "HUMAN_APPROVAL" && decision.decisionStatus === "APPROVED" && workOrder?.status === "COMPLETED" && roleCan(role, "MANAGE_DECISION") && <div className="mt-4 rounded-lg border border-emerald-500/25 bg-emerald-500/5 p-4">
                 <h3 className="text-sm font-semibold text-emerald-100">Ghi nhận hành động đã thực hiện bên ngoài</h3>
                 <p className="mt-1 text-xs leading-5 text-slate-400">OpsPilot không thực thi action. Khi xác nhận, hệ thống tự sinh OpsPilot Execution ID để đối soát; mã ticket ngoài hệ thống là tùy chọn.</p>
                 <div className="mt-3 grid gap-3 md:grid-cols-2">
