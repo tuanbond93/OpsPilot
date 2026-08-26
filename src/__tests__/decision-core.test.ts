@@ -3,6 +3,7 @@ import fs from "node:fs";
 import { canTransition, immutableSnapshot, type CreateDecisionInput, type DecisionStatus } from "@/domain/decision";
 import { MockDecisionRepository } from "@/repositories/mock/MockDecisionRepository";
 import { DecisionService } from "@/services/impl/DecisionService";
+import { selectPostWindowOutcomeEvidence } from "@/domain/decision/outcome-evidence";
 
 function input(overrides: Partial<CreateDecisionInput> = {}): CreateDecisionInput {
   return {
@@ -34,6 +35,14 @@ describe("Decision Core lifecycle and safety", () => {
     expect(initialSql).toContain("(p_payload->>'observedAt')::timestamptz");
     expect(repairSql).toContain("observed_at_value TIMESTAMPTZ := (p_payload->>'observedAt')::timestamptz");
     expect(repairSql).toContain("p_payload->'observedMetrics',observed_at_value");
+  });
+
+  it("accepts a post-window incident resolution as zero-order outcome evidence", () => {
+    const boundary = "2026-08-26T10:54:55.000Z";
+    expect(selectPostWindowOutcomeEvidence(boundary, null, { incidentId: "incident-1", status: "resolved", resolvedAt: "2026-08-26T14:20:06.000Z" }))
+      .toMatchObject({ kind: "INCIDENT_RESOLVED", observedAffectedOrders: 0, source: "incident_resolution:incident-1" });
+    expect(selectPostWindowOutcomeEvidence(boundary, null, { incidentId: "incident-1", status: "resolved", resolvedAt: "2026-08-26T09:20:06.000Z" })).toBeNull();
+    expect(selectPostWindowOutcomeEvidence(boundary, null, { incidentId: "incident-1", status: "open", resolvedAt: "2026-08-26T14:20:06.000Z" })).toBeNull();
   });
 
   it("defines every valid forward transition and rejects all other pairs", () => {

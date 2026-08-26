@@ -1,5 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { createAdminClient } from "@/connectors/supabase";
+import { selectPostWindowOutcomeEvidence } from "@/domain/decision/outcome-evidence";
 import { authorizeDecisionScope } from "@/security/scope-guard";
 
 export async function GET(request: NextRequest, { params }: { params: Promise<{ decisionId: string }> }) {
@@ -21,18 +22,23 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
   const measurementWindowEnd = contract.measurement_window_end;
   const measurementReady = Date.now() >= new Date(measurementWindowEnd).getTime();
   let latestHistory: Record<string, any> | null = null;
+  let incident: Record<string, any> | null = null;
   if (decision.incident_id) {
-    const { data } = await db.from("incident_history").select("id,affected_order_count,recorded_at,sync_run_id").eq("incident_id", decision.incident_id).gte("recorded_at", measurementWindowEnd).order("recorded_at", { ascending: false }).limit(1).maybeSingle();
-    latestHistory = data;
+    const [historyResult, incidentResult] = await Promise.all([
+      db.from("incident_history").select("id,affected_order_count,recorded_at,sync_run_id").eq("incident_id", decision.incident_id).gte("recorded_at", measurementWindowEnd).order("recorded_at", { ascending: false }).limit(1).maybeSingle(),
+      db.from("incidents").select("id,status,resolved_at").eq("id", decision.incident_id).maybeSingle(),
+    ]);
+    latestHistory = historyResult.data;
+    incident = incidentResult.data;
   }
-  const observed = Number(latestHistory?.affected_order_count);
-  const observedAffectedOrders = Number.isFinite(observed) ? observed : null;
+  const evidence = selectPostWindowOutcomeEvidence(measurementWindowEnd,
+    latestHistory ? { id: latestHistory.id, syncRunId: latestHistory.sync_run_id, affectedOrderCount: Number(latestHistory.affected_order_count), recordedAt: latestHistory.recorded_at } : null,
+    incident ? { incidentId: incident.id, status: incident.status, resolvedAt: incident.resolved_at } : null);
   return NextResponse.json({ ok: true, data: {
-    state: verification ? "VERIFIED" : !measurementReady ? "WAITING_MEASUREMENT_WINDOW" : latestHistory ? "READY_TO_VERIFY" : "AWAITING_POST_WINDOW_EVIDENCE",
-    measurementWindowEnd, baselineAffectedOrders, observedAffectedOrders,
-    observedAt: latestHistory?.recorded_at || null,
-    source: latestHistory ? `incident_history:${latestHistory.sync_run_id || latestHistory.id}` : null,
-    evidenceRefs: latestHistory ? [`incident_history:${latestHistory.id}`] : [],
+    state: verification ? "VERIFIED" : !measurementReady ? "WAITING_MEASUREMENT_WINDOW" : evidence ? "READY_TO_VERIFY" : "AWAITING_POST_WINDOW_EVIDENCE",
+    measurementWindowEnd, baselineAffectedOrders, observedAffectedOrders: evidence?.observedAffectedOrders ?? null,
+    observedAt: evidence?.observedAt || null, source: evidence?.source || null, evidenceRefs: evidence?.evidenceRefs || [],
+    evidenceKind: evidence?.kind || null,
     verification: verification || null,
   } });
 }
