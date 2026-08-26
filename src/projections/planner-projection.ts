@@ -1,5 +1,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { ProjectionResult } from "./projection-engine";
+import { logger } from "@/observability/logger";
 
 export interface PlannerSummaryDto {
   incident_id: string; // UUID
@@ -15,7 +16,6 @@ export interface PlannerSummaryDto {
  */
 export async function projectPlanner(client: SupabaseClient): Promise<ProjectionResult> {
   const startTime = Date.now();
-  console.log("[Projection][Planner] started");
 
   try {
     // 1. Fetch latest successful sync run ID to identify active incidents
@@ -32,16 +32,12 @@ export async function projectPlanner(client: SupabaseClient): Promise<Projection
     }
 
     if (!latestSync) {
-      console.log("[Projection][Planner] finished rowsUpdated=0");
-      console.log("[Projection][Planner] rows.length == 0: No successful sync runs found in the database");
       return {
         status: "success",
         rowsUpdated: 0,
         durationMs: Date.now() - startTime,
       };
     }
-
-    console.log("Latest sync: " + latestSync.id);
 
     // 2. Fetch active incidents (status: open or monitoring)
     const { data: activeIncidents, error: incidentsError } = await client
@@ -56,10 +52,6 @@ export async function projectPlanner(client: SupabaseClient): Promise<Projection
     const incidentIds = (activeIncidents || []).map((inc) => inc.id);
 
     if (incidentIds.length === 0) {
-      console.log("Loaded planner runs: 0");
-      console.log("DTO count: 0");
-      console.log("[Projection][Planner] finished rowsUpdated=0");
-      console.log("[Projection][Planner] rows.length == 0: No active incidents found");
       return {
         status: "success",
         rowsUpdated: 0,
@@ -76,8 +68,6 @@ export async function projectPlanner(client: SupabaseClient): Promise<Projection
     if (plannerRunsError) {
       throw new Error(`Planner runs query failed: ${plannerRunsError.message}`);
     }
-
-    console.log("Loaded planner runs: " + (plannerRuns?.length || 0));
 
     // Group runs by incident_id
     const runsByIncident = new Map<string, typeof plannerRuns>();
@@ -141,11 +131,7 @@ export async function projectPlanner(client: SupabaseClient): Promise<Projection
       plannerIds.push(incidentId);
     }
 
-    console.log("DTO count: " + dtos.length);
-
     if (dtos.length === 0) {
-      console.log("[Projection][Planner] finished rowsUpdated=0");
-      console.log("[Projection][Planner] rows.length == 0: constructed dtos array is empty");
       return {
         status: "success",
         rowsUpdated: 0,
@@ -153,35 +139,56 @@ export async function projectPlanner(client: SupabaseClient): Promise<Projection
       };
     }
 
-    console.log("Calling RPC...");
     const { error: rpcError } = await client.rpc("upsert_planner_summary", {
       rows: dtos,
       present_ids: plannerIds,
     });
 
     if (rpcError) {
-      console.error("Full RPC Error Object:", JSON.stringify(rpcError, null, 2));
       throw new Error(`RPC upsert_planner_summary failed: ${rpcError.message}`);
     }
 
-    console.log("RPC success");
     const rowsUpdated = dtos.length;
-    console.log(`rowsUpdated=${rowsUpdated}`);
-    console.log("[Projection][Planner] finished");
+    const durationMs = Date.now() - startTime;
+
+    logger.info({
+      component: "PlannerProjection",
+      operation: "projectPlanner",
+      status: "success",
+      message: `[Projection][Planner] finished rowsUpdated=${rowsUpdated}`,
+      durationMs,
+      metadata: {
+        rowsProcessed: plannerRuns?.length || 0,
+        rowsUpdated,
+        syncRunId: latestSync.id,
+      },
+    });
 
     return {
       status: "success",
       rowsUpdated,
-      durationMs: Date.now() - startTime,
+      durationMs,
     };
   } catch (error: any) {
     const errorMessage = error.message || String(error);
-    console.error(`[Projection][Planner] failed ${errorMessage}`, error);
+    const durationMs = Date.now() - startTime;
+    const errorCode = error.code || "PROJECTION_REFRESH_FAILED";
+
+    logger.error({
+      component: "PlannerProjection",
+      operation: "projectPlanner",
+      status: "failed",
+      message: `[Projection][Planner] failed ${errorMessage}`,
+      durationMs,
+      errorCode,
+      error,
+    });
+
     return {
       status: "failed",
       rowsUpdated: 0,
-      durationMs: Date.now() - startTime,
-      errorCode: error.code || "PROJECTION_ERROR",
+      durationMs,
+      errorCode,
       errorMessage,
     };
   }

@@ -68,7 +68,7 @@ export class AiWorkerService implements IAiWorkerService {
           sampleOrderCodes: latestHist?.sample_order_codes || [],
           averageAgeHours: latestHist?.average_age_hours || 0,
           maximumAgeHours: latestHist?.maximum_age_hours || 0,
-          oldestOrderCode: latestHist?.sample_order_codes?.[0] || null,
+          oldestOrderCode: latestHist?.oldest_order_code || latestHist?.sample_order_codes?.[0] || null,
           priorityScore: incidentRow.priority_score || 0,
           firstDetectedAt: incidentRow.first_detected_at,
           lastDetectedAt: incidentRow.last_detected_at,

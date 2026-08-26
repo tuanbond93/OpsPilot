@@ -1,4 +1,5 @@
 import type { IPlannerService, GeneratePlanOptions } from "../interfaces/IPlannerService";
+import { logger } from '@/observability/logger';
 import type { IPlannerRepository } from "@/repositories/interfaces/IPlannerRepository";
 import type { IIncidentRepository } from "@/repositories/interfaces/IIncidentRepository";
 import type { IIncidentHistoryRepository } from "@/repositories/interfaces/IIncidentHistoryRepository";
@@ -109,13 +110,15 @@ export class PlannerService implements IPlannerService {
         result: res.result,
       };
     } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : String(err);
-      return {
-        ok: false,
-        error: "PlannerGenerationFailed",
-        message,
-      };
-    }
+        const message = err instanceof Error ? err.message : String(err);
+        // Safe, non-fatal warning with structured error code
+        logger.warn({ component: 'PlannerService', operation: 'generatePlan', status: 'warning', message: '[PlannerService] generatePlan failure', metadata: { code: 'PLANNER_GENERATION_FAILED', message } });
+        return {
+          ok: false,
+          error: "PlannerGenerationFailed",
+          message,
+        };
+      }
   }
 
   async getPlannerRunByIncidentId(
@@ -157,13 +160,14 @@ export class PlannerService implements IPlannerService {
         reviewEvents,
       };
     } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : String(err);
-      return {
-        ok: false,
-        error: "FetchPlannerRunFailed",
-        message,
-      };
-    }
+        const message = err instanceof Error ? err.message : String(err);
+        logger.warn({ component: 'PlannerService', operation: 'getPlannerRunByIncidentId', status: 'warning', message: '[PlannerService] getPlannerRunByIncidentId failure', metadata: { code: 'PLANNER_RUN_LOOKUP_FAILED', message } });
+        return {
+          ok: false,
+          error: "FetchPlannerRunFailed",
+          message,
+        };
+      }
   }
 
   async reviewPlannerRun(
@@ -272,13 +276,14 @@ export class PlannerService implements IPlannerService {
         decision: normalizedDecision,
       };
     } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : String(err);
-      return {
-        ok: false,
-        error: "ReviewPlannerRunFailed",
-        message,
-      };
-    }
+        const message = err instanceof Error ? err.message : String(err);
+        logger.warn({ component: 'PlannerService', operation: 'reviewPlannerRun', status: 'warning', message: '[PlannerService] reviewPlannerRun failure', metadata: { code: 'PLANNER_REVIEW_FAILED', message } });
+        return {
+          ok: false,
+          error: "ReviewPlannerRunFailed",
+          message,
+        };
+      }
   }
 
   async listPlannerRuns(
@@ -297,13 +302,14 @@ export class PlannerService implements IPlannerService {
         runs,
       };
     } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : String(err);
-      return {
-        ok: false,
-        error: "FetchPlannerRunsFailed",
-        message,
-      };
-    }
+        const message = err instanceof Error ? err.message : String(err);
+        logger.warn({ component: 'PlannerService', operation: 'listPlannerRuns', status: 'warning', message: '[PlannerService] listPlannerRuns failure', metadata: { code: 'PLANNER_RUN_LIST_FAILED', message } });
+        return {
+          ok: false,
+          error: "FetchPlannerRunsFailed",
+          message,
+        };
+      }
   }
 
   async getPlannerRun(
@@ -333,12 +339,13 @@ export class PlannerService implements IPlannerService {
         reviewEvents,
       };
     } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : String(err);
-      return {
-        ok: false,
-        error: "FetchPlannerRunFailed",
-        message,
-      };
-    }
+        const message = err instanceof Error ? err.message : String(err);
+        logger.warn({ component: 'PlannerService', operation: 'getPlannerRun', status: 'warning', message: '[PlannerService] getPlannerRun failure', metadata: { code: 'PLANNER_RUN_FETCH_FAILED', message } });
+        return {
+          ok: false,
+          error: "FetchPlannerRunFailed",
+          message,
+        };
+      }
   }
 }

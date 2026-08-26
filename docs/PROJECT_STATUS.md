@@ -1,24 +1,26 @@
 # OpsPilot Project Status
 
-Last Updated: 2026-08-06
+Last Updated: 2026-08-07
 
-Sprint: 11.1 (IN PROGRESS)
+> Post-V1 update (2026-08-23): the repository now includes the Sprint 13 production UI, Copilot human review, Decision Core, Pilot feedback/quality and learning-data workflows, plus Supabase authentication and role-based authorization. These additions remain subject to the validation evidence recorded by the current release run; the historical Sprint 12.4 declaration below is preserved.
 
-Current Sprint State: IN PROGRESS
+Sprint: 12.4
 
-Latest Validated Sprint: 11.0
+Current Sprint State: COMPLETED
 
-Latest Completed Sprint: 10.5
+Latest Validated Sprint: 12.4
+
+Latest Completed Sprint: 12.4
 
 Current Branch: N/A
 
 Git Commit: N/A
 
-Repository Version: N/A
+Repository Version: v1.0.0
 
-Next Planned Sprint: 11.2
+Next Planned Sprint: POST-V1
 
-Current Focus: Metrics Runtime Optimization (Sprint 11.1)
+Current Focus: V1 Release Candidate
 
 ## Sprint State Definitions
 
@@ -52,8 +54,8 @@ Do not invent branch, commit, or version values; use `N/A` when unavailable.
 
 - Sprint history directory: [./sprint-history/](./sprint-history/)
 - Unattributed implementation: [./sprint-history/UNATTRIBUTED_IMPLEMENTATION.md](./sprint-history/UNATTRIBUTED_IMPLEMENTATION.md)
-- Verified sprint files count: **23**
-- Fixed issue count: **7**
+- Verified sprint files count: **30**
+- Fixed issue count: **8**
 - Open issue count: **0**
-- Accepted decision count: **2**
+- Accepted decision count: **3**
 - Rejected decision count: **3**

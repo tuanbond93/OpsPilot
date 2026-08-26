@@ -3,6 +3,7 @@ import { createAdminClient } from "@/connectors/supabase";
 import { RepositoryFactory } from "@/repositories/RepositoryFactory";
 import { ActionQueue } from "@/engine/action-queue";
 import { ServiceFactory } from "@/services/ServiceFactory";
+import { authorizeApiRequest, readJsonBody, resolveActor } from "@/security/api-security";
 
 export const dynamic = "force-dynamic";
 
@@ -13,6 +14,10 @@ export async function POST(
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
+  const parsed = await readJsonBody(request);
+  if (!parsed.ok) return parsed.response;
+  const access = await authorizeApiRequest(request, "MANAGE_SYSTEM");
+  if (!access.ok) return access.response;
 
   // Environment protection check
   const isDev = process.env.NODE_ENV !== "production";
@@ -29,10 +34,10 @@ export async function POST(
   }
 
   try {
-    const body = await request.json().catch(() => ({}));
+    const body = parsed.body;
 
     // Validate confirmedBy: mandatory, non-empty, trimmed, max length
-    const rawConfirmedBy = body.confirmedBy;
+    const rawConfirmedBy = resolveActor(access.identity, body.confirmedBy);
     if (rawConfirmedBy === undefined || rawConfirmedBy === null) {
       return NextResponse.json(
         {

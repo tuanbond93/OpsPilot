@@ -39,4 +39,5 @@ export interface IFollowupService {
     config?: FollowupConfig,
     referenceTimeMs?: number
   ): Promise<ProcessedFollowupItem[]>;
+  runFollowupForIncident(incidentId: string): Promise<any>;
 }

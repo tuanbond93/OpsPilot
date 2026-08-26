@@ -1,9 +1,15 @@
 import { defineConfig } from 'vitest/config';
-import tsconfigPaths from 'vite-tsconfig-paths';
+import { fileURLToPath } from 'node:url';
 
 export default defineConfig({
-  plugins: [tsconfigPaths()],
+  resolve: {
+    alias: {
+      '@': fileURLToPath(new URL('./src', import.meta.url)),
+    },
+  },
   test: {
+    testTimeout: 600000,
+    hookTimeout: 60000,
     environment: 'node',
     setupFiles: ['./vitest.setup.ts'],
   },

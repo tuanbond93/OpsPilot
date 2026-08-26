@@ -2,8 +2,9 @@ import { NextResponse, type NextRequest } from "next/server";
 import { schedulerRunner, ensureSchedulerInitialized } from "../../../../integrations/scheduler";
 
 export const dynamic = "force-dynamic";
+export const maxDuration = 300;
 
-export async function POST(request: NextRequest) {
+async function processAiJobs(request: NextRequest) {
   const isDev = process.env.NODE_ENV === "development";
   const cronSecret = process.env.CRON_SECRET;
 
@@ -32,4 +33,14 @@ export async function POST(request: NextRequest) {
     details: result.details,
     error: result.error,
   });
+}
+
+// Vercel Cron invokes configured paths with GET. POST remains available for
+// authenticated manual or development invocations.
+export async function GET(request: NextRequest) {
+  return processAiJobs(request);
+}
+
+export async function POST(request: NextRequest) {
+  return processAiJobs(request);
 }

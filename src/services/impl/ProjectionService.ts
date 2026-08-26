@@ -5,7 +5,9 @@ import type { IIncidentProjection } from "@/projections/interfaces/IIncidentProj
 import type { IPlannerProjection } from "@/projections/interfaces/IPlannerProjection";
 import type { INotificationProjection } from "@/projections/interfaces/INotificationProjection";
 import type { IProjectionRunRepository } from "@/repositories/interfaces/IProjectionRunRepository";
-
+import type { WorkflowResult } from "@/workflow/WorkflowResult";
+import { logger } from '@/observability/logger';
+import { ErrorCode } from '@/observability/errorCodes';
 export class ProjectionService implements IProjectionService {
   constructor(
     private warehouseProjection: IWarehouseProjection | null = null,
@@ -22,7 +24,15 @@ export class ProjectionService implements IProjectionService {
       promises.push(
         this.warehouseProjection.project().then((res) => {
           if (res.status === "failed") {
-            console.error(`[ProjectionEngine] Warehouse Projection failed: ${res.errorMessage}`);
+            logger.error({
+              component: "ProjectionService",
+              operation: "projectWarehouse",
+              status: "error",
+              message: "[ProjectionEngine] Warehouse Projection failed",
+              errorCode: ErrorCode.PROJECTION_REFRESH_FAILED,
+              error: new Error(res.errorMessage),
+              metadata: { projection: "warehouse" }
+            });
           }
         })
       );
@@ -32,7 +42,15 @@ export class ProjectionService implements IProjectionService {
       promises.push(
         this.incidentProjection.project().then((res) => {
           if (res.status === "failed") {
-            console.error(`[ProjectionEngine] Incident Projection failed: ${res.errorMessage}`);
+            logger.error({
+              component: "ProjectionService",
+              operation: "projectIncident",
+              status: "error",
+              message: "[ProjectionEngine] Incident Projection failed",
+              errorCode: ErrorCode.PROJECTION_REFRESH_FAILED,
+              error: new Error(res.errorMessage),
+              metadata: { projection: "incident" }
+            });
           }
         })
       );
@@ -42,7 +60,15 @@ export class ProjectionService implements IProjectionService {
       promises.push(
         this.plannerProjection.project().then((res) => {
           if (res.status === "failed") {
-            console.error(`[ProjectionEngine] Planner Projection failed: ${res.errorMessage}`);
+            logger.error({
+              component: "ProjectionService",
+              operation: "projectPlanner",
+              status: "error",
+              message: "[ProjectionEngine] Planner Projection failed",
+              errorCode: ErrorCode.PROJECTION_REFRESH_FAILED,
+              error: new Error(res.errorMessage),
+              metadata: { projection: "planner" }
+            });
           }
         })
       );
@@ -52,7 +78,15 @@ export class ProjectionService implements IProjectionService {
       promises.push(
         this.notificationProjection.project().then((res) => {
           if (res.status === "failed") {
-            console.error(`[ProjectionEngine] Notification Projection failed: ${res.errorMessage}`);
+            logger.error({
+              component: "ProjectionService",
+              operation: "projectNotification",
+              status: "error",
+              message: "[ProjectionEngine] Notification Projection failed",
+              errorCode: ErrorCode.PROJECTION_REFRESH_FAILED,
+              error: new Error(res.errorMessage),
+              metadata: { projection: "notification" }
+            });
           }
         })
       );
@@ -61,7 +95,15 @@ export class ProjectionService implements IProjectionService {
     try {
       await Promise.all(promises);
     } catch (e: any) {
-      console.error(`[ProjectionEngine] Projection engine encountered a execution error: ${e.message || e}`);
+      logger.error({
+        component: "ProjectionService",
+        operation: "refreshProjections",
+        status: "error",
+        message: "[ProjectionEngine] Projection engine encountered an execution error",
+        errorCode: ErrorCode.PROJECTION_REFRESH_FAILED,
+        error: e instanceof Error ? e : new Error(String(e)),
+        metadata: {}
+      });
     }
   }
 
@@ -73,4 +115,6 @@ export class ProjectionService implements IProjectionService {
     if (!this.projectionRunRepo) return null;
     return this.projectionRunRepo.getLatestRun();
   }
+
+
 }

@@ -64,6 +64,13 @@ export interface RawRillnetOrder {
   client_order_code?: string;
   created_date?: string;
   order_date?: string;
+  pick_warehouse_id?: string | number;
+  deliver_warehouse_id?: string | number;
+  service_type_id?: string | number;
+  end_pick_time?: string;
+  end_delivery_time?: string;
+  end_success_time?: string;
+  warehouse_log?: string | unknown[];
   [key: string]: unknown;
 }
 
@@ -88,6 +95,13 @@ export interface NormalizedRillnetOrder {
   customerName: string;
   customerCode: string;
   createdAt: string | null;
+  pickWarehouseId?: string | null;
+  deliverWarehouseId?: string | null;
+  serviceTypeId?: string | null;
+  endPickAt?: string | null;
+  endDeliveryAt?: string | null;
+  endSuccessAt?: string | null;
+  warehouseLog?: unknown[];
   fetchedAt: string;
 }
 

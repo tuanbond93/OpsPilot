@@ -64,6 +64,8 @@ export const RILLNET_CLIENTS_BY_ID: Record<string, { name: string; code: string 
   "4691072": { name: "Elmich B2B", code: "ELMICHB2B" },
   "5335186": { name: "Supra", code: "SUPRA" },
   "5155120": { name: "Toshiba B2B", code: "TOSHIBAB2B" },
+  "5152151": { name: "Hồng Đạt", code: "HONGDAT" },
+  "5386469": { name: "Cocoon", code: "COCOON" },
   "3790610": { name: "Sasin", code: "SASIN" },
   "5359595": { name: "Song Hành", code: "SONGHANH" },
   "656761": { name: "Tipi Global", code: "TIPIGLOBAL" },
@@ -106,6 +108,12 @@ export function mapRawOrderToNormalized(raw: RawRillnetOrder, fetchedAt: string)
     : raw.order_date
     ? String(raw.order_date)
     : null;
+  const timestamp = (value: unknown) => typeof value === "string" && value.trim() && !Number.isNaN(Date.parse(value)) ? new Date(value).toISOString() : null;
+  let warehouseLog: unknown[] = [];
+  try {
+    const parsed = typeof raw.warehouse_log === "string" ? JSON.parse(raw.warehouse_log) : raw.warehouse_log;
+    if (Array.isArray(parsed)) warehouseLog = parsed;
+  } catch { /* malformed source log remains unavailable */ }
 
   return {
     id: `rillnet-${orderCode}-${warehouseId}-${status}`,
@@ -118,6 +126,13 @@ export function mapRawOrderToNormalized(raw: RawRillnetOrder, fetchedAt: string)
     customerName,
     customerCode,
     createdAt,
+    pickWarehouseId: raw.pick_warehouse_id == null ? null : String(raw.pick_warehouse_id),
+    deliverWarehouseId: raw.deliver_warehouse_id == null ? null : String(raw.deliver_warehouse_id),
+    serviceTypeId: raw.service_type_id == null ? null : String(raw.service_type_id),
+    endPickAt: timestamp(raw.end_pick_time),
+    endDeliveryAt: timestamp(raw.end_delivery_time),
+    endSuccessAt: timestamp(raw.end_success_time),
+    warehouseLog,
     fetchedAt,
   };
 }

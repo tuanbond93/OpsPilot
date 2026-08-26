@@ -3,6 +3,7 @@ export interface DashboardContext {
   writeControlsEnabled: boolean;
   nowIso: string;
   nowMs: number;
+  allowedWarehouseIds?: string[];
 }
 
 export interface IDashboardService {

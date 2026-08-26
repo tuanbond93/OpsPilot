@@ -1,5 +1,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { ProjectionResult } from "./projection-engine";
+import { logger } from "@/observability/logger";
 
 export interface IncidentSummaryDto {
   incident_id: string; // UUID
@@ -25,7 +26,6 @@ export interface IncidentSummaryDto {
  */
 export async function projectIncident(client: SupabaseClient): Promise<ProjectionResult> {
   const startTime = Date.now();
-  console.log("[Projection][Incident] started");
 
   try {
     // 1. Fetch latest successful sync run ID to identify active incidents (incremental / rebuild anchor)
@@ -42,8 +42,6 @@ export async function projectIncident(client: SupabaseClient): Promise<Projectio
     }
 
     if (!latestSync) {
-      console.log("[Projection][Incident] finished rowsUpdated=0");
-      console.log("[Projection][Incident] rows.length == 0: No successful sync runs found in the database");
       return {
         status: "success",
         rowsUpdated: 0,
@@ -61,12 +59,7 @@ export async function projectIncident(client: SupabaseClient): Promise<Projectio
       throw new Error(`Failed to fetch active incidents: ${incidentsError.message}`);
     }
 
-    console.log("Latest sync: " + latestSync.id);
-    console.log("Loaded incidents: " + (activeIncidents?.length || 0));
-
     if (!activeIncidents || activeIncidents.length === 0) {
-      console.log("[Projection][Incident] finished rowsUpdated=0");
-      console.log("[Projection][Incident] rows.length == 0: No open or monitoring incidents found");
       return {
         status: "success",
         rowsUpdated: 0,
@@ -228,41 +221,57 @@ export async function projectIncident(client: SupabaseClient): Promise<Projectio
       });
     }
 
-    console.log("DTO count: " + dtos.length);
-    if (dtos.length === 0) {
-      console.log("[Projection][Incident] rows.length == 0: constructed dtos array is empty");
-    }
-
     // 4. Call RPC
-    console.log("Calling RPC...");
     const { error: rpcError } = await client.rpc("upsert_incident_summary", {
       rows: dtos,
       present_ids: incidentIds,
     });
 
     if (rpcError) {
-      console.error("Full RPC Error Object:", JSON.stringify(rpcError, null, 2));
       throw new Error(`RPC upsert_incident_summary failed: ${rpcError.message}`);
     }
 
-    console.log("RPC success");
     const rowsUpdated = dtos.length;
-    console.log(`rowsUpdated=${rowsUpdated}`);
-    console.log("[Projection][Incident] finished");
+    const durationMs = Date.now() - startTime;
+
+    logger.info({
+      component: "IncidentProjection",
+      operation: "projectIncident",
+      status: "success",
+      message: `[Projection][Incident] finished rowsUpdated=${rowsUpdated}`,
+      durationMs,
+      metadata: {
+        rowsProcessed: activeIncidents.length,
+        rowsUpdated,
+        syncRunId: latestSync.id,
+      },
+    });
 
     return {
       status: "success",
       rowsUpdated,
-      durationMs: Date.now() - startTime,
+      durationMs,
     };
   } catch (error: any) {
     const errorMessage = error.message || String(error);
-    console.error(`[Projection][Incident] failed ${errorMessage}`, error);
+    const durationMs = Date.now() - startTime;
+    const errorCode = error.code || "PROJECTION_REFRESH_FAILED";
+
+    logger.error({
+      component: "IncidentProjection",
+      operation: "projectIncident",
+      status: "failed",
+      message: `[Projection][Incident] failed ${errorMessage}`,
+      durationMs,
+      errorCode,
+      error,
+    });
+
     return {
       status: "failed",
       rowsUpdated: 0,
-      durationMs: Date.now() - startTime,
-      errorCode: error.code || "PROJECTION_ERROR",
+      durationMs,
+      errorCode,
       errorMessage,
     };
   }

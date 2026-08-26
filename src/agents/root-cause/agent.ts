@@ -2,6 +2,8 @@ import createHash from "crypto";
 import { generate, loadPromptMetadata } from "../../ai";
 import type { Incident } from "../../engine/incident";
 import type { IncidentHistoryRow } from "@/connectors/supabase";
+import { BoundedCache, ROOT_CAUSE_CACHE_MAX_ENTRIES } from "./bounded-cache";
+
 import { buildRootCauseContext, type DeterministicContext } from "./context-builder";
 import { buildDeterministicEvidence, type EvidenceItem } from "./evidence-builder";
 import { calculateDeterministicRisk, type RiskResult } from "./risk-calculator";
@@ -15,7 +17,7 @@ export interface AgentAnalysisResponse {
   metadata: {
     provider: string;
     model: string;
-    promptVersion: number;
+    promptVersion: string;
     generatedAt: string;
   };
   cached?: boolean;
@@ -23,7 +25,7 @@ export interface AgentAnalysisResponse {
 }
 
 export class RootCauseAgent {
-  private static cache = new Map<string, AgentAnalysisResponse>();
+  private static cache = new BoundedCache<string, AgentAnalysisResponse>(ROOT_CAUSE_CACHE_MAX_ENTRIES);
 
   /**
    * Clears the in-memory cache for unit testing
@@ -59,7 +61,7 @@ export class RootCauseAgent {
     try {
       promptMeta = loadPromptMetadata("rootcause");
     } catch {
-      promptMeta = { name: "rootcause", version: 2, language: "vi", content: "" };
+      promptMeta = { name: "rootcause", version: "v2", language: "vi", content: "" };
     }
 
     // 5. Compute canonical context hash
@@ -72,6 +74,12 @@ export class RootCauseAgent {
       riskScore: risk.score,
       riskLevel: risk.level,
       evidenceCodes: Array.from(validEvidenceCodes).sort(),
+      pickupJourneyCoveragePercent: context.pickupJourneyCoveragePercent,
+      pickupDelayedOrderCount: context.pickupDelayedOrderCount,
+      maximumPickupWaitHours: context.maximumPickupWaitHours,
+      pickupDelayOrderCodes: [...context.pickupDelayOrderCodes].sort(),
+      operationalPlaybookVersion: context.operationalPlaybookVersion,
+      cpttSampleOrderCodes: [...context.cpttSampleOrderCodes].sort(),
       promptVersion: promptMeta.version,
     });
     const contextHash = createHash.createHash("sha256").update(canonicalPayload).digest("hex");
@@ -91,6 +99,13 @@ export class RootCauseAgent {
       verifiedEvidence: evidence,
       deterministicRisk: risk,
       allowedEvidenceCodes: Array.from(validEvidenceCodes),
+      operationalPlaybook: {
+        version: context.operationalPlaybookVersion,
+        cpttMeaning: "Mã đơn đuôi _CPTT là chứng từ thu hồi.",
+        ghnMorningCotHour: context.ghnMorningCotHour,
+        groupingPolicy: context.groupingPolicy,
+        responsibilityRule: "Mỗi chặng tồn phải quy trách nhiệm cho kho đang giữ hàng hoặc kho nhập hàng muộn; không gộp nhiều lỗi chặng thành một nguyên nhân chung.",
+      },
     };
 
     const systemPrompt = `You are the Lead Logistics Operations Investigator for OpsPilot. Prompt Version: ${promptMeta.version}. Answer in Vietnamese using strictly the supplied evidence codes and deterministic risk. Return valid JSON only.`;
@@ -99,7 +114,7 @@ export class RootCauseAgent {
     const selectedProvider = options.provider || "openai";
 
     try {
-      response = await generate("rootcause", JSON.stringify(inputForAI), {
+      response = await generate("rootcause", inputForAI as Record<string, unknown>, {
         systemPrompt,
         temperature: options.temperature ?? 0.2,
         provider: selectedProvider,

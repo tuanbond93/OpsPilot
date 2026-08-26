@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { createAdminClient } from "@/connectors/supabase";
 import { ServiceFactory } from "@/services/ServiceFactory";
+import { authorizeApiRequest, readJsonBody, resolveActor } from "@/security/api-security";
 
 export const dynamic = "force-dynamic";
 
@@ -9,9 +10,13 @@ export async function POST(
   { params }: { params: Promise<{ incidentId: string }> }
 ) {
   const { incidentId } = await params;
+  const parsed = await readJsonBody(request);
+  if (!parsed.ok) return parsed.response;
+  const access = await authorizeApiRequest(request, "MANAGE_SYSTEM");
+  if (!access.ok) return access.response;
 
   try {
-    const body = await request.json().catch(() => ({}));
+    const body = parsed.body;
     let dbClient;
     try {
       dbClient = createAdminClient();
@@ -21,10 +26,10 @@ export async function POST(
 
     const plannerService = ServiceFactory.getPlannerService(dbClient);
     const result = await plannerService.generatePlan(incidentId, {
-      provider: body.provider || undefined,
-      model: body.model || undefined,
+      provider: typeof body.provider === "string" ? body.provider : undefined,
+      model: typeof body.model === "string" ? body.model : undefined,
       forceRegenerate: Boolean(body.forceRegenerate),
-      requestedBy: body.requestedBy ? String(body.requestedBy).trim() : undefined,
+      requestedBy: resolveActor(access.identity, body.requestedBy) || undefined,
     });
 
     if (!result.ok && result.error === "MissingRequestedBy") {

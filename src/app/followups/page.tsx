@@ -1,256 +1,82 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useEffect, useState } from "react";
+import Link from "next/link";
+import { CheckCircle2, CircleAlert, RefreshCw } from "lucide-react";
+import { repairOperationalText } from "@/app/_components/operationalText";
+import { handleApiAccess } from "@/app/_components/apiAccess";
+import { useOpsSession } from "@/app/_components/useOpsSession";
 
 interface FollowupCaseItem {
-  id: string;
-  incident_id: string;
-  incident_key: string;
-  warehouse_name?: string;
-  reason_name?: string;
-  current_state: string;
-  baseline_affected_order_count: number;
-  latest_affected_order_count: number;
-  current_progress_percent: number;
-  current_assessment: string;
-  next_action_at?: string | null;
-  last_action_requested_at?: string | null;
-  last_action_confirmed_at?: string | null;
-  resolved_at?: string | null;
-  payload?: {
-    warehouse: string;
-    reason: string;
-    currentCount: number;
-    baselineCount: number;
-    previousCount: number;
-    progressPercent: number;
-    progressAssessment: string;
-    riskScore: number;
-    riskLevel: string;
-    rootCauseSummary: string;
-    state: string;
-    nextActionAt?: string | null;
-    lastActionRequestedAt?: string | null;
-    lastActionConfirmedAt?: string | null;
-    escalationRequired: boolean;
-  };
+  id: string; incident_id: string; incident_key: string; warehouse_name?: string; reason_name?: string;
+  current_state: string; baseline_affected_order_count: number; latest_affected_order_count: number;
+  current_progress_percent: number; current_assessment: string; last_action_confirmed_at?: string | null;
+  payload?: { warehouse?: string; reason?: string; rootCauseSummary?: string };
 }
 
+const stateLabel: Record<string, string> = {
+  NEW: "MỚI", FIRST_PUSH_PENDING: "CHỜ XÁC NHẬN NHẮC LẦN 1", SECOND_PUSH_PENDING: "CHỜ XÁC NHẬN NHẮC LẦN 2",
+  ESCALATION_PENDING: "CHỜ XÁC NHẬN LEO THANG", ESCALATED: "ĐÃ LEO THANG", WAITING_FOR_RESPONSE: "CHỜ PHẢN HỒI",
+  NEXT_CHECK_PENDING: "CHỜ KIỂM TRA LẠI", RESOLVED: "ĐÃ GIẢI QUYẾT", CLOSED: "ĐÃ ĐÓNG",
+};
+const assessmentLabel: Record<string, string> = {
+  strong_progress: "Cải thiện mạnh", limited_progress: "Có cải thiện", no_progress: "Chưa cải thiện",
+  no_material_progress: "Chưa cải thiện đáng kể", worsening: "Xấu đi", insufficient_data: "Chưa đủ dữ liệu",
+};
+
 export default function FollowupsDashboard() {
+  const session = useOpsSession();
   const [cases, setCases] = useState<FollowupCaseItem[]>([]);
-  const [loading, setLoading] = useState<boolean>(true);
+  const [loading, setLoading] = useState(true);
   const [confirmingId, setConfirmingId] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState("");
 
   async function loadCases() {
+    setLoading(true); setError("");
     try {
-      setLoading(true);
-      const res = await fetch("/api/debug/followups");
-      const json = await res.json();
-      setCases(json.cases || []);
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      setError(`Failed to load follow-up cases: ${msg}`);
-    } finally {
-      setLoading(false);
-    }
+      const response = await fetch("/api/debug/followups", { cache: "no-store" });
+      const payload = await response.json();
+      handleApiAccess(response, payload, "Không thể tải danh sách theo dõi.");
+      setCases(payload.cases || []);
+    } catch (caught) { setError(caught instanceof Error ? caught.message : String(caught)); }
+    finally { setLoading(false); }
   }
 
-  useEffect(() => {
-    loadCases();
-  }, []);
+  useEffect(() => { void loadCases(); }, []);
 
-  async function handleConfirm(caseId: string, state: string) {
-    let action = "first_push";
-    if (state === "SECOND_PUSH_PENDING") action = "second_push";
-    if (state === "ESCALATION_PENDING") action = "escalation";
-
+  async function confirmAction(item: FollowupCaseItem) {
+    const action = item.current_state === "SECOND_PUSH_PENDING" ? "second_push" : item.current_state === "ESCALATION_PENDING" ? "escalation" : "first_push";
+    setConfirmingId(item.id); setError("");
     try {
-      setConfirmingId(caseId);
-      const res = await fetch(`/api/debug/followups/${encodeURIComponent(caseId)}/confirm`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action, confirmedBy: "Dashboard Operator" }),
+      const response = await fetch(`/api/debug/followups/${encodeURIComponent(item.id || item.incident_key)}/confirm`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action, confirmedBy: session.actor }),
       });
-
-      const json = await res.json();
-      if (!res.ok || json.error) {
-        throw new Error(json.message || json.error || "Confirmation failed");
-      }
-
+      const payload = await response.json();
+      handleApiAccess(response, payload, "Không thể xác nhận hành động.");
+      if (payload.error) throw new Error(payload.message || payload.error || "Không thể xác nhận hành động.");
       await loadCases();
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      alert(`Confirmation Error: ${msg}`);
-    } finally {
-      setConfirmingId(null);
-    }
+    } catch (caught) { setError(caught instanceof Error ? caught.message : String(caught)); }
+    finally { setConfirmingId(null); }
   }
 
-  return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 p-6 max-w-6xl mx-auto space-y-8">
-      <header className="border-b border-slate-800 pb-4 flex items-center justify-between">
-        <div>
-          <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-blue-500/10 border border-blue-500/20 text-blue-400 text-xs font-semibold uppercase tracking-wider mb-2">
-            Operational State Machine & Action Governance
-          </div>
-          <h1 className="text-3xl font-extrabold text-slate-100">Follow-up & Escalation Dashboard</h1>
-          <p className="text-sm text-slate-400">
-            Deterministic state tracking separating requested actions from confirmed delivery
-          </p>
-        </div>
-        <button
-          onClick={loadCases}
-          className="px-4 py-2 bg-slate-900 hover:bg-slate-800 border border-slate-800 text-xs font-semibold rounded-xl text-slate-300 transition"
-        >
-          Refresh Cases
-        </button>
-      </header>
+  return <main id="main-content" tabIndex={-1} className="mx-auto min-h-dvh max-w-7xl space-y-6 bg-slate-950 p-4 text-slate-100 sm:p-6">
+    <header className="flex flex-col gap-3 border-b border-slate-800 pb-5 sm:flex-row sm:items-end sm:justify-between"><div><p className="text-xs font-semibold uppercase tracking-[0.18em] text-blue-300">Sau đề xuất và xử lý</p><h1 className="mt-1 text-2xl font-bold sm:text-3xl">Theo dõi kết quả</h1><p className="mt-1 text-sm text-slate-400">So sánh số đơn hiện tại với mốc ban đầu để biết tình hình đang cải thiện, đứng yên hay xấu đi; không mặc định đây là tác động do hành động tạo ra.</p></div><button type="button" onClick={() => void loadCases()} disabled={loading} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-lg border border-slate-700 px-4 text-sm font-semibold hover:bg-slate-900 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-400 disabled:opacity-50"><RefreshCw aria-hidden="true" size={17} className={loading ? "animate-spin motion-reduce:animate-none" : ""}/>Làm mới</button></header>
 
-      {loading && (
-        <div className="p-8 text-center text-slate-500 animate-pulse">Loading follow-up cases...</div>
-      )}
+    <section className="rounded-xl border border-blue-500/30 bg-blue-500/5 p-4"><h2 className="font-bold text-blue-100">Cách đọc màn hình này</h2><div className="mt-3 overflow-x-auto"><table className="w-full min-w-[720px] text-left text-sm"><thead className="text-xs uppercase text-slate-400"><tr><th className="border-b border-slate-700 p-3">Chỉ số</th><th className="border-b border-slate-700 p-3">Ý nghĩa</th><th className="border-b border-slate-700 p-3">Cách diễn giải</th></tr></thead><tbody className="divide-y divide-slate-800"><tr><td className="p-3 font-semibold">Số đơn hiện tại</td><td className="p-3 text-slate-300">Số đơn còn thuộc incident ở lần kiểm tra mới nhất.</td><td className="p-3 text-slate-400">Càng thấp so với mốc ban đầu càng tốt.</td></tr><tr><td className="p-3 font-semibold">Mốc ban đầu</td><td className="p-3 text-slate-300">Số đơn khi follow-up bắt đầu.</td><td className="p-3 text-slate-400">Dùng làm mẫu số để tính tỷ lệ cải thiện.</td></tr><tr><td className="p-3 font-semibold">Mức cải thiện</td><td className="p-3 text-slate-300">(Mốc ban đầu − hiện tại) / mốc ban đầu × 100%.</td><td className="p-3 text-slate-400">Số dương là cải thiện; số âm là xấu đi. +100% nghĩa là số đơn đã giảm về 0.</td></tr><tr><td className="p-3 font-semibold">Đã xác nhận</td><td className="p-3 text-slate-300">Thời điểm operator xác nhận action đã được gửi/thực hiện.</td><td className="p-3 text-slate-400">“Chưa xác nhận” nghĩa là hệ thống chưa có bằng chứng delivery.</td></tr></tbody></table></div><Link href="/guide#followup" className="mt-3 inline-flex min-h-11 items-center text-sm font-semibold text-blue-300 hover:text-blue-200">Xem hướng dẫn follow-up đầy đủ →</Link></section>
 
-      {error && (
-        <div className="p-4 bg-rose-500/10 border border-rose-500/20 text-rose-400 text-xs rounded-xl">
-          {error}
-        </div>
-      )}
+    {!session.loading && !session.can("MANAGE_FOLLOWUP") && <p role="status" className="rounded-xl border border-amber-500/30 bg-amber-500/5 p-4 text-sm text-amber-100">Vai trò {session.role} được xem tiến độ nhưng không có quyền xác nhận action follow-up.</p>}
 
-      {!loading && !error && (
-        <div className="grid grid-cols-1 gap-4">
-          {cases.map((c, idx) => {
-            const p = c.payload;
-            const state = c.current_state;
-            const isPending = state.includes("PENDING");
-            const isEscalated = state === "ESCALATED" || state === "ESCALATION_PENDING";
-            const isResolved = state === "RESOLVED" || state === "CLOSED" || c.latest_affected_order_count === 0;
+    <div aria-live="polite">{loading && <p className="rounded-xl border border-slate-800 bg-slate-900 p-8 text-center text-slate-400">Đang tải các case theo dõi…</p>}{error && <div role="alert" className="flex gap-2 rounded-xl border border-rose-500/40 bg-rose-500/10 p-4 text-rose-200"><CircleAlert aria-hidden="true" size={18}/>{error}</div>}</div>
 
-            return (
-              <div
-                key={c.id || idx}
-                className={`p-6 bg-slate-900 border rounded-2xl space-y-4 shadow-xl transition ${
-                  isEscalated
-                    ? "border-rose-500/50 bg-rose-500/5"
-                    : isPending
-                    ? "border-amber-500/40 bg-amber-500/5"
-                    : "border-slate-800 hover:border-slate-700"
-                }`}
-              >
-                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-800/80 pb-3">
-                  <div>
-                    <span className="text-xs font-mono text-slate-500 block">
-                      Key: {c.incident_key || c.incident_id}
-                    </span>
-                    <h2 className="text-lg font-bold text-slate-100">
-                      {p ? p.warehouse : c.warehouse_name || "Kho chưa xác định"} - {p ? p.reason : c.reason_name || "Sự cố"}
-                    </h2>
-                  </div>
-
-                  <div className="flex items-center gap-3">
-                    <span
-                      className={`text-xs font-extrabold uppercase px-3 py-1 rounded-full border ${
-                        isEscalated
-                          ? "bg-rose-500/20 text-rose-400 border-rose-500/30 animate-pulse"
-                          : isPending
-                          ? "bg-amber-500/20 text-amber-300 border-amber-500/30"
-                          : isResolved
-                          ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/20"
-                          : "bg-blue-500/10 text-blue-400 border-blue-500/20"
-                      }`}
-                    >
-                      State: {state}
-                    </span>
-
-                    {isPending && (
-                      <button
-                        onClick={() => handleConfirm(c.id || c.incident_key, state)}
-                        disabled={confirmingId === (c.id || c.incident_key)}
-                        className="px-4 py-1.5 bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs rounded-xl shadow-md transition disabled:opacity-50"
-                      >
-                        {confirmingId === (c.id || c.incident_key) ? "Confirming..." : "Confirm Action"}
-                      </button>
-                    )}
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 text-xs">
-                  <div className="p-3 bg-slate-950 rounded-xl border border-slate-800">
-                    <span className="text-slate-400 block font-semibold">Incident Count</span>
-                    <span className="text-base font-bold text-blue-400 mt-1 block">
-                      {c.latest_affected_order_count !== undefined
-                        ? c.latest_affected_order_count
-                        : p?.currentCount || 0}{" "}
-                      đơn
-                    </span>
-                  </div>
-
-                  <div className="p-3 bg-slate-950 rounded-xl border border-slate-800">
-                    <span className="text-slate-400 block font-semibold">Baseline Count</span>
-                    <span className="text-base font-bold text-slate-300 mt-1 block">
-                      {c.baseline_affected_order_count !== undefined
-                        ? c.baseline_affected_order_count
-                        : p?.baselineCount || 0}{" "}
-                      đơn
-                    </span>
-                  </div>
-
-                  <div className="p-3 bg-slate-950 rounded-xl border border-slate-800">
-                    <span className="text-slate-400 block font-semibold">Progress Percent</span>
-                    <span
-                      className={`text-base font-bold mt-1 block ${
-                        c.current_progress_percent < 0
-                          ? "text-emerald-400"
-                          : c.current_progress_percent > 0
-                          ? "text-rose-400"
-                          : "text-slate-300"
-                      }`}
-                    >
-                      {c.current_progress_percent > 0 ? "+" : ""}
-                      {c.current_progress_percent}% ({c.current_assessment})
-                    </span>
-                  </div>
-
-                  <div className="p-3 bg-slate-950 rounded-xl border border-slate-800">
-                    <span className="text-slate-400 block font-semibold">Resolution Status</span>
-                    <span
-                      className={`text-xs font-bold mt-1.5 block uppercase ${
-                        isResolved ? "text-emerald-400" : "text-amber-400"
-                      }`}
-                    >
-                      {isResolved ? "RESOLVED" : "ACTIVE"}
-                    </span>
-                  </div>
-
-                  <div className="p-3 bg-slate-950 rounded-xl border border-slate-800">
-                    <span className="text-slate-400 block font-semibold">Last Confirmed</span>
-                    <span className="text-[11px] font-mono text-slate-300 mt-1 block truncate">
-                      {c.last_action_confirmed_at
-                        ? new Date(c.last_action_confirmed_at).toLocaleTimeString()
-                        : "Unconfirmed"}
-                    </span>
-                  </div>
-                </div>
-
-                {p && p.rootCauseSummary && (
-                  <div className="p-3 bg-slate-950/60 rounded-xl border border-slate-800 text-xs space-y-1">
-                    <span className="font-semibold text-blue-400 uppercase tracking-wider block">
-                      AI Root Cause Explanation:
-                    </span>
-                    <p className="text-slate-300">{p.rootCauseSummary}</p>
-                  </div>
-                )}
-              </div>
-            );
-          })}
-
-          {cases.length === 0 && (
-            <div className="p-8 text-center text-slate-500 bg-slate-900 border border-slate-800 rounded-2xl">
-              No active follow-up cases found in Event Store.
-            </div>
-          )}
-        </div>
-      )}
-    </div>
-  );
+    {!loading && !error && <section aria-label="Danh sách case theo dõi" className="grid gap-4">{cases.map((item) => {
+      const state = item.current_state;
+      const pending = state.includes("PENDING");
+      const resolved = state === "RESOLVED" || state === "CLOSED";
+      const progress = Number(item.current_progress_percent || 0);
+      const improving = progress > 0;
+      const warehouse = repairOperationalText(item.payload?.warehouse || item.warehouse_name || "Kho chưa xác định");
+      const reason = repairOperationalText(item.payload?.reason || item.reason_name || "Sự cố chưa phân loại");
+      return <article key={item.id} className={`rounded-xl border p-5 ${resolved ? "border-emerald-500/30 bg-emerald-500/5" : pending ? "border-amber-500/30 bg-amber-500/5" : "border-slate-800 bg-slate-900"}`}><div className="flex flex-col gap-3 border-b border-slate-800 pb-4 sm:flex-row sm:items-start sm:justify-between"><div><p className="font-mono text-xs text-slate-500">{item.incident_key || item.incident_id}</p><h2 className="mt-1 text-lg font-bold">{warehouse} · {reason}</h2></div><div className="flex flex-wrap items-center gap-2"><span className="rounded-full border border-slate-700 px-3 py-1 text-xs font-bold">{stateLabel[state] || state}</span>{pending && session.can("MANAGE_FOLLOWUP") && <button type="button" onClick={() => void confirmAction(item)} disabled={confirmingId === item.id} className="inline-flex min-h-10 items-center gap-2 rounded-lg bg-amber-500 px-3 text-xs font-bold text-slate-950 hover:bg-amber-400 disabled:opacity-50"><CheckCircle2 aria-hidden="true" size={16}/>{confirmingId === item.id ? "Đang xác nhận…" : "Xác nhận action"}</button>}</div></div><dl className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-5"><div className="rounded-lg bg-slate-950 p-3"><dt className="text-xs text-slate-500">Số đơn hiện tại</dt><dd className="mt-1 text-lg font-bold text-blue-300">{item.latest_affected_order_count} đơn</dd></div><div className="rounded-lg bg-slate-950 p-3"><dt className="text-xs text-slate-500">Mốc ban đầu</dt><dd className="mt-1 text-lg font-bold">{item.baseline_affected_order_count} đơn</dd></div><div className="rounded-lg bg-slate-950 p-3"><dt className="text-xs text-slate-500">Mức cải thiện</dt><dd className={`mt-1 text-lg font-bold ${improving ? "text-emerald-300" : progress < 0 ? "text-rose-300" : "text-slate-300"}`}>{progress > 0 ? "+" : ""}{progress}%</dd><p className="mt-1 text-xs text-slate-400">{assessmentLabel[item.current_assessment] || item.current_assessment}</p></div><div className="rounded-lg bg-slate-950 p-3"><dt className="text-xs text-slate-500">Kết quả</dt><dd className={`mt-1 font-bold ${resolved ? "text-emerald-300" : "text-amber-300"}`}>{resolved ? "ĐÃ GIẢI QUYẾT" : "ĐANG THEO DÕI"}</dd></div><div className="rounded-lg bg-slate-950 p-3"><dt className="text-xs text-slate-500">Xác nhận action gần nhất</dt><dd className="mt-1 text-sm font-semibold">{item.last_action_confirmed_at ? new Date(item.last_action_confirmed_at).toLocaleString("vi-VN") : "Chưa xác nhận"}</dd></div></dl>{item.payload?.rootCauseSummary && <div className="mt-4 rounded-lg border border-slate-800 bg-slate-950/70 p-3"><p className="text-xs font-semibold uppercase text-blue-300">Phân tích tham khảo</p><p className="mt-1 text-sm leading-6 text-slate-300">{repairOperationalText(item.payload.rootCauseSummary)}</p></div>}</article>;
+    })}{cases.length === 0 && <p className="rounded-xl border border-dashed border-slate-700 p-10 text-center text-slate-400">Chưa có case theo dõi.</p>}</section>}
+  </main>;
 }

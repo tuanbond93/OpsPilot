@@ -1,0 +1,52 @@
+{
+  "id": "incident_3_sync_issue",
+  "name": "Rillnet API Sync Stale Status",
+  "incident": {
+    "incidentId": "inc-sync-rillnet-fail",
+    "incidentKey": "RILLNET:SYNC_STALE",
+    "warehouseId": "21160000",
+    "warehouseName": "Kho Phú Thọ",
+    "reasonCode": "SYNC_STALE",
+    "reasonName": "Mất đồng bộ dữ liệu Rillnet",
+    "status": "open",
+    "priorityScore": 90,
+    "firstDetectedAt": "2026-08-06T06:00:00Z",
+    "lastDetectedAt": "2026-08-06T10:00:00Z",
+    "affectedOrderCount": 320,
+    "sampleOrderCodes": ["ORD-301", "ORD-302"],
+    "averageAgeHours": 12.0,
+    "maximumAgeHours": 24.0,
+    "oldestOrderCode": "ORD-301"
+  },
+  "expected": {
+    "primaryCause": "đồng bộ",
+    "expectedEvidenceCodes": ["CURRENT_AFFECTED_COUNT"],
+    "expectedConfidence": 90,
+    "confidenceTolerance": 15
+  },
+  "mockAiResponse": {
+    "summary": "Sự cố đồng bộ API Rillnet",
+    "assessment": {
+      "status": "worsening",
+      "explanation": "Timeout kết nối"
+    },
+    "causes": [
+      {
+        "title": "Mất đồng bộ Rillnet API",
+        "confidence": 92,
+        "evidenceCodes": ["CURRENT_AFFECTED_COUNT"],
+        "explanation": "Lỗi kết nối Rillnet API"
+      }
+    ],
+    "investigationSteps": [
+      {
+        "priority": "high",
+        "action": "Rà soát log Rillnet Client",
+        "rationale": "Kiểm tra API connection",
+        "requiredData": ["Log Rillnet"]
+      }
+    ],
+    "confidence": 92,
+    "limitations": ["Chưa có log chi tiết Rillnet server"]
+  }
+}

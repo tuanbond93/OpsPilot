@@ -1,14 +1,17 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { createAdminClient } from "@/connectors/supabase";
 import { ServiceFactory } from "@/services/ServiceFactory";
+import { authorizeLinkedIncidentScope } from "@/security/scope-guard";
 
 export const dynamic = "force-dynamic";
 
 export async function GET(
-  _request: NextRequest,
+  request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
+  const scoped = await authorizeLinkedIncidentScope(request, "followup_cases", id, "VIEW_SYSTEM");
+  if (!scoped.ok) return scoped.response;
 
   try {
     let dbClient;

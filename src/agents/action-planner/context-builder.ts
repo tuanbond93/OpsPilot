@@ -46,7 +46,7 @@ export interface PlannerContext {
   missingData: string[];
   blockedOptions: BlockedOption[];
   contextHash: string;
-  promptVersion: number;
+  promptVersion: string;
   plannerPolicyVersion: number;
   rolePolicyVersion: number;
   actionPolicyVersion: number;
@@ -79,11 +79,11 @@ export function computeCanonicalContextHash(
   allowedEvidenceCodes: string[] = [],
   allowedRecommendationTypes: AllowedRecommendationType[] = [],
   allowedTargetRoles: AllowedTargetRole[] = [],
-  promptVersion: number = 1,
-  plannerPolicyVersion: number = 1,
-  rolePolicyVersion: number = 1,
-  actionPolicyVersion: number = 1,
-  rootCausePromptVersion: number = 2
+  promptVersion: string = 'v1',
+  plannerPolicyVersion: string = 'v1',
+  rolePolicyVersion: string = 'v1',
+  actionPolicyVersion: string = 'v1',
+  rootCausePromptVersion: string = 'v1'
 ): string {
   const latestHistory = historyRows[0];
   let previousCount = latestHistory ? latestHistory.affected_order_count : 0;
@@ -173,7 +173,7 @@ export function buildPlannerContext(
   actionHistory: NotificationActionRow[] = [],
   activeExceptions: OrderExceptionRow[] = [],
   referenceTimeMs: number = Date.now(),
-  promptVersion: number = 1,
+  promptVersion: string = 'v1',
   plannerPolicyVersion: number = 1,
   rolePolicyVersion: number = 1,
   actionPolicyVersion: number = 1
@@ -250,9 +250,9 @@ export function buildPlannerContext(
     allowedRecommendationTypes,
     allowedTargetRoles,
     promptVersion,
-    plannerPolicyVersion,
-    rolePolicyVersion,
-    actionPolicyVersion
+    plannerPolicyVersion.toString(),
+    rolePolicyVersion.toString(),
+    actionPolicyVersion.toString()
   );
 
   return {

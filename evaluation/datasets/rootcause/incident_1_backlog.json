@@ -1,0 +1,54 @@
+{
+  "id": "incident_1_backlog",
+  "name": "Heavy Backlog Accumulation",
+  "incident": {
+    "incidentId": "inc-21160000-kho-ton",
+    "incidentKey": "21160000:KHO_TON",
+    "warehouseId": "21160000",
+    "warehouseName": "Kho Phú Thọ",
+    "reasonCode": "KHO_TON",
+    "reasonName": "Kho tồn",
+    "status": "open",
+    "priorityScore": 85,
+    "firstDetectedAt": "2026-08-05T00:00:00Z",
+    "lastDetectedAt": "2026-08-06T12:00:00Z",
+    "affectedOrderCount": 150,
+    "sampleOrderCodes": ["ORD-101", "ORD-102", "ORD-103"],
+    "averageAgeHours": 48.0,
+    "maximumAgeHours": 96.0,
+    "oldestOrderCode": "ORD-101"
+  },
+  "expected": {
+    "primaryCause": "Tồn đọng vận hành",
+    "expectedEvidenceCodes": ["CURRENT_AFFECTED_COUNT", "AVERAGE_AGE_HOURS"],
+    "expectedConfidence": 85,
+    "confidenceTolerance": 15
+  },
+  "mockAiResponse": {
+    "summary": "Tồn đọng vận hành kho Phú Thọ",
+    "assessment": {
+      "status": "worsening",
+      "explanation": "Đơn hàng tồn quá 48 giờ"
+    },
+    "causes": [
+      {
+        "title": "Tồn đọng vận hành kho Phú Thọ",
+        "confidence": 88,
+        "evidenceCodes": ["CURRENT_AFFECTED_COUNT", "AVERAGE_AGE_HOURS"],
+        "explanation": "Có 150 đơn hàng tồn đọng"
+      }
+    ],
+    "investigationSteps": [
+      {
+        "priority": "high",
+        "action": "Rà soát trạng thái kho",
+        "rationale": "Xác minh nhân lực",
+        "requiredData": ["Mã đơn hàng"]
+      }
+    ],
+    "confidence": 88,
+    "limitations": ["Chưa có dữ liệu ca trực kho"]
+  },
+  "provenance": "SYNTHETIC_MANUAL",
+  "reviewedBy": null
+}

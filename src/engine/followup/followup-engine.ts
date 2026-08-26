@@ -22,6 +22,7 @@ import {
 } from "../action-queue";
 import type { ActionQueueMetrics, IActionQueue } from "../action-queue/IActionQueue";
 import { logRuntimeError, logRuntimeMessage, serializedPayloadBytes } from "@/observability/runtimeDiagnostics";
+import { logger } from "@/observability/logger";
 
 export interface ProcessedFollowupItem {
   incidentId: string;
@@ -599,8 +600,20 @@ export class FollowupEngine {
       },
     };
     this.lastRunMetrics = published;
-    console.log(
-      `[FollowupEngine] operation=processFollowups incidents=${published.incidents} caseReads=${published.caseReads} caseWrites=${published.caseWrites} eventWrites=${published.eventWrites} actions=${published.actions} durationMs=${published.durationMs} status=${published.status}`
-    );
+    logger.info({
+      component: "FollowupEngine",
+      operation: "processFollowups",
+      status: published.status,
+      message: `[FollowupEngine] operation=processFollowups incidents=${published.incidents} caseReads=${published.caseReads} caseWrites=${published.caseWrites} eventWrites=${published.eventWrites} actions=${published.actions} durationMs=${published.durationMs} status=${published.status}`,
+      durationMs: published.durationMs,
+      metadata: {
+        incidents: published.incidents,
+        caseReads: published.caseReads,
+        caseWrites: published.caseWrites,
+        eventWrites: published.eventWrites,
+        actions: published.actions,
+        operationDurationsMs: published.operationDurationsMs,
+      },
+    });
   }
 }

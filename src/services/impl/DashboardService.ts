@@ -1,5 +1,5 @@
-
 import { IDashboardService, DashboardContext } from "../interfaces/IDashboardService";
+import { BusinessRules } from "../../config/business-rules";
 import { IDashboardRepository } from "../../repositories/interfaces/IDashboardRepository";
 import { IAiJobRepository } from "../../repositories/interfaces/IAiJobRepository";
 import { ISyncRunRepository } from "../../repositories/interfaces/ISyncRunRepository";
@@ -15,7 +15,7 @@ export class DashboardService implements IDashboardService {
 
   async getDashboard(context: DashboardContext): Promise<any> {
     const tStart = performance.now();
-    const { nowMs: now, nowIso, scope: configuredScope, writeControlsEnabled } = context;
+    const { nowMs: now, nowIso, scope: configuredScope, writeControlsEnabled, allowedWarehouseIds } = context;
 
     let incidentsMs = 0;
     let historiesMs = 0;
@@ -52,20 +52,42 @@ export class DashboardService implements IDashboardService {
 
     incidentsMs = Math.round(performance.now() - t0);
 
+
+
+
     let totalDurationMs = 0;
     let totalMaxAge = 0;
     let ageCount = 0;
 
     let filteredIncidents = incidentsListRaw;
-    if (configuredScope !== "all") {
+    if (allowedWarehouseIds) {
+      const allowed = new Set(allowedWarehouseIds);
+      filteredIncidents = incidentsListRaw.filter((i: any) => allowed.has(i.warehouse_id));
+    } else if (configuredScope !== "all") {
       filteredIncidents = incidentsListRaw.filter((i: any) => i.warehouse_id === configuredScope);
+    }
+
+    const latestAiJobByIncident = new Map<string, any>();
+    for (const job of allAiJobs) {
+      if (job.incident_id && !latestAiJobByIncident.has(job.incident_id)) {
+        latestAiJobByIncident.set(job.incident_id, job);
+      }
     }
 
     const liveIncidentsList = filteredIncidents.map((i: any) => {
       let riskMap: any = { score: 50, level: "medium" };
       if (i.risk) {
         try {
-          riskMap = typeof i.risk === "object" ? i.risk : JSON.parse(i.risk);
+          // Parse risk, falling back to defaults if parsing fails
+          const parsed = typeof i.risk === "object" ? i.risk : JSON.parse(i.risk);
+          // Ensure score respects tier2 bounds
+          const min = BusinessRules.ai.riskTiers.tier2.min;
+          const max = BusinessRules.ai.riskTiers.tier2.max;
+          riskMap = {
+            ...parsed,
+            score: Math.min(Math.max(parsed.score ?? 50, min), max),
+            level: parsed.level ?? "medium",
+          };
         } catch {
           riskMap = { score: 50, level: String(i.risk) };
         }
@@ -75,32 +97,46 @@ export class DashboardService implements IDashboardService {
         incidentId: i.incident_id,
         incidentKey: i.incident_key || `INC-${i.incident_id.slice(0,8)}`,
         warehouseId: i.warehouse_id || "default",
-        warehouseName: i.warehouse_name || "Kho h�ng",
+        // Normalize historical fallback labels at the presentation boundary.
+        warehouseName: i.warehouse_name === "Kho hng" ? "Kho hàng" : (i.warehouse_name || "Kho hàng"),
         reasonCode: i.reason_code || "UNKNOWN",
-        reasonName: i.reason_name || "L?i v?n h�nh",
-        priorityScore: riskMap.score || 50,
-        affectedOrderCount: i.affected_order_count || 0,
-        averageAgeHours: i.average_age_hours || 0,
-        maximumAgeHours: i.maximum_age_hours || 0,
+        reasonName: i.reason_name === "L?i v?n hnh" ? "Lỗi vận hành" : (i.reason_name || "Lỗi vận hành"),
+        affectedOrderCount: Number(i.affected_order_count ?? 0),
+        averageAgeHours: i.average_age_hours === null || i.average_age_hours === undefined ? null : Number(i.average_age_hours),
+        maximumAgeHours: i.maximum_age_hours === null || i.maximum_age_hours === undefined ? null : Number(i.maximum_age_hours),
+        oldestOrderCode: i.oldest_order_code || null,
+        sampleOrderCodes: Array.isArray(i.sample_order_codes) ? i.sample_order_codes : [],
+        // Priority is the deterministic incident score persisted by the incident engine.
+        // Do not substitute the separate AI risk score here.
+        priorityScore: Number(i.priority_score ?? riskMap.score ?? 0),
         risk: riskMap,
-        trend: i.trend || "insufficient_data",
+        trend: i.previous_affected_order_count === null || i.previous_affected_order_count === undefined
+          ? "insufficient_data"
+          : Number(i.affected_order_count) < Number(i.previous_affected_order_count)
+          ? "improving"
+          : Number(i.affected_order_count) > Number(i.previous_affected_order_count)
+          ? "worsening"
+          : "stagnant",
+        previousAffectedOrderCount: i.previous_affected_order_count === null || i.previous_affected_order_count === undefined ? null : Number(i.previous_affected_order_count),
+        latestSnapshotAt: i.latest_snapshot_at || null,
+        previousSnapshotAt: i.previous_snapshot_at || null,
         followupState: i.followup_state || "NEW",
         plannerStatus: i.planner_status || "NONE",
-        aiStatus: i.planner_status === "COMPLETED" ? "COMPLETED" : "NONE",
+        aiStatus: latestAiJobByIncident.get(i.incident_id)?.status || "NONE",
         firstDetectedAt: i.first_detected_at || nowIso,
         lastDetectedAt: i.last_detected_at || nowIso,
       };
     });
 
     const activeIncidentsCount = liveIncidentsList.length;
-    const criticalRiskIncidents = liveIncidentsList.filter((i: any) => i.priorityScore >= 75).length;
-    const highPriorityIncidents = liveIncidentsList.filter((i: any) => i.priorityScore >= 50).length;
+    const criticalRiskIncidents = liveIncidentsList.filter((i: any) => i.priorityScore >= BusinessRules.priority.critical).length;
+    const highPriorityIncidents = liveIncidentsList.filter((i: any) => i.priorityScore >= BusinessRules.priority.high).length;
 
     for (const inc of liveIncidentsList) {
       if (inc.firstDetectedAt) {
         totalDurationMs += Math.max(0, now - new Date(inc.firstDetectedAt).getTime());
       }
-      if (inc.maximumAgeHours > 0) {
+      if (typeof inc.maximumAgeHours === "number" && inc.maximumAgeHours > 0) {
         totalMaxAge += inc.maximumAgeHours;
         ageCount++;
       }
@@ -395,7 +431,7 @@ export class DashboardService implements IDashboardService {
       source: "database",
       scope: {
         configuredScope,
-        appliedWarehouseFilter: configuredScope,
+        appliedWarehouseFilter: allowedWarehouseIds ? `${allowedWarehouseIds.length} kho được phép` : configuredScope,
       },
       writeControlsEnabled,
       kpis,
@@ -421,6 +457,7 @@ export class DashboardService implements IDashboardService {
       timeline: boundedTimeline,
       health,
       diagnostics: {
+        tier2: { min: BusinessRules.ai.riskTiers.tier2.min, max: BusinessRules.ai.riskTiers.tier2.max, points: 10 },
         timings: {
           incidentsMs,
           historiesMs,

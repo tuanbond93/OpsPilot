@@ -42,10 +42,22 @@ import type { IProjectionRunRepository } from "./interfaces/IProjectionRunReposi
 import { SupabaseProjectionRunRepository } from "@/connectors/supabase/repositories/projection-run-repository";
 import { MockProjectionRunRepository } from "./mock/MockProjectionRunRepository";
 
+import type { ISyncLockRepository } from "./interfaces/ISyncLockRepository";
+import { SupabaseSyncLockRepository } from "./supabase/SupabaseSyncLockRepository";
+import { MockSyncLockRepository } from "./mock/MockSyncLockRepository";
+
+import type { ICopilotRepository } from "./interfaces/ICopilotRepository";
+import { SupabaseCopilotRepository } from "./supabase/SupabaseCopilotRepository";
+import { MockCopilotRepository } from "./mock/MockCopilotRepository";
+import type { IDecisionRepository } from "./interfaces/IDecisionRepository";
+import { SupabaseDecisionRepository } from "./supabase/SupabaseDecisionRepository";
+import { MockDecisionRepository } from "./mock/MockDecisionRepository";
+
 export class RepositoryFactory {
   private static incidentRepo: IIncidentRepository | null = null;
   private static aiJobRepo: IAiJobRepository | null = null;
   private static plannerRepo: IPlannerRepository | null = null;
+  private static copilotRepo: ICopilotRepository | null = null;
   private static followupRepo: IFollowupRepository | null = null;
   private static notificationRepo: INotificationRepository | null = null;
   private static syncRunRepo: ISyncRunRepository | null = null;
@@ -54,11 +66,26 @@ export class RepositoryFactory {
   private static historyRepo: IIncidentHistoryRepository | null = null;
   private static exceptionRepo: IExceptionRepository | null = null;
   private static orderSnapshotRepo: IOrderSnapshotRepository | null = null;
+  private static syncLockRepo: ISyncLockRepository | null = null;
+  private static decisionRepo: IDecisionRepository | null = null;
+
+  static registerDecisionRepository(repo: IDecisionRepository): void {
+    this.decisionRepo = repo;
+  }
+
+  static registerSyncLockRepository(repo: ISyncLockRepository): void {
+    this.syncLockRepo = repo;
+  }
+
+  static registerCopilotRepository(repo: ICopilotRepository): void {
+    this.copilotRepo = repo;
+  }
 
   // Setters for DI / Custom mock registrations
   static registerIncidentRepository(repo: IIncidentRepository): void {
     this.incidentRepo = repo;
   }
+
 
   static registerAiJobRepository(repo: IAiJobRepository): void {
     this.aiJobRepo = repo;
@@ -255,10 +282,48 @@ export class RepositoryFactory {
     return isFallbackAllowed();
   }
 
+  static getSyncLockRepository(client?: SupabaseClient): ISyncLockRepository {
+    if (this.syncLockRepo) {
+      return this.syncLockRepo;
+    }
+    if (client) {
+      return new SupabaseSyncLockRepository(client);
+    }
+    if (this.shouldProvideMock()) {
+      return new MockSyncLockRepository();
+    }
+    const defaultClient = createAdminClient();
+    return new SupabaseSyncLockRepository(defaultClient);
+  }
+
+  static getCopilotRepository(client?: SupabaseClient): ICopilotRepository {
+    if (this.copilotRepo) {
+      return this.copilotRepo;
+    }
+    if (client) {
+      return new SupabaseCopilotRepository(client);
+    }
+    if (this.shouldProvideMock()) {
+      return new MockCopilotRepository();
+    }
+    const defaultClient = createAdminClient();
+    return new SupabaseCopilotRepository(defaultClient);
+  }
+
+  static getDecisionRepository(client?: SupabaseClient): IDecisionRepository {
+    if (client) return new SupabaseDecisionRepository(client);
+    if (this.decisionRepo) return this.decisionRepo;
+    this.decisionRepo = this.shouldProvideMock()
+      ? new MockDecisionRepository()
+      : new SupabaseDecisionRepository(createAdminClient());
+    return this.decisionRepo;
+  }
+
   static clear(): void {
     this.incidentRepo = null;
     this.aiJobRepo = null;
     this.plannerRepo = null;
+    this.copilotRepo = null;
     this.followupRepo = null;
     this.notificationRepo = null;
     this.syncRunRepo = null;
@@ -267,5 +332,7 @@ export class RepositoryFactory {
     this.historyRepo = null;
     this.exceptionRepo = null;
     this.orderSnapshotRepo = null;
+    this.syncLockRepo = null;
+    this.decisionRepo = null;
   }
 }

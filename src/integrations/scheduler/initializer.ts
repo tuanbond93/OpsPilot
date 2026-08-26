@@ -1,4 +1,5 @@
 import { SchedulerRunner } from "./scheduler-runner";
+import { logger } from "@/observability/logger";
 
 /**
  * Ensures that the scheduler's Job Registry is loaded and contains registered jobs.
@@ -11,7 +12,12 @@ export async function ensureSchedulerInitialized(): Promise<void> {
     return; // Already initialized, skip registration to prevent duplicates
   }
 
-  console.log("[Scheduler] Initializing Job Registry...");
+  logger.info({
+    component: "SchedulerInitializer",
+    operation: "initializeScheduler",
+    status: "start",
+    message: "[Scheduler] Initializing Job Registry...",
+  });
 
   // Dynamically import StartupValidator to avoid circular dependency issues at startup
   const { StartupValidator } = await import("../startup-validator");
@@ -22,6 +28,13 @@ export async function ensureSchedulerInitialized(): Promise<void> {
     throw new Error("[Scheduler] FATAL: Job Registry remains empty after initialization.");
   }
 
-  console.log(`[Scheduler] Registered jobs: ${finalJobs.length}`);
-  console.log("[Scheduler] Initialization complete.");
+  logger.info({
+    component: "SchedulerInitializer",
+    operation: "initializeScheduler",
+    status: "success",
+    message: "[Scheduler] Initialization complete.",
+    metadata: {
+      jobCount: finalJobs.length,
+    },
+  });
 }

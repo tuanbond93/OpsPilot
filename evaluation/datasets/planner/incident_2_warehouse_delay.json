@@ -1,0 +1,75 @@
+{
+  "id": "planner_2_warehouse_delay",
+  "name": "Planner Warehouse Delay Plan",
+  "incident": {
+    "id": "inc-102",
+    "incident_key": "21170000:KHO_CHAM",
+    "warehouse_id": "21170000",
+    "warehouse_name": "Kho Tân Bình",
+    "reason_code": "KHO_CHAM",
+    "reason_name": "Kho chậm xử lý",
+    "status": "open",
+    "priority_score": 70,
+    "first_detected_at": "2026-08-06T00:00:00Z",
+    "last_detected_at": "2026-08-06T08:00:00Z",
+    "affected_order_count": 85,
+    "average_age_hours": 28.5,
+    "maximum_age_hours": 52.0
+  },
+  "historyRows": [
+    { "id": 1, "incident_id": "inc-102", "recorded_at": "2026-08-06T00:00:00Z", "affected_order_count": 85 },
+    { "id": 2, "incident_id": "inc-102", "recorded_at": "2026-08-06T04:00:00Z", "affected_order_count": 85 },
+    { "id": 3, "incident_id": "inc-102", "recorded_at": "2026-08-06T08:00:00Z", "affected_order_count": 85 },
+    { "id": 4, "incident_id": "inc-102", "recorded_at": "2026-08-06T10:00:00Z", "affected_order_count": 85 },
+    { "id": 5, "incident_id": "inc-102", "recorded_at": "2026-08-06T12:00:00Z", "affected_order_count": 85 }
+  ],
+  "rootCauseResult": {
+    "confidence": 80,
+    "causes": [
+      {
+        "title": "Chậm",
+        "confidence": 80,
+        "evidenceCodes": ["MAXIMUM_AGE_HOURS"],
+        "explanation": ""
+      }
+    ]
+  },
+  "expected": {
+    "expectedRecommendationCount": 1,
+    "expectedTypes": ["PRIORITIZE_OLD_ORDERS"],
+    "expectedTargetRoles": ["WAREHOUSE_DISPATCHER"],
+    "expectedConfidence": 80,
+    "confidenceTolerance": 15
+  },
+  "mockAiResponse": {
+    "executiveSummary": "Hỗ trợ nhân lực kho Tân Bình",
+    "overallPriority": "medium",
+    "recommendations": [
+      {
+        "id": "rec-1",
+        "type": "PRIORITIZE_OLD_ORDERS",
+        "title": "Hỗ trợ nhân lực kho Tân Bình",
+        "description": "Tăng cường 3 nhân sự đóng gói",
+        "priority": "medium",
+        "targetRole": "WAREHOUSE_DISPATCHER",
+        "rationale": "Giải tỏa khâu nhặt hàng",
+        "evidenceCodes": ["MAXIMUM_AGE_HOURS"],
+        "riskImpact": {
+          "severity": "medium",
+          "potentialConsequence": "Chậm trễ giao hàng"
+        },
+        "prerequisiteData": ["Báo cáo ca trực"],
+        "manualApprovalRequired": true
+      }
+    ],
+    "investigations": [],
+    "blockedOptions": [],
+    "nextReview": {
+      "source": "PLANNER_POLICY",
+      "reviewAt": "2026-08-07T00:00:00Z",
+      "reviewAfterMinutes": 60,
+      "rationale": "Theo dõi tiến độ"
+    },
+    "limitations": []
+  }
+}

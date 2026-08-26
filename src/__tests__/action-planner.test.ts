@@ -242,9 +242,9 @@ describe("Sprint 6 Phase 2 Final Hardened: Action Planner Tests", () => {
 
   // 8. Context Hash: Root Cause prompt version & Planner policy version change changes hash
   it("8. Root Cause prompt version and Planner policy version changes context hash", () => {
-    const hashV1 = computeCanonicalContextHash(mockIncident, mockHistoryRows, mockRootCauseResult, null, [], [], [], [], [], 1, 1, 1, 1, 2);
-    const hashV2 = computeCanonicalContextHash(mockIncident, mockHistoryRows, mockRootCauseResult, null, [], [], [], [], [], 1, 2, 1, 1, 2);
-    const hashRcVer3 = computeCanonicalContextHash(mockIncident, mockHistoryRows, mockRootCauseResult, null, [], [], [], [], [], 1, 1, 1, 1, 3);
+    const hashV1 = computeCanonicalContextHash(mockIncident, mockHistoryRows, mockRootCauseResult, null, [], [], [], [], [], '1', '1', '1', '1', '2');
+    const hashV2 = computeCanonicalContextHash(mockIncident, mockHistoryRows, mockRootCauseResult, null, [], [], [], [], [], '1', '2', '1', '1', '2');
+    const hashRcVer3 = computeCanonicalContextHash(mockIncident, mockHistoryRows, mockRootCauseResult, null, [], [], [], [], [], '1', '1', '1', '1', '3');
 
     expect(hashV1).not.toBe(hashV2);
     expect(hashV1).not.toBe(hashRcVer3);

@@ -3,6 +3,7 @@ import type { IncidentRow, IncidentDbStatus } from "@/connectors/supabase/types"
 import type { Incident } from "@/engine/incident";
 import { BaseRepository } from "../base/BaseRepository";
 import type { IIncidentRepository } from "../interfaces/IIncidentRepository";
+import { logger } from "@/observability/logger";
 
 export class SupabaseIncidentRepository extends BaseRepository implements IIncidentRepository {
   constructor(client: SupabaseClient) {
@@ -58,7 +59,13 @@ export class SupabaseIncidentRepository extends BaseRepository implements IIncid
 
     const { data, error } = await query.select();
     if (error) {
-      console.error("[SupabaseIncidentRepository] resolveAbsentIncidents query failed:", error);
+      logger.error({
+        component: "SupabaseIncidentRepository",
+        operation: "resolveAbsentIncidents",
+        status: "failed",
+        message: `[SupabaseIncidentRepository] resolveAbsentIncidents query failed: ${error.message}`,
+        error,
+      });
       throw error;
     }
     return data ? data.length : 0;

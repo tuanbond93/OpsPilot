@@ -275,7 +275,7 @@ describe("Sprint 4.2: Root Cause Agent Refactor & Evidence Grounding Tests", () 
   it("19. Prompt metadata version is loaded correctly", () => {
     const meta = loadPromptMetadata("rootcause");
     expect(meta.name).toBe("rootcause");
-    expect(meta.version).toBe(2);
+    expect(meta.version).toBe("v3");
     expect(meta.language).toBe("vi");
   });
 
@@ -285,5 +285,45 @@ describe("Sprint 4.2: Root Cause Agent Refactor & Evidence Grounding Tests", () 
     expect(agentFileContent).not.toContain('from "openai"');
     expect(agentFileContent).not.toContain("from 'openai'");
     expect(agentFileContent).not.toContain("@google/generative-ai");
+  });
+
+  it("21. direct pickup timestamp evidence overrides an unsupported AI cause", () => {
+    const incident: Incident = {
+      ...dummyIncident,
+      pickupJourneyCoveragePercent: 80,
+      pickupDelayedOrderCount: 1,
+      maximumPickupWaitHours: 149.2,
+      pickupDelayOrderCodes: ["GY8N9V8T"],
+    };
+    const context = buildRootCauseContext(incident, []);
+    const evidence = buildDeterministicEvidence(context);
+    const risk = calculateDeterministicRisk(context);
+    const parsed = parseRootCauseResult(
+      JSON.stringify({
+        summary: "Có thể do trung chuyển.",
+        causes: [{ title: "Trung chuyển trễ", confidence: 80, evidenceCodes: ["CURRENT_AFFECTED_COUNT"] }],
+      }),
+      risk,
+      new Set(evidence.map((item) => item.code)),
+      context
+    );
+
+    expect(parsed.causes[0]).toMatchObject({
+      title: "Chậm xử lý tại đầu lấy",
+      confidence: 95,
+      evidenceCodes: ["PICKUP_DELAY_DIRECT"],
+    });
+    expect(parsed.causes[0].explanation).toContain("GY8N9V8T");
+    expect(parsed.limitations).toContain(
+      "Chưa đủ checkpoint hành trình để xác nhận thời gian từng chặng trung chuyển; kết luận hiện chỉ áp dụng cho đầu lấy."
+    );
+  });
+
+  it("22. missing pickup timestamp produces a limitation instead of a pickup conclusion", () => {
+    const context = buildRootCauseContext(dummyIncident, []);
+    const evidence = buildDeterministicEvidence(context);
+
+    expect(evidence.some((item) => item.code === "PICKUP_JOURNEY_DATA_MISSING")).toBe(true);
+    expect(evidence.some((item) => item.code === "PICKUP_DELAY_DIRECT")).toBe(false);
   });
 });

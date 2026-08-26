@@ -4,6 +4,7 @@ export type SyncSummary = SyncJobResult;
 
 export interface SyncOptions {
   referenceTimeMs?: number;
+  forceReprocessSource?: boolean;
 }
 
 export interface ISyncService {

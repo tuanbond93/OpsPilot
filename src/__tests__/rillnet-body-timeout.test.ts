@@ -77,6 +77,17 @@ describe("Sprint 10.1.1 — Rillnet Body Timeout & Resource Cleanup Tests", () =
     expect(clearTimeoutSpy).toHaveBeenCalled();
   });
 
+  it("3b. Relative snapshot URLs resolve against the configured Rillnet endpoint", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve({ liveUrl: "/api/opsfile?f=ops_live.json.gz", liveUpdated: "2026-08-23T00:00:00Z" }),
+    }));
+    const client = new RillnetClient();
+    const result = await client.requestSnapshotUrl();
+    expect(result.downloadUrl).toBe("https://rillnet-app.vercel.app/api/opsfile?f=ops_live.json.gz");
+  });
+
   it("4. Timer is cleared after failed body read", async () => {
     const clearTimeoutSpy = vi.spyOn(globalThis, "clearTimeout");
     const mockFetch = vi.fn().mockImplementation(() =>

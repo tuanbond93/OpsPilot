@@ -1,6 +1,8 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { createAdminClient } from "@/connectors/supabase";
 import { ServiceFactory } from "@/services/ServiceFactory";
+import { readJsonBody, resolveActor } from "@/security/api-security";
+import { authorizeLinkedIncidentScope } from "@/security/scope-guard";
 
 export const dynamic = "force-dynamic";
 
@@ -11,9 +13,13 @@ export async function POST(
   const { id } = await params;
 
   try {
-    const body = await request.json().catch(() => ({}));
+    const parsed = await readJsonBody(request);
+    if (!parsed.ok) return parsed.response;
+    const scoped = await authorizeLinkedIncidentScope(request, "followup_cases", id, "MANAGE_FOLLOWUP", { limit: 30, windowMs: 60_000 });
+    if (!scoped.ok) return scoped.response;
+    const body = parsed.body;
     const action = String(body.action || "");
-    const confirmedBy = String(body.confirmedBy || "manual_operator");
+    const confirmedBy = resolveActor(scoped.identity, body.confirmedBy || "manual_operator");
 
     let dbClient;
     try {

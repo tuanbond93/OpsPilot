@@ -1,5 +1,6 @@
 import type { Incident } from "../../engine/incident";
 import type { IncidentHistoryRow } from "../../connectors/supabase";
+import { GHN_MORNING_COT_HOUR, OPERATIONAL_PLAYBOOK_VERSION } from "@/domain/operational-learning/root-cause-playbook";
 
 export type TrendDirection = "increasing" | "decreasing" | "stable" | "insufficient_data";
 export type ProgressStatus = "strong_progress" | "limited_progress" | "no_material_progress" | "worsening" | "insufficient_data";
@@ -29,6 +30,16 @@ export interface DeterministicContext extends Record<string, unknown> {
   maximumAgeHours: number | null;
   oldestOrderCode: string | null;
   sampleOrderCodes: string[];
+  pickupJourneyCoveragePercent: number;
+  pickupDelayedOrderCount: number;
+  maximumPickupWaitHours: number | null;
+  pickupDelayOrderCodes: string[];
+  pickupDelayedCustomerBreakdown: Array<{ name: string; count: number }>;
+  pickupDelayedWarehouseBreakdown: Array<{ id: string; name: string; count: number }>;
+  operationalPlaybookVersion: string;
+  cpttSampleOrderCodes: string[];
+  ghnMorningCotHour: number;
+  groupingPolicy: string;
 }
 
 /**
@@ -41,6 +52,11 @@ export function buildRootCauseContext(
 ): DeterministicContext {
   const currentAffectedCount = incident.affectedOrderCount || 0;
   const historyPointCount = historyRows.length;
+  const latestHistory = historyRows.length > 0
+    ? [...historyRows].sort(
+        (a, b) => new Date(b.recorded_at).getTime() - new Date(a.recorded_at).getTime()
+      )[0]
+    : undefined;
 
   let previousAffectedCount = currentAffectedCount;
   let changeAbsolute = 0;
@@ -139,5 +155,15 @@ export function buildRootCauseContext(
     maximumAgeHours: incident.maximumAgeHours,
     oldestOrderCode: incident.oldestOrderCode || null,
     sampleOrderCodes: incident.sampleOrderCodes || [],
+    pickupJourneyCoveragePercent: Number(latestHistory?.pickup_journey_coverage_percent ?? incident.pickupJourneyCoveragePercent ?? 0),
+    pickupDelayedOrderCount: Number(latestHistory?.pickup_delayed_order_count ?? incident.pickupDelayedOrderCount ?? 0),
+    maximumPickupWaitHours: latestHistory?.maximum_pickup_wait_hours == null ? incident.maximumPickupWaitHours ?? null : Number(latestHistory.maximum_pickup_wait_hours),
+    pickupDelayOrderCodes: latestHistory?.pickup_delay_order_codes ?? incident.pickupDelayOrderCodes ?? [],
+    pickupDelayedCustomerBreakdown: incident.pickupDelayedCustomerBreakdown ?? [],
+    pickupDelayedWarehouseBreakdown: incident.pickupDelayedWarehouseBreakdown ?? [],
+    operationalPlaybookVersion: OPERATIONAL_PLAYBOOK_VERSION,
+    cpttSampleOrderCodes: (incident.sampleOrderCodes || []).filter((code) => code.toUpperCase().endsWith("_CPTT")),
+    ghnMorningCotHour: GHN_MORNING_COT_HOUR,
+    groupingPolicy: "Gom các đơn cùng loại đơn, khách hàng, kho chịu trách nhiệm và mẫu lỗi thành một nhóm xử lý.",
   };
 }

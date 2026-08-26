@@ -64,7 +64,7 @@ export function aggregateIncidents(
     // All affected order codes for backend persistence
     const affectedOrders = group.orders.map((o) => o.orderCode || o.id);
     // Sample max 5 order codes for UI preview
-    const sampleOrderCodes = group.orders.slice(0, 5).map((o) => o.orderCode || o.id);
+    let sampleOrderCodes = group.orders.slice(0, 5).map((o) => o.orderCode || o.id);
     const affectedOrderCount = group.orders.length;
 
     // Calculate age metrics
@@ -83,6 +83,20 @@ export function aggregateIncidents(
     const oldestOrderCode = group.orders[maxAgeIndex]
       ? group.orders[maxAgeIndex].orderCode || group.orders[maxAgeIndex].id
       : null;
+    const pickupJourneys = group.orders.flatMap((order) => {
+      if (!order.createdAt || !order.endPickAt) return [];
+      const created = Date.parse(order.createdAt);
+      const picked = Date.parse(order.endPickAt);
+      if (!Number.isFinite(created) || !Number.isFinite(picked) || picked < created) return [];
+      return [{ orderCode: order.orderCode || order.id, hours: Math.round(((picked - created) / 3_600_000) * 10) / 10 }];
+    });
+    const delayedPickupJourneys = pickupJourneys.filter((journey) => journey.hours > config.readyToPickMaxHours).sort((a, b) => b.hours - a.hours);
+    const pickupJourneyCoveragePercent = affectedOrderCount > 0 ? Math.round((pickupJourneys.length / affectedOrderCount) * 1000) / 10 : 0;
+    // The oldest order is operationally more useful than an arbitrary first sample.
+    // Keep it first while preserving the existing maximum of five preview codes.
+    if (oldestOrderCode) {
+      sampleOrderCodes = [oldestOrderCode, ...sampleOrderCodes.filter((code) => code !== oldestOrderCode)].slice(0, 5);
+    }
 
     // Determine oldest (firstDetectedAt) and newest (lastDetectedAt) timestamps
     const timestamps = group.orders
@@ -123,6 +137,10 @@ export function aggregateIncidents(
       averageAgeHours,
       maximumAgeHours,
       oldestOrderCode,
+      pickupJourneyCoveragePercent,
+      pickupDelayedOrderCount: delayedPickupJourneys.length,
+      maximumPickupWaitHours: delayedPickupJourneys[0]?.hours ?? null,
+      pickupDelayOrderCodes: delayedPickupJourneys.slice(0, 5).map((journey) => journey.orderCode),
     });
   }
 

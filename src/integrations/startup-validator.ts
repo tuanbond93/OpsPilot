@@ -84,6 +84,7 @@ export class StartupValidator {
 
     // 4. AI Provider validation
     let aiOk = false;
+    let aiConfigured = false;
     let aiMessage = "";
     const provider = SecretProvider.getOptional("AI_PROVIDER", "openai").toLowerCase();
 
@@ -98,6 +99,7 @@ export class StartupValidator {
         }
       } else {
         aiOk = true;
+        aiConfigured = true;
         aiMessage = `AI Provider '${provider}' API Key verified`;
       }
     } catch (err: any) {
@@ -175,9 +177,9 @@ export class StartupValidator {
       name: "AIProvider",
       health: async () => {
         return {
-          status: aiOk ? "GREEN" : "YELLOW",
+          status: aiConfigured ? "GREEN" : "YELLOW",
           healthReason: aiMessage,
-          lastSuccessAt: aiOk ? timestamp : null,
+          lastSuccessAt: aiConfigured ? timestamp : null,
           lastFailureAt: null,
           freshnessSeconds: 0,
         };

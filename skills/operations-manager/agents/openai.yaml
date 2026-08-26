@@ -1,0 +1,4 @@
+interface:
+  display_name: "Operations Manager"
+  short_description: "Phân tích và gom nhóm sự cố vận hành GHN"
+  default_prompt: "Phân tích sự cố theo Operations Playbook, gom các case giống nhau và báo các case chưa có quy tắc."

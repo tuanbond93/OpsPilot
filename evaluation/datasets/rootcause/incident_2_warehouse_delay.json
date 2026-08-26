@@ -1,0 +1,52 @@
+{
+  "id": "incident_2_warehouse_delay",
+  "name": "Warehouse Packing Bottleneck",
+  "incident": {
+    "incidentId": "inc-21170000-kho-cham",
+    "incidentKey": "21170000:KHO_CHAM",
+    "warehouseId": "21170000",
+    "warehouseName": "Kho Tân Bình",
+    "reasonCode": "KHO_CHAM",
+    "reasonName": "Kho chậm xử lý",
+    "status": "open",
+    "priorityScore": 70,
+    "firstDetectedAt": "2026-08-06T00:00:00Z",
+    "lastDetectedAt": "2026-08-06T08:00:00Z",
+    "affectedOrderCount": 85,
+    "sampleOrderCodes": ["ORD-201", "ORD-202"],
+    "averageAgeHours": 28.5,
+    "maximumAgeHours": 52.0,
+    "oldestOrderCode": "ORD-201"
+  },
+  "expected": {
+    "primaryCause": "Kho chậm",
+    "expectedEvidenceCodes": ["CURRENT_AFFECTED_COUNT", "MAXIMUM_AGE_HOURS"],
+    "expectedConfidence": 80,
+    "confidenceTolerance": 15
+  },
+  "mockAiResponse": {
+    "summary": "Kho Tân Bình chậm đóng gói đơn hàng",
+    "assessment": {
+      "status": "stagnant",
+      "explanation": "Đơn hàng chậm nhặt hàng"
+    },
+    "causes": [
+      {
+        "title": "Chậm đóng gói tại kho Tân Bình",
+        "confidence": 82,
+        "evidenceCodes": ["CURRENT_AFFECTED_COUNT", "MAXIMUM_AGE_HOURS"],
+        "explanation": "Nghẽn khâu nhặt hàng"
+      }
+    ],
+    "investigationSteps": [
+      {
+        "priority": "medium",
+        "action": "Rà soát quy trình nhặt hàng",
+        "rationale": "Xác minh khâu nhặt",
+        "requiredData": ["Mã đơn hàng"]
+      }
+    ],
+    "confidence": 82,
+    "limitations": ["Chưa có dữ liệu phương tiện"]
+  }
+}

@@ -2,6 +2,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import type { AiAnalysisJobRow, AiJobPriority, AiJobStatus } from "@/connectors/supabase/types";
 import { BaseRepository } from "../base/BaseRepository";
 import type { IAiJobRepository } from "../interfaces/IAiJobRepository";
+import { logger } from "@/observability/logger";
 
 export class SupabaseAiJobRepository extends BaseRepository implements IAiJobRepository {
   constructor(client: SupabaseClient) {
@@ -13,11 +14,19 @@ export class SupabaseAiJobRepository extends BaseRepository implements IAiJobRep
     priority: AiJobPriority = "medium",
     scheduledAt: string = new Date().toISOString()
   ): Promise<AiAnalysisJobRow> {
-    console.log(`[AIJobRepo] checking existing job incidentId=${incidentId}`);
     const existing = await this.getPendingJobByIncidentId(incidentId);
     if (existing) {
-      console.log(`[AIJobRepo] existing job found id=${existing.id} status=${existing.status}`);
-      console.log("[AIJobRepo] returning EXISTING row");
+      logger.info({
+        component: "SupabaseAiJobRepository",
+        operation: "enqueueJob",
+        status: "existing",
+        message: `[AIJobRepo] existing job found id=${existing.id} status=${existing.status}`,
+        metadata: {
+          jobId: existing.id,
+          incidentId,
+          jobStatus: existing.status,
+        },
+      });
       return existing;
     }
 
@@ -32,21 +41,43 @@ export class SupabaseAiJobRepository extends BaseRepository implements IAiJobRep
       updated_at: scheduledAt,
     };
 
-    console.log("[AIJobRepo] inserting new job...");
     const { data, error } = await this.client
       .from("ai_analysis_jobs")
       .insert([newJobPayload])
       .select()
       .single();
 
-    console.log(`[AIJobRepo] insert result\ndata=${data ? JSON.stringify(data) : "null"}\nerror=${error ? JSON.stringify(error) : "null"}`);
-
     if (error) {
+      logger.error({
+        component: "SupabaseAiJobRepository",
+        operation: "enqueueJob",
+        status: "failed",
+        message: `[AIJobRepo] insert error: ${error.message}`,
+        errorCode: "AI_JOB_PROCESSING_FAILED",
+        error,
+        metadata: {
+          incidentId,
+          priority,
+        },
+      });
       throw error;
     }
     if (!data) {
       throw new Error("No data returned from enqueueJob insertion");
     }
+
+    logger.info({
+      component: "SupabaseAiJobRepository",
+      operation: "enqueueJob",
+      status: "success",
+      message: `[AIJobRepo] enqueued job id=${data.id}`,
+      metadata: {
+        jobId: data.id,
+        incidentId,
+        priority,
+      },
+    });
+
     return data;
   }
 

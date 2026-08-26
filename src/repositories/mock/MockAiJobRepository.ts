@@ -1,5 +1,6 @@
 import type { AiAnalysisJobRow, AiJobPriority, AiJobStatus } from "@/connectors/supabase/types";
 import type { IAiJobRepository } from "../interfaces/IAiJobRepository";
+import { logger } from "@/observability/logger";
 
 export class MockAiJobRepository implements IAiJobRepository {
   private inMemoryJobs: AiAnalysisJobRow[] = [];
@@ -17,11 +18,22 @@ export class MockAiJobRepository implements IAiJobRepository {
     priority: AiJobPriority = "medium",
     scheduledAt: string = new Date().toISOString()
   ): Promise<AiAnalysisJobRow> {
-    console.log(`[AIJobRepo] checking existing job incidentId=${incidentId}`);
+    logger.info({
+      component: "MockAiJobRepository",
+      operation: "enqueueJob",
+      status: "checking",
+      message: `[AIJobRepo] checking existing job incidentId=${incidentId}`,
+      metadata: { incidentId },
+    });
     const existing = await this.getPendingJobByIncidentId(incidentId);
     if (existing) {
-      console.log(`[AIJobRepo] existing job found id=${existing.id} status=${existing.status}`);
-      console.log("[AIJobRepo] returning EXISTING row");
+      logger.info({
+        component: "MockAiJobRepository",
+        operation: "enqueueJob",
+        status: "existing",
+        message: `[AIJobRepo] existing job found id=${existing.id} status=${existing.status}`,
+        metadata: { jobId: existing.id, incidentId, jobStatus: existing.status },
+      });
       return existing;
     }
 
@@ -43,7 +55,13 @@ export class MockAiJobRepository implements IAiJobRepository {
     };
 
     this.inMemoryJobs.push(fullJob);
-    console.log("[AIJobRepo] returning MEMORY fallback");
+    logger.info({
+      component: "MockAiJobRepository",
+      operation: "enqueueJob",
+      status: "created",
+      message: "[AIJobRepo] returning MEMORY fallback",
+      metadata: { jobId: fullJob.id, incidentId },
+    });
     return fullJob;
   }
 

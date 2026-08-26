@@ -1,6 +1,7 @@
 import { createAdminClient } from "@/connectors/supabase";
 import { isFallbackAllowed } from "@/connectors/supabase/fallback-policy";
 import { ServiceFactory } from "@/services/ServiceFactory";
+import { logger } from "@/observability/logger";
 
 export interface ProjectionRefreshParams {
   source: string; // e.g., 'sync', 'planner', 'followup', 'notification'
@@ -20,15 +21,27 @@ export interface ProjectionResult {
  * Refresh read-model projections deterministically.
  */
 export async function refresh(params: ProjectionRefreshParams): Promise<void> {
-  console.log("[ProjectionEngine] Projection Engine started");
+  const startTime = Date.now();
 
   let client;
   try {
     client = createAdminClient();
-  } catch (err) {
-    console.error("[ProjectionEngine] FATAL: createAdminClient() threw", err);
+  } catch (err: any) {
+    logger.error({
+      component: "ProjectionEngine",
+      operation: "refresh",
+      status: "failed",
+      message: "[ProjectionEngine] FATAL: createAdminClient() threw",
+      errorCode: "PROJECTION_REFRESH_FAILED",
+      error: err,
+    });
     if (isFallbackAllowed()) {
-      console.log("[ProjectionEngine] Fallback allowed, skipping projection engine execution");
+      logger.info({
+        component: "ProjectionEngine",
+        operation: "refresh",
+        status: "skipped",
+        message: "[ProjectionEngine] Fallback allowed, skipping projection engine execution",
+      });
       return;
     }
     throw err;
@@ -37,5 +50,16 @@ export async function refresh(params: ProjectionRefreshParams): Promise<void> {
   const projectionService = ServiceFactory.getProjectionService(client);
   await projectionService.refreshProjections(params);
 
-  console.log("[ProjectionEngine] Projection Engine finished");
+  logger.info({
+    component: "ProjectionEngine",
+    operation: "refresh",
+    status: "success",
+    message: "[ProjectionEngine] Projection Engine finished",
+    durationMs: Date.now() - startTime,
+    metadata: {
+      source: params.source,
+      changedIncidentsCount: params.changedIncidentIds.length,
+      changedWarehousesCount: params.changedWarehouseIds.length,
+    },
+  });
 }

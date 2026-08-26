@@ -1,0 +1,91 @@
+{
+  "id": "planner_5_mixed_severity",
+  "name": "Planner Compound High Severity Plan",
+  "incident": {
+    "id": "inc-105",
+    "incident_key": "21160000:COMPOUND_HIGH",
+    "warehouse_id": "21160000",
+    "warehouse_name": "Kho Phú Thọ",
+    "reason_code": "KHO_TON",
+    "reason_name": "Kho tồn đọng nghiêm trọng",
+    "status": "open",
+    "priority_score": 98,
+    "first_detected_at": "2026-08-04T00:00:00Z",
+    "last_detected_at": "2026-08-06T12:00:00Z",
+    "affected_order_count": 500,
+    "average_age_hours": 64.0,
+    "maximum_age_hours": 120.0
+  },
+  "historyRows": [
+    { "id": 1, "incident_id": "inc-105", "recorded_at": "2026-08-04T00:00:00Z", "affected_order_count": 500 },
+    { "id": 2, "incident_id": "inc-105", "recorded_at": "2026-08-04T12:00:00Z", "affected_order_count": 500 },
+    { "id": 3, "incident_id": "inc-105", "recorded_at": "2026-08-05T00:00:00Z", "affected_order_count": 500 },
+    { "id": 4, "incident_id": "inc-105", "recorded_at": "2026-08-05T12:00:00Z", "affected_order_count": 500 },
+    { "id": 5, "incident_id": "inc-105", "recorded_at": "2026-08-06T12:00:00Z", "affected_order_count": 500 }
+  ],
+  "rootCauseResult": {
+    "confidence": 90,
+    "causes": [
+      {
+        "title": "Nghiêm trọng",
+        "confidence": 90,
+        "evidenceCodes": ["MAXIMUM_AGE_HOURS"],
+        "explanation": ""
+      }
+    ]
+  },
+  "expected": {
+    "expectedRecommendationCount": 2,
+    "expectedTypes": ["PRIORITIZE_OLD_ORDERS", "CONTACT_WAREHOUSE"],
+    "expectedTargetRoles": ["WAREHOUSE_DISPATCHER", "OPERATIONS_LEAD"],
+    "expectedConfidence": 90,
+    "confidenceTolerance": 10
+  },
+  "mockAiResponse": {
+    "executiveSummary": "Xử lý tồn đọng nghiêm trọng kho Phú Thọ",
+    "overallPriority": "high",
+    "recommendations": [
+      {
+        "id": "rec-1",
+        "type": "PRIORITIZE_OLD_ORDERS",
+        "title": "Phân bổ khẩn cấp đơn tồn",
+        "description": "Chuyển đơn tồn quá 72h sang hệ thống xử lý ưu tiên",
+        "priority": "high",
+        "targetRole": "WAREHOUSE_DISPATCHER",
+        "rationale": "Giải tỏa 200 đơn",
+        "evidenceCodes": ["CURRENT_AFFECTED_COUNT", "MAXIMUM_AGE_HOURS"],
+        "riskImpact": {
+          "severity": "critical",
+          "potentialConsequence": "Hàng hỏng hóc"
+        },
+        "prerequisiteData": ["Báo cáo tồn kho"],
+        "manualApprovalRequired": true
+      },
+      {
+        "id": "rec-2",
+        "type": "CONTACT_WAREHOUSE",
+        "title": "Truyền thông sự cố diện rộng",
+        "description": "Liên hệ ban quản lý kho xử lý trễ đơn",
+        "priority": "high",
+        "targetRole": "OPERATIONS_LEAD",
+        "rationale": "Bảo vệ trải nghiệm khách hàng",
+        "evidenceCodes": ["MAXIMUM_AGE_HOURS"],
+        "riskImpact": {
+          "severity": "high",
+          "potentialConsequence": "Mất uy tín thương hiệu"
+        },
+        "prerequisiteData": ["Danh sách đơn trễ"],
+        "manualApprovalRequired": true
+      }
+    ],
+    "investigations": [],
+    "blockedOptions": [],
+    "nextReview": {
+      "source": "PLANNER_POLICY",
+      "reviewAt": "2026-08-07T00:00:00Z",
+      "reviewAfterMinutes": 30,
+      "rationale": "Theo dõi phản hồi"
+    },
+    "limitations": []
+  }
+}

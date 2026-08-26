@@ -26,6 +26,7 @@ export class MockIncidentHistoryRepository implements IIncidentHistoryRepository
         affected_order_count: inc.affectedOrderCount,
         average_age_hours: inc.averageAgeHours ? Math.round(inc.averageAgeHours * 10) / 10 : undefined,
         maximum_age_hours: inc.maximumAgeHours ? Math.round(inc.maximumAgeHours * 10) / 10 : undefined,
+        oldest_order_code: inc.oldestOrderCode || null,
         priority_score: Math.round(inc.priorityScore),
         sample_order_codes: inc.sampleOrderCodes ? inc.sampleOrderCodes.slice(0, 5) : [],
       });

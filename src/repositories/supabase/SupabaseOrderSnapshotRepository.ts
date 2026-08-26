@@ -34,4 +34,20 @@ export class SupabaseOrderSnapshotRepository implements IOrderSnapshotRepository
 
     return insertedTotal;
   }
+
+  async getJourneyEvidenceForIncident(
+    syncRunId: string,
+    warehouseId: string,
+    reasonCode: string
+  ): Promise<OrderSnapshotRow[]> {
+    const { data, error } = await this.client
+      .from("order_snapshots")
+      .select("order_code,order_created_at,end_pick_at,pick_warehouse_id,deliver_warehouse_id,warehouse_log")
+      .eq("sync_run_id", syncRunId)
+      .eq("warehouse_id", warehouseId)
+      .eq("reason_code", reasonCode);
+
+    if (error) throw new Error(`OrderSnapshotRepository.getJourneyEvidenceForIncident failed: ${error.message}`);
+    return (data || []) as OrderSnapshotRow[];
+  }
 }

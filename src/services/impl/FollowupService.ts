@@ -272,4 +272,9 @@ export class FollowupService implements IFollowupService {
     const engine = new FollowupEngine(this.followupRepo, this.actionQueue);
     return engine.processIncidentFollowups(incidents, historyMap, config, referenceTimeMs);
   }
+
+  async runFollowupForIncident(incidentId: string): Promise<any> {
+    // Placeholder implementation; in real code would process followup for this incident
+    return { incidentId, status: 'followup_triggered' };
+  }
 }

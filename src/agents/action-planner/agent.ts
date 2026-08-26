@@ -1,10 +1,6 @@
-import type {
-  IncidentRow,
-  IncidentHistoryRow,
-  OrderExceptionRow,
-  FollowupCaseRow,
-  FollowupEventRow,
-} from "@/connectors/supabase";
+import type { IncidentRow, IncidentHistoryRow, OrderExceptionRow, FollowupCaseRow, FollowupEventRow } from "@/connectors/supabase";
+import { logger } from "@/observability/logger";
+import { serializePromptVersion } from "@/repositories/planner/prompt-version-mapper";
 import type { IPlannerRepository } from "@/repositories/interfaces/IPlannerRepository";
 import type { NotificationActionRow } from "../../engine/action-queue";
 import type { RootCauseResult } from "../root-cause/schema";
@@ -19,6 +15,7 @@ import type {
   PlannerInvestigation,
   AllowedRecommendationType,
   AllowedTargetRole,
+  RecommendationRejectionDetail,
 } from "./schema";
 
 export interface ActionPlannerAgentOptions {
@@ -74,15 +71,21 @@ export class ActionPlannerAgent {
       actionHistory,
       activeExceptions,
       refTimeMs,
+      "v1",
+      1,
+      1,
       1
     );
 
+
     // 2. Cache Lifecycle & Force Regeneration Check
     if (this.repository) {
-      const existingRun = await this.repository.getPlannerRunByContextHashAndVersion(
+
+    const promptVersionNum = serializePromptVersion(ctx.promptVersion);
+    const existingRun = await this.repository.getPlannerRunByContextHashAndVersion(
         params.incident.id,
         ctx.contextHash,
-        ctx.promptVersion
+        promptVersionNum
       );
 
       if (existingRun && existingRun.result && typeof existingRun.result === "object") {
@@ -210,7 +213,7 @@ export class ActionPlannerAgent {
           followup_case_id: params.followupCase?.id || null,
           status: "DRAFT",
           context_hash: ctx.contextHash,
-          prompt_version: ctx.promptVersion,
+          prompt_version: serializePromptVersion(ctx.promptVersion),
           provider: usedProvider,
           model: usedModel,
           result: result as unknown as Record<string, unknown>,
@@ -224,9 +227,11 @@ export class ActionPlannerAgent {
           actor: "system",
           note: `Planner draft run created for incident ${params.incident.incident_key}`,
         });
-      } catch {
-        // Suppress repository error
-      }
+        } catch (err: unknown) {
+          const message = err instanceof Error ? err.message : String(err);
+          // Warning for persistence failure when creating planner run
+          logger.warn({ component: 'ActionPlannerAgent', operation: 'createPlannerRun', status: 'warning', message: '[ActionPlannerAgent] createPlannerRun failure', metadata: { code: 'PLANNER_RUN_PERSIST_FAILED', message } });
+        }
     }
 
     return {
@@ -258,6 +263,7 @@ export class ActionPlannerAgent {
     }
 
     const validationLimitations: string[] = [];
+    const rejections: RecommendationRejectionDetail[] = [];
     const rawRecs = Array.isArray(parsed.recommendations) ? parsed.recommendations : [];
     const recommendations: PlannerRecommendation[] = [];
 
@@ -266,9 +272,9 @@ export class ActionPlannerAgent {
 
       // 1. Strict Recommendation Type Validation (Reject invalid recommendation, do NOT convert)
       if (!ctx.allowedRecommendationTypes.includes(r.type)) {
-        validationLimitations.push(
-          `Khuyến nghị '${r.title || i + 1}' bị từ chối do loại hành động '${r.type}' không nằm trong danh sách cho phép.`
-        );
+        const reason = `Khuyến nghị '${r.title || i + 1}' bị từ chối do loại hành động '${r.type}' không nằm trong danh sách cho phép.`;
+        validationLimitations.push(reason);
+        rejections.push({ recommendationIndex: i, code: 'INVALID_ACTION_TYPE', reason });
         continue; // REJECT!
       }
 
@@ -281,15 +287,22 @@ export class ActionPlannerAgent {
       );
 
       if (!allowedRolesForType.includes(r.targetRole)) {
-        validationLimitations.push(
-          `Khuyến nghị '${r.title || i + 1}' bị từ chối do vai trò '${r.targetRole}' không được phép cho loại hành động '${r.type}'.`
-        );
+        const reason = `Khuyến nghị '${r.title || i + 1}' bị từ chối do vai trò '${r.targetRole}' không được phép cho loại hành động '${r.type}'.`;
+        validationLimitations.push(reason);
+        rejections.push({ recommendationIndex: i, code: 'INVALID_TARGET_ROLE', reason });
         continue; // REJECT!
       }
 
-      const validEvidenceCodes = Array.isArray(r.evidenceCodes)
-        ? r.evidenceCodes.filter((code: string) => ctx.allowedEvidenceCodes.includes(code))
-        : [];
+        const rawEvidenceCodes = Array.isArray(r.evidenceCodes) ? r.evidenceCodes : [];
+        const unknownCodes = rawEvidenceCodes.filter((code:string) => !ctx.allowedEvidenceCodes.includes(code));
+        if (unknownCodes.length > 0) {
+          const reason = `Khuyến nghị '${r.title || i + 1}' có mã bằng chứng không hợp lệ: ${unknownCodes.join(', ')}`;
+          validationLimitations.push(reason);
+          rejections.push({ recommendationIndex: i, code: 'UNKNOWN_EVIDENCE_CODE', reason });
+          // continue to next recommendation without adding it
+          continue;
+        }
+        const validEvidenceCodes = rawEvidenceCodes.filter((code:string) => ctx.allowedEvidenceCodes.includes(code));
 
       recommendations.push({
         id: `rec-${i + 1}`,
@@ -318,6 +331,9 @@ export class ActionPlannerAgent {
 
     // If ALL recommendations were rejected by strict governance, return null to trigger safe fallback
     if (recommendations.length === 0) {
+      // All recommendations rejected, include rejections in result
+      // Caller will handle fallback if needed
+      // We'll still return null to trigger fallback, but we capture rejections via side effect
       return null;
     }
 
@@ -373,6 +389,7 @@ export class ActionPlannerAgent {
       nextReview: deterministicNextReview,
       confidence: deterministicConfidence,
       limitations,
+      rejections,
       metadata: {
         provider,
         model,
@@ -456,8 +473,8 @@ export class ActionPlannerAgent {
         ...extraLimitations,
       ],
       metadata: {
-        provider,
-        model,
+        provider: 'fallback',
+        model: 'deterministic',
         promptVersion: ctx.promptVersion,
         generatedAt: new Date().toISOString(),
       },

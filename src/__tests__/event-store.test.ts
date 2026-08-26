@@ -70,6 +70,29 @@ describe("Sprint 3: Event Store & Operational Memory Tests", () => {
     expect(incidents[0].averageAgeHours).toBe(20);
     expect(incidents[0].maximumAgeHours).toBe(30);
     expect(incidents[0].oldestOrderCode).toBe("O3");
+    expect(incidents[0].sampleOrderCodes[0]).toBe("O3");
+  });
+
+  it("records direct pickup-delay evidence from created and completed-pick timestamps", () => {
+    const createdAt = "2026-08-14T09:43:39.806Z";
+    const order = createDummyOrder("rillnet-GY8N9V8T", "GY8N9V8T", "21160000", "storing", createdAt);
+    order.endPickAt = "2026-08-20T14:52:47.058Z";
+
+    const incidents = aggregateIncidents([order], undefined, Date.parse("2026-08-23T00:00:00Z"));
+
+    expect(incidents[0].pickupJourneyCoveragePercent).toBe(100);
+    expect(incidents[0].pickupDelayedOrderCount).toBe(1);
+    expect(incidents[0].maximumPickupWaitHours).toBe(149.2);
+    expect(incidents[0].pickupDelayOrderCodes).toEqual(["GY8N9V8T"]);
+  });
+
+  it("does not infer pickup delay when a journey timestamp is missing", () => {
+    const order = createDummyOrder("missing", "NO-PICK-TIME", "21160000", "storing", "2026-08-14T09:43:39.806Z");
+    const incidents = aggregateIncidents([order], undefined, Date.parse("2026-08-23T00:00:00Z"));
+
+    expect(incidents[0].pickupJourneyCoveragePercent).toBe(0);
+    expect(incidents[0].pickupDelayedOrderCount).toBe(0);
+    expect(incidents[0].maximumPickupWaitHours).toBeNull();
   });
 
   it("Scenario 4: excludes orders with active exception", () => {

@@ -1,0 +1,52 @@
+{
+  "id": "incident_5_mixed_severity",
+  "name": "Mixed High Severity Compound Incident",
+  "incident": {
+    "incidentId": "inc-compound-high-risk",
+    "incidentKey": "21160000:COMPOUND_HIGH",
+    "warehouseId": "21160000",
+    "warehouseName": "Kho Phú Thọ",
+    "reasonCode": "KHO_TON",
+    "reasonName": "Kho tồn đọng nghiêm trọng",
+    "status": "open",
+    "priorityScore": 98,
+    "firstDetectedAt": "2026-08-04T00:00:00Z",
+    "lastDetectedAt": "2026-08-06T12:00:00Z",
+    "affectedOrderCount": 500,
+    "sampleOrderCodes": ["ORD-501", "ORD-502", "ORD-503"],
+    "averageAgeHours": 64.0,
+    "maximumAgeHours": 120.0,
+    "oldestOrderCode": "ORD-501"
+  },
+  "expected": {
+    "primaryCause": "nghiêm trọng",
+    "expectedEvidenceCodes": ["CURRENT_AFFECTED_COUNT", "AVERAGE_AGE_HOURS", "MAXIMUM_AGE_HOURS"],
+    "expectedConfidence": 95,
+    "confidenceTolerance": 10
+  },
+  "mockAiResponse": {
+    "summary": "Tồn đọng nghiêm trọng kho Phú Thọ",
+    "assessment": {
+      "status": "worsening",
+      "explanation": "Quá hạn hơn 120h"
+    },
+    "causes": [
+      {
+        "title": "Tồn đọng nghiêm trọng kết hợp quá tải",
+        "confidence": 96,
+        "evidenceCodes": ["CURRENT_AFFECTED_COUNT", "AVERAGE_AGE_HOURS", "MAXIMUM_AGE_HOURS"],
+        "explanation": "Đơn hàng quá hạn nặng"
+      }
+    ],
+    "investigationSteps": [
+      {
+        "priority": "high",
+        "action": "Kích hoạt quy trình khẩn cấp",
+        "rationale": "Quản lý rủi ro",
+        "requiredData": ["Mã đơn hàng"]
+      }
+    ],
+    "confidence": 96,
+    "limitations": ["Chưa có dữ liệu vận tải khẩn cấp"]
+  }
+}

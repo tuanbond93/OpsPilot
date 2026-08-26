@@ -8,6 +8,7 @@ import type {
 import type { ActionQueueMetrics, IActionQueue, ActionQueueDeduplicationResult } from "./IActionQueue";
 import { Deduplicator } from "./deduplicator";
 import { isFallbackAllowed } from "@/connectors/supabase/fallback-policy";
+import { logger } from "@/observability/logger";
 
 export interface DeduplicationResult extends ActionQueueDeduplicationResult {}
 
@@ -268,9 +269,20 @@ export class ActionQueue implements IActionQueue {
     const insertedCount = actionsToInsert.length;
     const repositoryCalls = (dedupKeys.length > 0 ? 1 : 0) + (insertedCount > 0 ? 1 : 0) + (eventsToAppend.length > 0 ? 1 : 0);
 
-    console.log(
-      `[ActionQueue] operation=batchEnqueue candidates=${paramsList.length} existing=${existingCount} inserted=${insertedCount} events=${eventsToAppend.length} repositoryCalls=${repositoryCalls} durationMs=${durationMs} status=success`
-    );
+    logger.info({
+      component: "ActionQueue",
+      operation: "enqueueActionBatch",
+      status: "success",
+      message: `[ActionQueue] operation=batchEnqueue candidates=${paramsList.length} existing=${existingCount} inserted=${insertedCount} events=${eventsToAppend.length} repositoryCalls=${repositoryCalls} durationMs=${durationMs} status=success`,
+      durationMs,
+      metadata: {
+        candidates: paramsList.length,
+        existingCount,
+        insertedCount,
+        eventsToAppend: eventsToAppend.length,
+        repositoryCalls,
+      },
+    });
 
     return results;
   }

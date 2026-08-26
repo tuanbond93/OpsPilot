@@ -32,12 +32,47 @@ import { SupabaseIncidentProjection } from '@/projections/adapters/SupabaseIncid
 import { SupabasePlannerProjection } from '@/projections/adapters/SupabasePlannerProjection';
 import { SupabaseNotificationProjection } from '@/projections/adapters/SupabaseNotificationProjection';
 
+import type { ICopilotService } from './interfaces/ICopilotService';
+import { CopilotService } from './impl/CopilotService';
+import type { ICopilotQualityService } from './interfaces/ICopilotQualityService';
+import { CopilotQualityService } from './impl/CopilotQualityService';
+import type { IDecisionService } from './interfaces/IDecisionService';
+import { DecisionService } from './impl/DecisionService';
+import type { IDecisionPilotService } from './interfaces/IDecisionPilotService';
+import { DecisionPilotService } from './impl/DecisionPilotService';
+
 export class ServiceFactory {
+  public static getDecisionService(client?: SupabaseClient): IDecisionService {
+    return new DecisionService(RepositoryFactory.getDecisionRepository(client));
+  }
+
+  public static getDecisionPilotService(client?: SupabaseClient): IDecisionPilotService {
+    return new DecisionPilotService(
+      RepositoryFactory.getIncidentRepository(client),
+      RepositoryFactory.getIncidentHistoryRepository(client),
+      RepositoryFactory.getFollowupRepository(client),
+      RepositoryFactory.getPlannerRepository(client),
+      this.getDecisionService(client)
+    );
+  }
+  public static getCopilotService(client?: SupabaseClient): ICopilotService {
+    const copilotRepo = RepositoryFactory.getCopilotRepository(client);
+    return new CopilotService(copilotRepo);
+  }
+
+  public static getCopilotQualityService(client?: SupabaseClient): ICopilotQualityService {
+    const copilotRepo = RepositoryFactory.getCopilotRepository(client);
+    return new CopilotQualityService(copilotRepo);
+  }
+
   public static getIncidentService(client?: SupabaseClient): IIncidentService {
+
+
     const incidentRepo = client ? RepositoryFactory.getIncidentRepository(client) : RepositoryFactory.getIncidentRepository();
     const historyRepo = client ? RepositoryFactory.getIncidentHistoryRepository(client) : RepositoryFactory.getIncidentHistoryRepository();
+    const orderSnapshotRepo = client ? RepositoryFactory.getOrderSnapshotRepository(client) : null;
     const rootCauseAgent = new RootCauseAgent();
-    return new IncidentService(incidentRepo, historyRepo, rootCauseAgent);
+    return new IncidentService(incidentRepo, historyRepo, rootCauseAgent, orderSnapshotRepo);
   }
   public static getFollowupService(client?: SupabaseClient): IFollowupService {
     const followupRepo = client ? RepositoryFactory.getFollowupRepository(client) : RepositoryFactory.getFollowupRepository();
@@ -53,6 +88,7 @@ export class ServiceFactory {
     const followupRepo = RepositoryFactory.getFollowupRepository(client);
     const aiJobRepo = RepositoryFactory.getAiJobRepository(client);
     const actionQueue = new ActionQueue(client);
+    const syncLockRepo = RepositoryFactory.getSyncLockRepository(client);
 
     return new SyncService(
       syncRunRepo,
@@ -62,7 +98,8 @@ export class ServiceFactory {
       exceptionRepo,
       followupRepo,
       aiJobRepo,
-      actionQueue
+      actionQueue,
+      syncLockRepo
     );
   }
   public static getPlannerService(client?: SupabaseClient): IPlannerService {

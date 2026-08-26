@@ -5,6 +5,7 @@ import type {
   PlannerRunStatus,
 } from "@/connectors/supabase/types";
 import { BaseRepository } from "../base/BaseRepository";
+import { serializePromptVersion } from "@/repositories/planner/prompt-version-mapper";
 import type { IPlannerRepository } from "../interfaces/IPlannerRepository";
 
 export class SupabasePlannerRepository extends BaseRepository implements IPlannerRepository {
@@ -19,7 +20,7 @@ export class SupabasePlannerRepository extends BaseRepository implements IPlanne
       followup_case_id: run.followup_case_id || null,
       status: run.status || "DRAFT",
       context_hash: run.context_hash || "",
-      prompt_version: run.prompt_version || 1,
+      prompt_version: run.prompt_version ? serializePromptVersion(run.prompt_version as any) : 1,
       provider: run.provider || "deterministic_fallback",
       model: run.model || "none",
       result: run.result || {},
@@ -51,6 +52,7 @@ export class SupabasePlannerRepository extends BaseRepository implements IPlanne
       throw new Error("No data returned from createPlannerRun insertion");
     }
 
+    // Return raw numeric prompt_version as is (no deserialization)
     return data;
   }
 
@@ -61,7 +63,8 @@ export class SupabasePlannerRepository extends BaseRepository implements IPlanne
       .eq("id", id)
       .maybeSingle();
 
-    return this.executeOptional<PlannerRunRow>(query as any);
+    const row = await this.executeOptional<PlannerRunRow>(query as any);
+    return row;
   }
 
   async getPlannerRunByContextHashAndVersion(
@@ -86,7 +89,10 @@ export class SupabasePlannerRepository extends BaseRepository implements IPlanne
       .limit(1)
       .maybeSingle();
 
-    return this.executeOptional<PlannerRunRow>(finalQuery as any);
+    const row = await this.executeOptional<PlannerRunRow>(finalQuery as any);
+    if (row) {
+    }
+    return row;
   }
 
   async updatePlannerRunStatus(
@@ -106,7 +112,11 @@ export class SupabasePlannerRepository extends BaseRepository implements IPlanne
       .select()
       .maybeSingle();
 
-    return this.executeOptional<PlannerRunRow>(query as any);
+    const row = await this.executeOptional<PlannerRunRow>(query as any);
+    if (row) {
+
+    }
+    return row;
   }
 
   async getAllPlannerRuns(incidentId?: string, limit: number = 50): Promise<PlannerRunRow[]> {
@@ -120,7 +130,8 @@ export class SupabasePlannerRepository extends BaseRepository implements IPlanne
       .order("created_at", { ascending: false })
       .limit(limit);
 
-    return this.executeMany<PlannerRunRow>(finalQuery as any);
+    const rows = await this.executeMany<PlannerRunRow>(finalQuery as any);
+    return rows;
   }
 
   async getLatestPlannerRunByIncidentId(incidentId: string): Promise<PlannerRunRow | null> {

@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { RillnetClient, RillnetErrorCode } from "@/integrations/rillnet/rillnet-client";
 import { decompressSnapshot } from "@/connectors/rillnet/snapshot";
+import { logger } from "@/observability/logger";
 
 describe("Sprint 10.2 — Rillnet Download Resilience & Retry Policy Tests", () => {
   beforeEach(() => {
@@ -227,7 +228,7 @@ describe("Sprint 10.2 — Rillnet Download Resilience & Retry Policy Tests", () 
   });
 
   it("11. Diagnostics log format does not output sensitive token parameters", async () => {
-    const consoleSpy = vi.spyOn(console, "log");
+    const loggerSpy = vi.spyOn(logger, "info");
     const mockFetch = vi.fn().mockImplementation(() =>
       Promise.resolve({
         ok: true,
@@ -241,8 +242,8 @@ describe("Sprint 10.2 — Rillnet Download Resilience & Retry Policy Tests", () 
     const sensitiveUrl = "https://mock.rillnet.com/snap.gz?token=SUPER_SECRET_KEY_12345";
     await client.acquireResilientSnapshot(sensitiveUrl);
 
-    for (const call of consoleSpy.mock.calls) {
-      const msg = call.join(" ");
+    for (const call of loggerSpy.mock.calls) {
+      const msg = JSON.stringify(call);
       expect(msg).not.toContain("SUPER_SECRET_KEY_12345");
     }
   });

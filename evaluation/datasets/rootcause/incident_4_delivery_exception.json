@@ -1,0 +1,52 @@
+{
+  "id": "incident_4_delivery_exception",
+  "name": "GHN Carrier Delivery Exception",
+  "incident": {
+    "incidentId": "inc-ghn-delivery-fail",
+    "incidentKey": "GHN:DELIVERY_FAIL",
+    "warehouseId": "21180000",
+    "warehouseName": "Kho Bình Thạnh",
+    "reasonCode": "GIAO_THAT_BAI",
+    "reasonName": "Giao hàng thất bại nhiều lần",
+    "status": "open",
+    "priorityScore": 65,
+    "firstDetectedAt": "2026-08-05T12:00:00Z",
+    "lastDetectedAt": "2026-08-06T12:00:00Z",
+    "affectedOrderCount": 42,
+    "sampleOrderCodes": ["ORD-401", "ORD-402"],
+    "averageAgeHours": 32.0,
+    "maximumAgeHours": 60.0,
+    "oldestOrderCode": "ORD-401"
+  },
+  "expected": {
+    "primaryCause": "Giao hàng",
+    "expectedEvidenceCodes": ["CURRENT_AFFECTED_COUNT", "AVERAGE_AGE_HOURS"],
+    "expectedConfidence": 75,
+    "confidenceTolerance": 15
+  },
+  "mockAiResponse": {
+    "summary": "Sự cố giao hàng thất bại GHN",
+    "assessment": {
+      "status": "stagnant",
+      "explanation": "Khách không nghe máy"
+    },
+    "causes": [
+      {
+        "title": "Giao hàng thất bại nhiều lần",
+        "confidence": 78,
+        "evidenceCodes": ["CURRENT_AFFECTED_COUNT", "AVERAGE_AGE_HOURS"],
+        "explanation": "Sai địa chỉ hoặc không liên lạc được"
+      }
+    ],
+    "investigationSteps": [
+      {
+        "priority": "medium",
+        "action": "Liên hệ CSKH xác nhận địa chỉ",
+        "rationale": "Xác minh thông tin",
+        "requiredData": ["Mã đơn hàng"]
+      }
+    ],
+    "confidence": 78,
+    "limitations": ["Chưa có dữ liệu giao hàng GHN chi tiết"]
+  }
+}

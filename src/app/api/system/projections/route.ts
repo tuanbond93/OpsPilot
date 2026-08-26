@@ -1,8 +1,12 @@
 import { createAdminClient } from "@/connectors/supabase";
 import { ServiceFactory } from "@/services/ServiceFactory";
+import { authorizeApiRequest } from "@/security/api-security";
+import type { NextRequest } from "next/server";
 
-export async function GET() {
+export async function GET(request: NextRequest) {
   try {
+    const auth = await authorizeApiRequest(request, "VIEW_SYSTEM", { limit: 120, windowMs: 60_000 });
+    if (!auth.ok) return auth.response;
     let client;
     try {
       client = createAdminClient();

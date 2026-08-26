@@ -1,0 +1,68 @@
+{
+  "id": "planner_3_sync_issue",
+  "name": "Planner Sync Issue Recovery Plan",
+  "incident": {
+    "id": "inc-103",
+    "incident_key": "RILLNET:SYNC_STALE",
+    "warehouse_id": "21160000",
+    "warehouse_name": "Kho Phú Thọ",
+    "reason_code": "SYNC_STALE",
+    "reason_name": "Mất đồng bộ dữ liệu Rillnet",
+    "status": "open",
+    "priority_score": 90,
+    "first_detected_at": "2026-08-06T06:00:00Z",
+    "last_detected_at": "2026-08-06T10:00:00Z",
+    "affected_order_count": 320,
+    "average_age_hours": 12.0,
+    "maximum_age_hours": 24.0
+  },
+  "historyRows": [
+    { "id": 1, "incident_id": "inc-103", "recorded_at": "2026-08-06T06:00:00Z", "affected_order_count": 320 },
+    { "id": 2, "incident_id": "inc-103", "recorded_at": "2026-08-06T07:00:00Z", "affected_order_count": 320 },
+    { "id": 3, "incident_id": "inc-103", "recorded_at": "2026-08-06T08:00:00Z", "affected_order_count": 320 },
+    { "id": 4, "incident_id": "inc-103", "recorded_at": "2026-08-06T09:00:00Z", "affected_order_count": 320 },
+    { "id": 5, "incident_id": "inc-103", "recorded_at": "2026-08-06T10:00:00Z", "affected_order_count": 320 }
+  ],
+  "rootCauseResult": {
+    "confidence": 90,
+    "causes": []
+  },
+  "expected": {
+    "expectedRecommendationCount": 1,
+    "expectedTypes": ["CONTINUE_MONITORING"],
+    "expectedTargetRoles": ["WAREHOUSE_DISPATCHER"],
+    "expectedConfidence": 90,
+    "confidenceTolerance": 10
+  },
+  "mockAiResponse": {
+    "executiveSummary": "Khôi phục đồng bộ API Rillnet",
+    "overallPriority": "high",
+    "recommendations": [
+      {
+        "id": "rec-1",
+        "type": "CONTINUE_MONITORING",
+        "title": "Theo dõi tiến độ đồng bộ dữ liệu",
+        "description": "Thực hiện theo dõi định kỳ tiến độ đồng bộ",
+        "priority": "high",
+        "targetRole": "WAREHOUSE_DISPATCHER",
+        "rationale": "Khôi phục trạng thái hệ thống",
+        "evidenceCodes": ["CURRENT_AFFECTED_COUNT"],
+        "riskImpact": {
+          "severity": "high",
+          "potentialConsequence": "Mất dữ liệu đồng bộ"
+        },
+        "prerequisiteData": ["Log Rillnet Client"],
+        "manualApprovalRequired": true
+      }
+    ],
+    "investigations": [],
+    "blockedOptions": [],
+    "nextReview": {
+      "source": "PLANNER_POLICY",
+      "reviewAt": "2026-08-07T00:00:00Z",
+      "reviewAfterMinutes": 30,
+      "rationale": "Theo dõi sync status"
+    },
+    "limitations": []
+  }
+}

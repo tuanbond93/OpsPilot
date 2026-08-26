@@ -1,6 +1,8 @@
+import { logger } from '@/observability/logger';
 import { appendFileSync } from "node:fs";
 export function logRuntimeMessage(message: string): void {
-  console.log(message);
+  logger.info(message);
+
   const outputPath = process.env.OPSPILOT_RUNTIME_LOG;
   if (outputPath) {
     try {

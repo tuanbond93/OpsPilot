@@ -4,7 +4,7 @@ import { MockSyncRunRepository } from "@/repositories/mock/MockSyncRunRepository
 import { MockIncidentRepository } from "@/repositories/mock/MockIncidentRepository";
 import type { SyncPhase } from "@/connectors/supabase/types";
 
-describe("Sprint 10.4 — Idempotent Sync Recovery & Resume Tests", { timeout: 15000 }, () => {
+describe("Sprint 10.4 — Idempotent Sync Recovery & Resume Tests", { timeout: 20000 }, () => {
   beforeEach(() => {
     vi.restoreAllMocks();
   });

@@ -1,6 +1,9 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import { repairOperationalText } from "@/app/_components/operationalText";
+import { handleApiAccess } from "@/app/_components/apiAccess";
+import { useOpsSession } from "@/app/_components/useOpsSession";
 
 interface IncidentSummary {
   incidentId: string;
@@ -94,6 +97,7 @@ interface PlannerRunData {
 }
 
 export default function ActionPlannerPage() {
+  const session = useOpsSession();
   const [incidents, setIncidents] = useState<IncidentSummary[]>([]);
   const [selectedIncidentId, setSelectedIncidentId] = useState<string>("");
   const [loadingIncidents, setLoadingIncidents] = useState<boolean>(true);
@@ -104,7 +108,6 @@ export default function ActionPlannerPage() {
   const [isCached, setIsCached] = useState<boolean>(false);
 
   // Review Form state
-  const [reviewedBy, setReviewedBy] = useState<string>("");
   const [reviewNote, setReviewNote] = useState<string>("");
   const [submittingReview, setSubmittingReview] = useState<boolean>(false);
   const [reviewSuccess, setReviewSuccess] = useState<string | null>(null);
@@ -115,6 +118,7 @@ export default function ActionPlannerPage() {
         setLoadingIncidents(true);
         const res = await fetch("/api/debug/incidents");
         const json = await res.json();
+        handleApiAccess(res, json, "Không thể tải danh sách sự cố.");
         const list = json.incidents || [];
         setIncidents(list);
         if (list.length > 0) {
@@ -122,7 +126,7 @@ export default function ActionPlannerPage() {
         }
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
-        setError(`Failed to load incidents: ${msg}`);
+        setError(`Không thể tải danh sách sự cố: ${msg}`);
       } finally {
         setLoadingIncidents(false);
       }
@@ -136,6 +140,7 @@ export default function ActionPlannerPage() {
       try {
         const res = await fetch(`/api/debug/planner/${encodeURIComponent(selectedIncidentId)}`);
         const json = await res.json();
+        handleApiAccess(res, json, "Không thể tải trạng thái Planner.");
         if (json.aiStatus) {
           if (json.aiStatus === "PENDING") setAiStatus("Pending");
           else if (json.aiStatus === "PROCESSING") setAiStatus("Running");
@@ -157,6 +162,7 @@ export default function ActionPlannerPage() {
 
   async function handleGenerate() {
     if (!selectedIncidentId) return;
+    if (!session.can("MANAGE_SYSTEM")) { setError("Chỉ ADMIN được tạo lại Action Planner thủ công."); return; }
 
     try {
       setGenerating(true);
@@ -171,8 +177,9 @@ export default function ActionPlannerPage() {
       });
       const json = await res.json();
 
-      if (!res.ok || json.error) {
-        throw new Error(json.message || json.error || "Generation failed");
+      handleApiAccess(res, json, "Không thể tạo Action Planner.");
+      if (json.error) {
+        throw new Error(json.message || json.error || "Không thể tạo kế hoạch");
       }
 
       setIsCached(Boolean(json.cached));
@@ -180,6 +187,8 @@ export default function ActionPlannerPage() {
 
       const fetchRunRes = await fetch(`/api/debug/planner/${encodeURIComponent(selectedIncidentId)}`);
       const fetchRunJson = await fetchRunRes.json();
+      handleApiAccess(fetchRunRes, fetchRunJson, "Không thể tải kết quả Planner vừa tạo.");
+      if (!fetchRunRes.ok) throw new Error(fetchRunJson.message || fetchRunJson.error || "Không thể tải kết quả Planner vừa tạo.");
       if (fetchRunJson.run) {
         setRunData(fetchRunJson.run);
       } else {
@@ -197,7 +206,7 @@ export default function ActionPlannerPage() {
       }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
-      setError(`Action Planner generation failed: ${msg}`);
+      setError(`Không thể tạo Action Planner: ${msg}`);
     } finally {
       setGenerating(false);
     }
@@ -205,10 +214,7 @@ export default function ActionPlannerPage() {
 
   async function handleReview(decision: "APPROVED" | "REJECTED") {
     if (!runData?.id) return;
-    if (!reviewedBy.trim()) {
-      alert("Vui lòng nhập tên/mã người phê duyệt (reviewedBy) trước khi gửi.");
-      return;
-    }
+    if (!session.can("REVIEW_COPILOT")) { setError("Tài khoản hiện tại không có quyền duyệt Planner."); return; }
 
     try {
       setSubmittingReview(true);
@@ -220,23 +226,24 @@ export default function ActionPlannerPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           decision,
-          reviewedBy: reviewedBy.trim(),
+          reviewedBy: session.actor,
           note: reviewNote.trim() || undefined,
         }),
       });
 
       const json = await res.json();
-      if (!res.ok || json.error) {
-        throw new Error(json.message || json.error || "Review failed");
+      handleApiAccess(res, json, "Không thể duyệt Planner.");
+      if (json.error) {
+        throw new Error(json.message || json.error || "Không thể duyệt Planner");
       }
 
-      setRunData((prev) => (prev ? { ...prev, status: decision, reviewed_by: reviewedBy.trim() } : null));
+      setRunData((prev) => (prev ? { ...prev, status: decision, reviewed_by: session.actor } : null));
       setReviewSuccess(
         `Đã lưu kết quả ${decision === "APPROVED" ? "PHÊ DUYỆT" : "TỪ CHỐI"} cho Planner Run #${runData.id}.`
       );
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
-      setError(`Review failed: ${msg}`);
+      setError(`Không thể duyệt Planner: ${msg}`);
     } finally {
       setSubmittingReview(false);
     }
@@ -254,7 +261,7 @@ export default function ActionPlannerPage() {
           </div>
           {aiStatus !== "None" && (
             <div className="flex items-center gap-2">
-              <span className="text-xs text-slate-400">Trạng thái AI Analysis:</span>
+              <span className="text-xs text-slate-400">Trạng thái phân tích AI:</span>
               <span
                 className={`px-3 py-1 rounded-full text-xs font-bold font-mono border ${
                   aiStatus === "Completed"
@@ -269,7 +276,7 @@ export default function ActionPlannerPage() {
             </div>
           )}
         </div>
-        <h1 className="text-3xl font-extrabold text-slate-100">Evidence-Grounded Action Planner</h1>
+        <h1 className="text-3xl font-extrabold text-slate-100">Action Planner dựa trên bằng chứng</h1>
         <p className="text-sm text-slate-400">
           Lập kế hoạch hành động vận hành dựa trên bằng chứng xác thực và kiểm soát phê duyệt thủ công
         </p>
@@ -282,7 +289,7 @@ export default function ActionPlannerPage() {
         </label>
 
         {loadingIncidents ? (
-          <div className="text-sm text-slate-500 animate-pulse">Loading incidents...</div>
+          <div className="text-sm text-slate-500 animate-pulse">Đang tải sự cố…</div>
         ) : (
           <div className="flex flex-col sm:flex-row gap-3">
             <select
@@ -292,15 +299,15 @@ export default function ActionPlannerPage() {
             >
               {incidents.map((inc) => (
                 <option key={inc.incidentId} value={inc.incidentId}>
-                  [{inc.warehouseName}] - {inc.reasonName} (Priority: {inc.priorityScore})
+                  [{repairOperationalText(inc.warehouseName)}] - {repairOperationalText(inc.reasonName)} (Ưu tiên: {inc.priorityScore})
                 </option>
               ))}
-              {incidents.length === 0 && <option value="">No active incidents available</option>}
+              {incidents.length === 0 && <option value="">Không có sự cố đang hoạt động</option>}
             </select>
 
             <button
               onClick={handleGenerate}
-              disabled={generating || !selectedIncidentId}
+              disabled={generating || !selectedIncidentId || !session.can("MANAGE_SYSTEM")}
               className="px-6 py-3 bg-purple-600 hover:bg-purple-500 disabled:opacity-50 text-white font-semibold text-sm rounded-xl transition shadow-lg flex items-center justify-center gap-2"
             >
               {generating ? (
@@ -318,7 +325,7 @@ export default function ActionPlannerPage() {
         {(aiStatus === "Pending" || aiStatus === "Running") && !result && (
           <div className="p-4 bg-amber-500/10 border border-amber-500/20 text-amber-300 text-xs rounded-xl flex items-center gap-3 animate-pulse">
             <span className="w-4 h-4 border-2 border-amber-400/30 border-t-amber-400 rounded-full animate-spin"></span>
-            <span>AI analysis is running in the background... Operator does not need to wait. Snapshot synchronization is completed.</span>
+            <span>AI đang phân tích nền. Người vận hành không cần chờ tại trang này; snapshot đã đồng bộ xong.</span>
           </div>
         )}
 
@@ -351,14 +358,14 @@ export default function ActionPlannerPage() {
               <div className="p-3 bg-slate-950 border border-slate-800 rounded-xl">
                 <span className="text-slate-400 block font-semibold">Kho hàng</span>
                 <span className="text-base font-bold text-slate-100 mt-1 block">
-                  {currentIncident?.warehouseName || "N/A"}
+                  {repairOperationalText(currentIncident?.warehouseName || "N/A")}
                 </span>
               </div>
 
               <div className="p-3 bg-slate-950 border border-slate-800 rounded-xl">
                 <span className="text-slate-400 block font-semibold">Loại sự cố</span>
                 <span className="text-base font-bold text-amber-400 mt-1 block">
-                  {currentIncident?.reasonName || "N/A"}
+                  {repairOperationalText(currentIncident?.reasonName || "N/A")}
                 </span>
               </div>
 
@@ -411,7 +418,7 @@ export default function ActionPlannerPage() {
             {/* Executive Summary */}
             <div className="p-4 bg-slate-950 border border-slate-800 rounded-xl space-y-2">
               <h3 className="text-xs font-semibold text-purple-400 uppercase tracking-wider">Tóm tắt Vận hành (Executive Summary)</h3>
-              <p className="text-slate-200 text-sm leading-relaxed">{result.executiveSummary}</p>
+              <p className="text-slate-200 text-sm leading-relaxed">{repairOperationalText(result.executiveSummary)}</p>
             </div>
 
             {/* Recommendations */}
@@ -427,7 +434,7 @@ export default function ActionPlannerPage() {
                         <span className="px-2 py-0.5 rounded bg-purple-500/20 text-purple-300 font-mono text-[10px] font-bold">
                           {rec.type}
                         </span>
-                        <span className="font-bold text-slate-100 text-sm">{rec.title}</span>
+                        <span className="font-bold text-slate-100 text-sm">{repairOperationalText(rec.title)}</span>
                       </div>
                       <div className="flex items-center gap-2">
                         <span className="px-2 py-0.5 rounded bg-slate-800 text-slate-300 font-mono text-[10px]">
@@ -439,8 +446,8 @@ export default function ActionPlannerPage() {
                       </div>
                     </div>
 
-                    <p className="text-slate-300 text-sm">{rec.description}</p>
-                    <p className="text-slate-400">Lý do: {rec.rationale}</p>
+                    <p className="text-slate-300 text-sm">{repairOperationalText(rec.description)}</p>
+                    <p className="text-slate-400">Lý do: {repairOperationalText(rec.rationale)}</p>
 
                     <div className="flex items-center justify-between pt-2 border-t border-slate-900 text-[11px]">
                       <div className="flex items-center gap-1">
@@ -452,7 +459,7 @@ export default function ActionPlannerPage() {
                         ))}
                       </div>
                       <div className="text-rose-400">
-                        Hậu quả rủi ro: {rec.riskImpact?.potentialConsequence}
+                        Hậu quả rủi ro: {repairOperationalText(rec.riskImpact?.potentialConsequence)}
                       </div>
                     </div>
                   </div>
@@ -469,11 +476,11 @@ export default function ActionPlannerPage() {
                 {result.investigations.map((inv) => (
                   <div key={inv.id} className="p-3 bg-slate-950 border border-slate-800 rounded-xl space-y-1">
                     <div className="flex items-center justify-between">
-                      <span className="font-bold text-slate-200">{inv.action}</span>
+                      <span className="font-bold text-slate-200">{repairOperationalText(inv.action)}</span>
                       <span className="text-[10px] text-indigo-400 font-mono">Dept: {inv.targetDepartment}</span>
                     </div>
-                    <p className="text-slate-400">Lý do: {inv.rationale}</p>
-                    <p className="text-amber-400/90 text-[11px]">Kiểm tra an toàn: {inv.safetyCheck}</p>
+                    <p className="text-slate-400">Lý do: {repairOperationalText(inv.rationale)}</p>
+                    <p className="text-amber-400/90 text-[11px]">Kiểm tra an toàn: {repairOperationalText(inv.safetyCheck)}</p>
                   </div>
                 ))}
               </div>
@@ -487,10 +494,10 @@ export default function ActionPlannerPage() {
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
                 {result.blockedOptions.map((b, i) => (
                   <div key={i} className="p-3 bg-slate-950 border border-rose-500/20 rounded-xl space-y-1">
-                    <span className="font-bold text-rose-300 block">{b.option}</span>
-                    <p className="text-slate-400">{b.reason}</p>
+                    <span className="font-bold text-rose-300 block">{repairOperationalText(b.option)}</span>
+                    <p className="text-slate-400">{repairOperationalText(b.reason)}</p>
                     <div className="text-[10px] text-slate-500 font-mono">
-                      Thiếu dữ liệu: {b.missingData.join(", ")}
+                      Thiếu dữ liệu: {b.missingData.map(repairOperationalText).join(", ")}
                     </div>
                   </div>
                 ))}
@@ -513,7 +520,7 @@ export default function ActionPlannerPage() {
                   <span className="text-slate-400">Nguồn chính sách:</span>
                   <span className="font-mono text-purple-400">{result.nextReview.source}</span>
                 </div>
-                <p className="text-slate-400 text-[11px] pt-1">{result.nextReview.rationale}</p>
+                <p className="text-slate-400 text-[11px] pt-1">{repairOperationalText(result.nextReview.rationale)}</p>
               </div>
 
               <div className="p-4 bg-slate-950 border border-slate-800 rounded-xl space-y-2">
@@ -540,7 +547,7 @@ export default function ActionPlannerPage() {
               <h4 className="font-semibold text-amber-400 uppercase tracking-wider">Giới hạn Hệ thống (System Boundaries)</h4>
               <ul className="list-disc list-inside text-slate-400 space-y-1">
                 {result.limitations.map((lim, i) => (
-                  <li key={i}>{lim}</li>
+                  <li key={i}>{repairOperationalText(lim)}</li>
                 ))}
               </ul>
             </div>
@@ -558,25 +565,24 @@ export default function ActionPlannerPage() {
             </div>
 
             <div className="p-4 bg-amber-500/10 border border-amber-500/20 rounded-xl text-amber-300 text-xs font-semibold">
-              ⚠️ <strong>Lưu ý Governance:</strong> Phê duyệt không đồng nghĩa với thực thi. Action Queue integration will be implemented later.
+              <strong>Lưu ý kiểm soát:</strong> Phê duyệt không đồng nghĩa với thực thi. Hệ thống không tự chạy action vận hành.
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs">
               <div className="space-y-2">
-                <label className="block font-semibold text-slate-300">
-                  Người Phê Duyệt (reviewedBy) <span className="text-rose-400">*</span>:
-                </label>
+                <label className="block font-semibold text-slate-300">Người phê duyệt:</label>
                 <input
                   type="text"
-                  placeholder="Nhập email hoặc mã nhân viên (ví dụ: nguyen.son@ops.vn)"
-                  value={reviewedBy}
-                  onChange={(e) => setReviewedBy(e.target.value)}
+                  placeholder="Đang đọc phiên đăng nhập…"
+                  value={session.actor}
+                  readOnly
+                  aria-readonly="true"
                   className="w-full bg-slate-950 border border-slate-800 text-slate-200 text-sm rounded-xl p-3 focus:outline-none focus:border-indigo-500"
                 />
               </div>
 
               <div className="space-y-2">
-                <label className="block font-semibold text-slate-300">Ghi chú Review (Note):</label>
+                <label className="block font-semibold text-slate-300">Ghi chú duyệt:</label>
                 <input
                   type="text"
                   placeholder="Ghi chú thêm (không bắt buộc)..."
@@ -590,7 +596,7 @@ export default function ActionPlannerPage() {
             <div className="flex items-center justify-end gap-3 pt-2">
               <button
                 onClick={() => handleReview("REJECTED")}
-                disabled={submittingReview}
+                disabled={submittingReview || !session.can("REVIEW_COPILOT")}
                 className="px-6 py-2.5 bg-rose-600/20 hover:bg-rose-600/30 text-rose-300 border border-rose-500/30 font-bold text-xs rounded-xl transition"
               >
                 TỪ CHỐI (REJECT)
@@ -598,7 +604,7 @@ export default function ActionPlannerPage() {
 
               <button
                 onClick={() => handleReview("APPROVED")}
-                disabled={submittingReview}
+                disabled={submittingReview || !session.can("REVIEW_COPILOT")}
                 className="px-6 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs rounded-xl shadow transition flex items-center gap-2"
               >
                 {submittingReview ? "Đang xử lý..." : "PHÊ DUYỆT (APPROVE)"}

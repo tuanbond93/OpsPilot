@@ -25,7 +25,7 @@ export const SCHEDULER_JOBS: DeclarativeJob[] = [
     enabled: true,
     handler: async () => {
       const worker = new AiAnalysisWorker();
-      const res = await worker.processPendingJobs(`worker-cron-${Date.now().toString(36)}`, 5);
+      const res = await worker.processPendingJobs(`worker-cron-${Date.now().toString(36)}`, 20);
       return {
         success: res.failedCount === 0,
         details: `Processed: ${res.processedCount}, Completed: ${res.completedCount}, Failed: ${res.failedCount}`,

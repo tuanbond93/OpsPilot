@@ -1,0 +1,91 @@
+{
+  "id": "planner_4_delivery_exception",
+  "name": "Planner Delivery Exception Plan",
+  "incident": {
+    "id": "inc-104",
+    "incident_key": "GHN:DELIVERY_FAIL",
+    "warehouse_id": "21180000",
+    "warehouse_name": "Kho Bình Thạnh",
+    "reason_code": "CUSTOMER_APPOINTMENT",
+    "reason_name": "Giao hàng thất bại",
+    "status": "open",
+    "priority_score": 65,
+    "first_detected_at": "2026-08-05T12:00:00Z",
+    "last_detected_at": "2026-08-06T12:00:00Z",
+    "affected_order_count": 42,
+    "average_age_hours": 32.0,
+    "maximum_age_hours": 60.0
+  },
+  "historyRows": [
+    { "id": 1, "incident_id": "inc-104", "recorded_at": "2026-08-05T12:00:00Z", "affected_order_count": 42 },
+    { "id": 2, "incident_id": "inc-104", "recorded_at": "2026-08-05T18:00:00Z", "affected_order_count": 42 },
+    { "id": 3, "incident_id": "inc-104", "recorded_at": "2026-08-06T00:00:00Z", "affected_order_count": 42 },
+    { "id": 4, "incident_id": "inc-104", "recorded_at": "2026-08-06T06:00:00Z", "affected_order_count": 42 },
+    { "id": 5, "incident_id": "inc-104", "recorded_at": "2026-08-06T12:00:00Z", "affected_order_count": 42 }
+  ],
+  "rootCauseResult": {
+    "confidence": 75,
+    "causes": [
+      {
+        "title": "Ngoại lệ",
+        "confidence": 75,
+        "evidenceCodes": ["MAXIMUM_AGE_HOURS"],
+        "explanation": ""
+      }
+    ]
+  },
+  "expected": {
+    "expectedRecommendationCount": 2,
+    "expectedTypes": ["VERIFY_EXCEPTION", "CONTACT_WAREHOUSE"],
+    "expectedTargetRoles": ["CUSTOMER_SERVICE", "OPERATIONS_LEAD"],
+    "expectedConfidence": 75,
+    "confidenceTolerance": 15
+  },
+  "mockAiResponse": {
+    "executiveSummary": "Xử lý lỗi giao hàng GHN",
+    "overallPriority": "medium",
+    "recommendations": [
+      {
+        "id": "rec-1",
+        "type": "VERIFY_EXCEPTION",
+        "title": "Xác nhận địa chỉ giao hàng",
+        "description": "Gọi điện xác nhận thông tin nhận hàng",
+        "priority": "high",
+        "targetRole": "CUSTOMER_SERVICE",
+        "rationale": "Xử lý đơn lỗi địa chỉ",
+        "evidenceCodes": ["CURRENT_AFFECTED_COUNT"],
+        "riskImpact": {
+          "severity": "medium",
+          "potentialConsequence": "Giao lại thất bại"
+        },
+        "prerequisiteData": ["Mã vận đơn GHN"],
+        "manualApprovalRequired": true
+      },
+      {
+        "id": "rec-2",
+        "type": "CONTACT_WAREHOUSE",
+        "title": "Liên hệ kho hoàn đơn",
+        "description": "Theo dõi trạng thái đơn hoàn về kho",
+        "priority": "low",
+        "targetRole": "OPERATIONS_LEAD",
+        "rationale": "Hoàn vốn hàng hóa",
+        "evidenceCodes": ["MAXIMUM_AGE_HOURS"],
+        "riskImpact": {
+          "severity": "low",
+          "potentialConsequence": "Tăng tồn kho"
+        },
+        "prerequisiteData": ["Mã đơn hàng"],
+        "manualApprovalRequired": true
+      }
+    ],
+    "investigations": [],
+    "blockedOptions": [],
+    "nextReview": {
+      "source": "PLANNER_POLICY",
+      "reviewAt": "2026-08-07T00:00:00Z",
+      "reviewAfterMinutes": 120,
+      "rationale": "Theo dõi phản hồi"
+    },
+    "limitations": []
+  }
+}

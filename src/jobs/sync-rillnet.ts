@@ -1,5 +1,6 @@
 import { createAdminClient } from "../connectors/supabase";
 import { ServiceFactory } from "@/services/ServiceFactory";
+import type { SyncOptions } from "@/services/interfaces/ISyncService";
 
 export interface PhaseTimingInfo {
   durationMs: number;
@@ -18,6 +19,8 @@ export interface DetectedBottleneck {
 
 export interface SyncJobResult {
   ok: boolean;
+  skipped?: boolean;
+  skipReason?: "SOURCE_UNCHANGED";
   syncRunId: string;
   startedAt: string;
   completedAt: string;
@@ -42,7 +45,7 @@ export interface SyncJobResult {
  * Runs complete Rillnet sync and persistence workflow by delegating to SyncService via ServiceFactory.
  * ZERO AI executions or external LLM calls occur during sync.
  */
-export async function syncRillnet(): Promise<SyncJobResult> {
+export async function syncRillnet(options?: SyncOptions): Promise<SyncJobResult> {
   let dbClient;
   try {
     dbClient = createAdminClient();
@@ -51,5 +54,5 @@ export async function syncRillnet(): Promise<SyncJobResult> {
   }
 
   const syncService = ServiceFactory.getSyncService(dbClient);
-  return syncService.runSync();
+  return syncService.runSync(options);
 }

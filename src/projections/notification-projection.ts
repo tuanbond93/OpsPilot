@@ -1,5 +1,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { ProjectionResult } from "./projection-engine";
+import { logger } from "@/observability/logger";
 
 export interface NotificationSummaryDto {
   incident_id: string; // UUID
@@ -16,7 +17,6 @@ export interface NotificationSummaryDto {
  */
 export async function projectNotification(client: SupabaseClient): Promise<ProjectionResult> {
   const startTime = Date.now();
-  console.log("[Projection][Notification] started");
 
   try {
     // 1. Fetch active incidents (status: open or monitoring) to know which ones are present
@@ -35,8 +35,6 @@ export async function projectNotification(client: SupabaseClient): Promise<Proje
       incidentKeyToIdMap.set(inc.incident_key, inc.id);
     }
 
-    console.log(`Source query filters: status in ('open', 'monitoring')`);
-
     // 2. Query ALL notification actions (no sync_run filter)
     const { data: notificationActions, error: notificationActionsError } = await client
       .from("notification_actions")
@@ -45,8 +43,6 @@ export async function projectNotification(client: SupabaseClient): Promise<Proje
     if (notificationActionsError) {
       throw new Error(`Notification actions query failed: ${notificationActionsError.message}`);
     }
-
-    console.log(`Total notification_actions in source: ${notificationActions?.length || 0}`);
 
     // 3. Map notification actions to active incident IDs.
     // notification_actions has a target_id, but target_id could be a warehouse_id, or payload contains incident_id/incidentKey.
@@ -79,13 +75,6 @@ export async function projectNotification(client: SupabaseClient): Promise<Proje
       } else {
         unmappedCount++;
       }
-    }
-
-    console.log(`Loaded notification actions: ${notificationActions?.length || 0}`);
-    console.log(`Distinct incident IDs: ${actionsByIncident.size}`);
-
-    if (unmappedCount > 0) {
-      console.log(`[Projection][Notification] unmapped actions: ${unmappedCount}`);
     }
 
     const dtos: NotificationSummaryDto[] = [];
@@ -145,11 +134,7 @@ export async function projectNotification(client: SupabaseClient): Promise<Proje
       notificationIds.push(incidentId);
     }
 
-    console.log("DTO count: " + dtos.length);
-
     if (dtos.length === 0) {
-      console.log("[Projection][Notification] finished rowsUpdated=0");
-      console.log("[Projection][Notification] rows.length == 0: constructed dtos array is empty");
       return {
         status: "success",
         rowsUpdated: 0,
@@ -157,35 +142,56 @@ export async function projectNotification(client: SupabaseClient): Promise<Proje
       };
     }
 
-    console.log("Calling RPC...");
     const { error: rpcError } = await client.rpc("upsert_notification_summary", {
       rows: dtos,
       present_ids: notificationIds,
     });
 
     if (rpcError) {
-      console.error("Full RPC Error Object:", JSON.stringify(rpcError, null, 2));
       throw new Error(`RPC upsert_notification_summary failed: ${rpcError.message}`);
     }
 
-    console.log("RPC success");
     const rowsUpdated = dtos.length;
-    console.log(`rowsUpdated=${rowsUpdated}`);
-    console.log("[Projection][Notification] finished");
+    const durationMs = Date.now() - startTime;
+
+    logger.info({
+      component: "NotificationProjection",
+      operation: "projectNotification",
+      status: "success",
+      message: `[Projection][Notification] finished rowsUpdated=${rowsUpdated}`,
+      durationMs,
+      metadata: {
+        rowsProcessed: notificationActions?.length || 0,
+        rowsUpdated,
+        unmappedActionsCount: unmappedCount,
+      },
+    });
 
     return {
       status: "success",
       rowsUpdated,
-      durationMs: Date.now() - startTime,
+      durationMs,
     };
   } catch (error: any) {
     const errorMessage = error.message || String(error);
-    console.error(`[Projection][Notification] failed ${errorMessage}`, error);
+    const durationMs = Date.now() - startTime;
+    const errorCode = error.code || "PROJECTION_REFRESH_FAILED";
+
+    logger.error({
+      component: "NotificationProjection",
+      operation: "projectNotification",
+      status: "failed",
+      message: `[Projection][Notification] failed ${errorMessage}`,
+      durationMs,
+      errorCode,
+      error,
+    });
+
     return {
       status: "failed",
       rowsUpdated: 0,
-      durationMs: Date.now() - startTime,
-      errorCode: error.code || "PROJECTION_ERROR",
+      durationMs,
+      errorCode,
       errorMessage,
     };
   }

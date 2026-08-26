@@ -16,10 +16,12 @@ export async function GET() {
       startedAt: run.started_at,
       completedAt: run.completed_at,
       status: run.status,
+      currentPhase: run.current_phase || null,
       fetchedOrderCount: run.fetched_order_count,
       normalizedOrderCount: run.normalized_order_count,
       incidentCount: run.incident_count,
       durationMs: run.duration_ms,
+      sourceUpdatedAt: run.source_updated_at || null,
       errorCode: run.error_code || null,
       errorMessage: run.error_message || null,
     }));

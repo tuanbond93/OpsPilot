@@ -1,0 +1,12 @@
+{
+  "crons": [
+    {
+      "path": "/api/debug/sync",
+      "schedule": "0 2 * * *"
+    },
+    {
+      "path": "/api/cron/process-ai-jobs",
+      "schedule": "0 3 * * *"
+    }
+  ]
+}

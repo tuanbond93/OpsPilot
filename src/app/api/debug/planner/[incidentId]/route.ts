@@ -1,22 +1,19 @@
 import { NextResponse, type NextRequest } from "next/server";
-import { createAdminClient } from "@/connectors/supabase";
 import { ServiceFactory } from "@/services/ServiceFactory";
+import { authorizeIncidentScope } from "@/security/scope-guard";
 
 export const dynamic = "force-dynamic";
 
 export async function GET(
-  _request: NextRequest,
+  request: NextRequest,
   { params }: { params: Promise<{ incidentId: string }> }
 ) {
   const { incidentId } = await params;
+  const guard = await authorizeIncidentScope(request, incidentId);
+  if (!guard.ok) return guard.response;
 
   try {
-    let dbClient;
-    try {
-      dbClient = createAdminClient();
-    } catch {
-      // Fallback
-    }
+    const dbClient = guard.client;
 
     const plannerService = ServiceFactory.getPlannerService(dbClient);
     const result = await plannerService.getPlannerRunByIncidentId(incidentId);

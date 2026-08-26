@@ -17,7 +17,12 @@ export type EvidenceCode =
   | "NO_VEHICLE_DATA"
   | "NO_ROUTE_CAPACITY_DATA"
   | "EXCEPTION_DATA_AVAILABLE"
-  | "EXCEPTION_DATA_UNAVAILABLE";
+  | "EXCEPTION_DATA_UNAVAILABLE"
+  | "PICKUP_DELAY_DIRECT"
+  | "PICKUP_JOURNEY_DATA_MISSING"
+  | "CPTT_DOCUMENT_RETURN_PATTERN"
+  | "GHN_MORNING_COT_POLICY"
+  | "SIMILAR_CASE_GROUPING_POLICY";
 
 export interface EvidenceItem {
   code: EvidenceCode;
@@ -37,6 +42,18 @@ export function buildDeterministicEvidence(context: DeterministicContext): Evide
     value: context.currentAffectedCount,
     statement: `Số lượng đơn hàng bị ảnh hưởng hiện tại là ${context.currentAffectedCount} đơn.`,
   });
+
+  if (context.pickupDelayedOrderCount > 0 && context.maximumPickupWaitHours !== null) {
+    evidence.push({ code: "PICKUP_DELAY_DIRECT", value: `${context.maximumPickupWaitHours}h`, statement: `Có ${context.pickupDelayedOrderCount} đơn có bằng chứng trực tiếp chậm đầu lấy; thời gian từ tạo đến hoàn tất lấy cao nhất ${context.maximumPickupWaitHours} giờ. Mã mẫu: ${context.pickupDelayOrderCodes.join(", ") || "không có"}.` });
+  } else {
+    evidence.push({ code: "PICKUP_JOURNEY_DATA_MISSING", value: `${context.pickupJourneyCoveragePercent}%`, statement: `Chưa có đủ timestamp tạo đơn và hoàn tất lấy để kết luận chậm đầu lấy. Mức bao phủ dữ liệu hành trình: ${context.pickupJourneyCoveragePercent}%.` });
+  }
+
+  if (context.cpttSampleOrderCodes.length > 0) {
+    evidence.push({ code: "CPTT_DOCUMENT_RETURN_PATTERN", value: context.cpttSampleOrderCodes.length, statement: `Có ${context.cpttSampleOrderCodes.length} mã mẫu đuôi _CPTT (${context.cpttSampleOrderCodes.join(", ")}); theo playbook đây là chứng từ thu hồi và phải kiểm tra riêng trách nhiệm xuất tại từng kho.` });
+  }
+  evidence.push({ code: "GHN_MORNING_COT_POLICY", value: context.ghnMorningCotHour, statement: `Quy tắc vận hành do người phụ trách xác nhận: các kho GHN có COT luân chuyển lúc ${String(context.ghnMorningCotHour).padStart(2, "0")}:00 sáng; đơn đã nhập trước COT nhưng còn tồn sau khung này cần được kiểm tra nguyên nhân chưa xuất.` });
+  evidence.push({ code: "SIMILAR_CASE_GROUPING_POLICY", value: "active", statement: context.groupingPolicy });
 
   // 2. History & Trend evidence
   if (context.historyPointCount >= 2) {

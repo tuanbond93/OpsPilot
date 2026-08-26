@@ -5,6 +5,7 @@
 
 # Next.js build output
 /.next/
+/.next-build/
 /out/
 
 # Production
@@ -18,9 +19,18 @@
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+.dev-server*.log
+
+# Local dependency backups and generated scratch artifacts
+/node_modules_backup/
+/node_modules_old/
+/tmp/
+*.tsbuildinfo
 
 # IDE & OS
 .DS_Store
 *.pem
 .vscode/
 .idea/
+
+.vercel

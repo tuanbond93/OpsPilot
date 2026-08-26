@@ -3,6 +3,7 @@ import path from "path";
 import type { AIProvider, AIResponse, GenerateOptions, PromptMetadata } from "./types";
 import { OpenAIProvider } from "./openai";
 import { GeminiProvider } from "./gemini";
+// Removed deserializePromptVersion import as version handling is now direct
 
 const providerRegistry: Record<string, AIProvider> = {
   openai: new OpenAIProvider(),
@@ -38,7 +39,8 @@ export function getAIProvider(providerName?: string): AIProvider {
 export function parsePromptMetadata(rawContent: string, defaultName: string): PromptMetadata {
   let content = rawContent.trim();
   let name = defaultName;
-  let version = 1;
+  // Default values
+  let version: string = "v1";
   let language = "vi";
 
   const frontmatterRegex = /^---\s*[\r\n]+([\s\S]*?)[\r\n]+---\s*[\r\n]*/;
@@ -52,26 +54,26 @@ export function parsePromptMetadata(rawContent: string, defaultName: string): Pr
     if (nameMatch) name = nameMatch[1].trim();
 
     const versionMatch = yamlBlock.match(/version:\s*([^\r\n]+)/);
-    if (versionMatch) version = parseInt(versionMatch[1].trim(), 10) || 1;
+    if (versionMatch) {
+      const rawVersion = versionMatch[1].trim();
+      const isNumeric = /^\d+$/.test(rawVersion);
+      version = isNumeric ? `v${rawVersion}` : rawVersion;
+    }
 
     const langMatch = yamlBlock.match(/language:\s*([^\r\n]+)/);
     if (langMatch) language = langMatch[1].trim();
   }
 
-  return {
-    name,
-    version,
-    language,
-    content: content.trim(),
-  };
+  return { name, version, language, content: content.trim() };
 }
+
 
 /**
  * Loads markdown prompt template from src/prompts/<name>.md
  * Returns PromptMetadata object or raw string if requested.
  */
 export function loadPromptMetadata(name: string, variables?: Record<string, string>): PromptMetadata {
-  const sanitizedName = name.replace(/\.md$/, "");
+  const sanitizedName = name.replace(/\\.md$/, "");
   const promptPath = path.join(process.cwd(), "src", "prompts", `${sanitizedName}.md`);
 
   if (!fs.existsSync(promptPath)) {
@@ -104,14 +106,16 @@ export function loadPrompt(name: string, variables?: Record<string, string>): st
 /**
  * Provider-agnostic generate function
  */
-export async function generate(
+export const generate = async (
   promptNameOrText: string,
-  input?: Record<string, unknown> | string,
+  input?: Record<string, unknown>,
   options: GenerateOptions & { provider?: string } = {}
-): Promise<AIResponse> {
+): Promise<AIResponse> => {
+
   let promptText = promptNameOrText;
 
   try {
+    // Load prompt template if it exists; fallback to raw text
     promptText = loadPrompt(promptNameOrText);
   } catch {
     // Raw prompt text fallback
@@ -119,4 +123,4 @@ export async function generate(
 
   const provider = getAIProvider(options.provider);
   return provider.generate(promptText, input, options);
-}
+};

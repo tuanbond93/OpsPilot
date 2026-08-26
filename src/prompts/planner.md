@@ -1,6 +1,6 @@
 ---
 name: planner
-version: 1
+version: "v1"
 language: vi
 ---
 

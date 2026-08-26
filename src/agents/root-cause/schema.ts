@@ -77,6 +77,12 @@ export function createFallbackResult(
     else assessmentStatus = "stagnant";
   }
 
+  const pickupCause = context.pickupDelayedOrderCount > 0 && context.maximumPickupWaitHours !== null ? {
+    title: "Chậm xử lý tại đầu lấy",
+    confidence: 95,
+    evidenceCodes: ["PICKUP_DELAY_DIRECT"],
+    explanation: `${context.pickupDelayedOrderCount} đơn có thời gian từ tạo đến hoàn tất lấy vượt 24 giờ; cao nhất ${context.maximumPickupWaitHours} giờ. Đây là bằng chứng trực tiếp cho chậm đầu lấy, không phải suy luận từ trạng thái kho hiện tại.`,
+  } : null;
   return {
     summary: `Đánh giá vận hành tại ${context.warehouseName}: Sự cố ${context.reasonName} đang ảnh hưởng ${context.currentAffectedCount} đơn hàng. (${reason})`,
     assessment: {
@@ -87,7 +93,7 @@ export function createFallbackResult(
           : "Chưa đủ lịch sử để đánh giá xu hướng."
       }`,
     },
-    causes: [
+    causes: pickupCause ? [pickupCause] : [
       {
         title: `Tồn đọng vận hành: ${context.reasonName}`,
         confidence: 85,
@@ -119,6 +125,7 @@ export function createFallbackResult(
       "Không có dữ liệu nhân sự / ca trực kho trong hệ thống.",
       "Không có dữ liệu về phương tiện và tài xế vận chuyển.",
       "Chưa tích hợp dữ liệu hẹn giao từ dịch vụ khách hàng (CS).",
+      ...(pickupCause ? ["Chưa đủ checkpoint hành trình để xác nhận thời gian từng chặng trung chuyển; kết luận hiện chỉ áp dụng cho đầu lấy."] : []),
     ],
   };
 }
@@ -208,19 +215,42 @@ export function parseRootCauseResult(
     "Không có dữ liệu về phương tiện và tài xế vận chuyển.",
   ];
 
+  if (context.pickupDelayedOrderCount > 0) {
+    defaultLimitations.push(
+      "Chưa đủ checkpoint hành trình để xác nhận thời gian từng chặng trung chuyển; kết luận hiện chỉ áp dụng cho đầu lấy."
+    );
+  }
   const combinedLimitations = Array.from(new Set([...rawLimitations, ...defaultLimitations])).slice(0, 10);
 
   const confidence = typeof obj.confidence === "number"
     ? Math.min(Math.max(obj.confidence, 0), 100)
     : 85;
 
+  const hasDirectPickupEvidence = context.pickupDelayedOrderCount > 0
+    && context.maximumPickupWaitHours !== null
+    && validEvidenceCodes.has("PICKUP_DELAY_DIRECT");
+  const directPickupCause: RootCauseCauseItem | null = hasDirectPickupEvidence
+    ? {
+        title: "Chậm xử lý tại đầu lấy",
+        confidence: 95,
+        evidenceCodes: ["PICKUP_DELAY_DIRECT"],
+        explanation: `${context.pickupDelayedOrderCount} đơn có thời gian từ tạo đến hoàn tất lấy vượt 24 giờ; cao nhất ${context.maximumPickupWaitHours} giờ. Mã kiểm tra: ${context.pickupDelayOrderCodes.join(", ") || "không có"}.`,
+      }
+    : null;
+  const groundedCauses = directPickupCause
+    ? [directPickupCause, ...causes.filter((cause) => !cause.evidenceCodes.includes("PICKUP_DELAY_DIRECT"))].slice(0, 5)
+    : causes;
+  const groundedSummary = directPickupCause
+    ? `Bằng chứng timestamp xác nhận có chậm xử lý tại đầu lấy. ${summary}`
+    : summary;
+
   return {
-    summary,
+    summary: groundedSummary,
     assessment: {
       status: assessmentStatus,
       explanation: assessmentExplanation,
     },
-    causes: causes.length > 0 ? causes : createFallbackResult(context, deterministicRisk).causes,
+    causes: groundedCauses.length > 0 ? groundedCauses : createFallbackResult(context, deterministicRisk).causes,
     investigationSteps:
       investigationSteps.length > 0
         ? investigationSteps

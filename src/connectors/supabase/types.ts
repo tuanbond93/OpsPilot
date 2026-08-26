@@ -49,6 +49,13 @@ export interface OrderSnapshotRow {
   order_created_at?: string | null;
   source_updated_at?: string | null;
   age_hours?: number | null;
+  pick_warehouse_id?: string | null;
+  deliver_warehouse_id?: string | null;
+  service_type_id?: string | null;
+  end_pick_at?: string | null;
+  end_delivery_at?: string | null;
+  end_success_at?: string | null;
+  warehouse_log?: unknown[] | null;
   created_at?: string;
 }
 
@@ -80,6 +87,10 @@ export interface IncidentHistoryRow {
   oldest_order_code?: string | null;
   priority_score: number;
   sample_order_codes: string[];
+  pickup_journey_coverage_percent?: number | null;
+  pickup_delayed_order_count?: number | null;
+  maximum_pickup_wait_hours?: number | null;
+  pickup_delay_order_codes?: string[] | null;
   created_at?: string;
 }
 
@@ -204,4 +215,38 @@ export interface AiAnalysisJobRow {
   last_error?: string | null;
   created_at?: string;
   updated_at?: string;
+}
+
+export type CopilotReviewStatus = "PENDING" | "APPROVED" | "EDITED" | "REJECTED" | "SUPERSEDED";
+
+export interface CopilotRunRow {
+  id: string;
+  incident_id: string;
+  workflow_id: string;
+  prompt_id: string;
+  prompt_version: string;
+  provider?: string | null;
+  model?: string | null;
+  copilot_result: Record<string, unknown>;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface CopilotReviewRow {
+  id: string;
+  run_id: string;
+  incident_id: string;
+  workflow_id: string;
+  status: CopilotReviewStatus;
+  is_active: boolean;
+  reviewed_by?: string | null;
+  rating?: number | null;
+  comment?: string | null;
+  edited_result?: Record<string, unknown> | null;
+  prompt_id: string;
+  prompt_version: string;
+  provider?: string | null;
+  model?: string | null;
+  reviewed_at?: string;
+  created_at?: string;
 }

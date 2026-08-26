@@ -1,5 +1,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { ComponentHealth, HealthCheckable } from "../health";
+import { logger } from "@/observability/logger";
 
 export class RealtimePublisher implements HealthCheckable {
   readonly name = "Realtime";
@@ -36,7 +37,18 @@ export class RealtimePublisher implements HealthCheckable {
     }
 
     // Structured logging fallback for development
-    console.log(`[Realtime Broadcast] Channel: ${channel} | Event: ${event} | Payload:`, JSON.stringify(payload));
+    logger.info({
+      component: "RealtimePublisher",
+      operation: "publish",
+      status: "success",
+      message: `[Realtime Broadcast] Channel: ${channel} | Event: ${event}`,
+      metadata: {
+        channel,
+        event,
+        publishedAt: timestamp,
+        hasClient: false,
+      },
+    });
     this.lastSuccessAt = timestamp;
     return true;
   }

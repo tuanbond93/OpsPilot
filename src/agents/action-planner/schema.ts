@@ -67,6 +67,12 @@ export interface Confidence {
   factors: ConfidenceFactor[];
 }
 
+export interface RecommendationRejectionDetail {
+  recommendationIndex: number;
+  code: string;
+  reason: string;
+}
+
 export interface PlannerResult {
   executiveSummary: string;
 
@@ -84,10 +90,13 @@ export interface PlannerResult {
 
   limitations: string[];
 
+  rejections?: RecommendationRejectionDetail[];
+
   metadata: {
     provider: string;
     model: string;
-    promptVersion: number;
+    promptVersion: string;
     generatedAt: string;
   };
 }
+

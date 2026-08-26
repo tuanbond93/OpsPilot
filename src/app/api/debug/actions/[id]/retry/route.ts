@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { createAdminClient } from "@/connectors/supabase";
 import { ActionQueue } from "@/engine/action-queue";
+import { authorizeApiRequest, readJsonBody, resolveActor } from "@/security/api-security";
 
 export const dynamic = "force-dynamic";
 
@@ -11,6 +12,10 @@ export async function POST(
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
+  const parsed = await readJsonBody(request);
+  if (!parsed.ok) return parsed.response;
+  const access = await authorizeApiRequest(request, "MANAGE_SYSTEM");
+  if (!access.ok) return access.response;
 
   // 1. Governance check: Write controls must be explicitly allowed in production
   const writeControlsEnabled =
@@ -25,14 +30,8 @@ export async function POST(
   }
 
   // 2. Require actor identity
-  let body: any = {};
-  try {
-    body = await request.json();
-  } catch {
-    // Body optional or empty
-  }
-
-  const actor = (body?.actor || body?.requestedBy || body?.confirmedBy || "").trim();
+  const body = parsed.body;
+  const actor = resolveActor(access.identity, body.actor || body.requestedBy || body.confirmedBy);
   if (!actor) {
     return NextResponse.json(
       { error: "ActorRequired", message: "Explicit actor/requestedBy identity is required for write controls." },

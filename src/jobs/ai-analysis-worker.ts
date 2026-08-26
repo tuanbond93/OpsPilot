@@ -1,6 +1,8 @@
 import { createAdminClient } from "@/connectors/supabase";
 import { ServiceFactory } from "@/services/ServiceFactory";
-
+import { AIWorkflowService } from "@/workflow/AIWorkflowService";
+import { logger } from '@/observability/logger';
+import { ErrorCode } from '@/observability/errorCodes';
 export interface WorkerProcessResult {
   processedCount: number;
   completedCount: number;
@@ -48,9 +50,44 @@ export class AiAnalysisWorker {
     try {
       const aiWorkerService = ServiceFactory.getAiWorkerService(dbClient);
       const result = await aiWorkerService.processPendingJobs(workerId, maxJobs);
+
+      // New orchestration: run AIWorkflowService for each incident returned.
+      for (const job of result.jobs) {
+        try {
+          const workflow = new AIWorkflowService(undefined, dbClient);
+          const wfResult = await workflow.execute(job.incidentId);
+          logger.info({
+            component: 'AiAnalysisWorker',
+            operation: 'runWorkflow',
+            incidentId: job.incidentId,
+            workflowId: wfResult.workflowId,
+            finalState: wfResult.state,
+          });
+        } catch (wfErr: unknown) {
+          logger.error({
+            component: 'AiAnalysisWorker',
+            operation: 'runWorkflow',
+            incidentId: job.incidentId,
+            status: 'error',
+            message: '[AiAnalysisWorker] Workflow execution failed',
+            errorCode: ErrorCode.AI_WORKFLOW_FAILED,
+            error: wfErr instanceof Error ? wfErr : new Error(String(wfErr)),
+          });
+        }
+      }
+
       return result;
-    } catch (err: unknown) {
-      console.error("[AiAnalysisWorker] Critical error processing jobs:", err);
+    }
+    catch (err: unknown) {
+      logger.error({
+        component: "AiAnalysisWorker",
+        operation: "processPendingJobs",
+        status: "error",
+        message: "[AiAnalysisWorker] Critical error processing jobs",
+        errorCode: ErrorCode.AI_JOB_PROCESSING_FAILED,
+        error: err instanceof Error ? err : new Error(String(err)),
+        metadata: {}
+      });
       return {
         processedCount: 0,
         completedCount: 0,

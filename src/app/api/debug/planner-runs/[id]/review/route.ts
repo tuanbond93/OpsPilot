@@ -1,6 +1,8 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { createAdminClient } from "@/connectors/supabase";
 import { ServiceFactory } from "@/services/ServiceFactory";
+import { readJsonBody, resolveActor } from "@/security/api-security";
+import { authorizeLinkedIncidentScope } from "@/security/scope-guard";
 
 export const dynamic = "force-dynamic";
 
@@ -11,10 +13,14 @@ export async function POST(
   const { id } = await params;
 
   try {
-    const body = await request.json().catch(() => ({}));
-    const decision = body.decision;
-    const reviewedBy = body.reviewedBy;
-    const note = body.note;
+    const parsed = await readJsonBody(request);
+    if (!parsed.ok) return parsed.response;
+    const scoped = await authorizeLinkedIncidentScope(request, "planner_runs", id, "REVIEW_COPILOT", { limit: 30, windowMs: 60_000 });
+    if (!scoped.ok) return scoped.response;
+    const body = parsed.body;
+    const decision = typeof body.decision === "string" ? body.decision : "";
+    const reviewedBy = resolveActor(scoped.identity, body.reviewedBy);
+    const note = typeof body.note === "string" ? body.note.slice(0, 5000) : undefined;
 
     let dbClient;
     try {

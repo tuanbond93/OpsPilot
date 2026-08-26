@@ -1,5 +1,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { ProjectionResult } from "./projection-engine";
+import { logger } from "@/observability/logger";
 
 export interface WarehouseSummaryDto {
   warehouse_id: string;
@@ -22,7 +23,6 @@ export interface WarehouseSummaryDto {
  */
 export async function projectWarehouse(client: SupabaseClient): Promise<ProjectionResult> {
   const startTime = Date.now();
-  console.log("[Projection][Warehouse] started");
 
   try {
     // 1. Fetch latest successful sync run ID to get the current list of warehouses and order counts.
@@ -39,9 +39,6 @@ export async function projectWarehouse(client: SupabaseClient): Promise<Projecti
     }
 
     if (!latestSync) {
-      // No successful sync runs yet - nothing to project.
-      console.log("[Projection][Warehouse] finished rowsUpdated=0");
-      console.log("[Projection][Warehouse] rows.length == 0: No successful sync runs found in the database");
       return {
         status: "success",
         rowsUpdated: 0,
@@ -63,8 +60,6 @@ export async function projectWarehouse(client: SupabaseClient): Promise<Projecti
     }
 
     if (!snapshotWarehouses || snapshotWarehouses.length === 0) {
-      console.log("[Projection][Warehouse] finished rowsUpdated=0");
-      console.log("[Projection][Warehouse] rows.length == 0: No order snapshots found for the latest successful sync run: " + syncRunId);
       return {
         status: "success",
         rowsUpdated: 0,
@@ -95,11 +90,8 @@ export async function projectWarehouse(client: SupabaseClient): Promise<Projecti
     }
 
     const warehouseIds = Array.from(warehouseMap.keys());
-    console.log("Warehouse count: " + warehouseIds.length);
 
     if (warehouseIds.length === 0) {
-      console.log("[Projection][Warehouse] finished rowsUpdated=0");
-      console.log("[Projection][Warehouse] rows.length == 0: Deduplicated warehouseIds list is empty");
       return {
         status: "success",
         rowsUpdated: 0,
@@ -203,41 +195,65 @@ export async function projectWarehouse(client: SupabaseClient): Promise<Projecti
       });
     }
 
-    console.log("DTO count: " + dtos.length);
     if (dtos.length === 0) {
-      console.log("[Projection][Warehouse] rows.length == 0: constructed dtos array is empty");
+      return {
+        status: "success",
+        rowsUpdated: 0,
+        durationMs: Date.now() - startTime,
+      };
     }
 
     // 5. Invoke the RPC
-    console.log("Calling RPC...");
     const { error: rpcError } = await client.rpc("upsert_warehouse_summary", {
       rows: dtos,
       present_ids: warehouseIds,
     });
 
     if (rpcError) {
-      console.error("Full RPC Error Object:", JSON.stringify(rpcError, null, 2));
       throw new Error(`RPC upsert_warehouse_summary failed: ${rpcError.message}`);
     }
 
-    console.log("RPC success");
     const rowsUpdated = dtos.length;
-    console.log(`rowsUpdated=${rowsUpdated}`);
-    console.log("[Projection][Warehouse] finished");
+    const durationMs = Date.now() - startTime;
+
+    logger.info({
+      component: "WarehouseProjection",
+      operation: "projectWarehouse",
+      status: "success",
+      message: `[Projection][Warehouse] finished rowsUpdated=${rowsUpdated}`,
+      durationMs,
+      metadata: {
+        rowsProcessed: snapshotWarehouses.length,
+        rowsUpdated,
+        syncRunId,
+      },
+    });
 
     return {
       status: "success",
       rowsUpdated,
-      durationMs: Date.now() - startTime,
+      durationMs,
     };
   } catch (error: any) {
     const errorMessage = error.message || String(error);
-    console.error(`[Projection][Warehouse] failed ${errorMessage}`, error);
+    const durationMs = Date.now() - startTime;
+    const errorCode = error.code || "PROJECTION_REFRESH_FAILED";
+
+    logger.error({
+      component: "WarehouseProjection",
+      operation: "projectWarehouse",
+      status: "failed",
+      message: `[Projection][Warehouse] failed ${errorMessage}`,
+      durationMs,
+      errorCode,
+      error,
+    });
+
     return {
       status: "failed",
       rowsUpdated: 0,
-      durationMs: Date.now() - startTime,
-      errorCode: error.code || "PROJECTION_ERROR",
+      durationMs,
+      errorCode,
       errorMessage,
     };
   }

@@ -21,7 +21,7 @@ export interface GenerateOptions {
 
 export interface PromptMetadata {
   name: string;
-  version: number;
+  version: string;
   language: string;
   content: string;
 }

@@ -1,0 +1,91 @@
+{
+  "id": "planner_1_backlog",
+  "name": "Planner Backlog Resolution Plan",
+  "incident": {
+    "id": "inc-101",
+    "incident_key": "21160000:KHO_TON",
+    "warehouse_id": "21160000",
+    "warehouse_name": "Kho Phú Thọ",
+    "reason_code": "CUSTOMER_APPOINTMENT",
+    "reason_name": "Kho tồn",
+    "status": "open",
+    "priority_score": 85,
+    "first_detected_at": "2026-08-05T00:00:00Z",
+    "last_detected_at": "2026-08-06T12:00:00Z",
+    "affected_order_count": 150,
+    "average_age_hours": 48.0,
+    "maximum_age_hours": 96.0
+  },
+  "historyRows": [
+    { "id": 1, "incident_id": "inc-101", "recorded_at": "2026-08-05T00:00:00Z", "affected_order_count": 150 },
+    { "id": 2, "incident_id": "inc-101", "recorded_at": "2026-08-05T06:00:00Z", "affected_order_count": 150 },
+    { "id": 3, "incident_id": "inc-101", "recorded_at": "2026-08-05T12:00:00Z", "affected_order_count": 150 },
+    { "id": 4, "incident_id": "inc-101", "recorded_at": "2026-08-06T00:00:00Z", "affected_order_count": 150 },
+    { "id": 5, "incident_id": "inc-101", "recorded_at": "2026-08-06T12:00:00Z", "affected_order_count": 150 }
+  ],
+  "rootCauseResult": {
+    "confidence": 85,
+    "causes": [
+      {
+        "title": "Tồn đọng",
+        "confidence": 85,
+        "evidenceCodes": ["MAXIMUM_AGE_HOURS", "CURRENT_AFFECTED_COUNT"],
+        "explanation": ""
+      }
+    ]
+  },
+  "expected": {
+    "expectedRecommendationCount": 2,
+    "expectedTypes": ["PRIORITIZE_OLD_ORDERS", "CONTACT_WAREHOUSE"],
+    "expectedTargetRoles": ["WAREHOUSE_DISPATCHER", "OPERATIONS_LEAD"],
+    "expectedConfidence": 85,
+    "confidenceTolerance": 15
+  },
+  "mockAiResponse": {
+    "executiveSummary": "Tải đơn bùng nổ kho Phú Thọ",
+    "overallPriority": "high",
+    "recommendations": [
+      {
+        "id": "rec-1",
+        "type": "PRIORITIZE_OLD_ORDERS",
+        "title": "Ưu tiên đơn tồn kho Phú Thọ",
+        "description": "Điều chuyển 50 đơn đọng quá 48h sang khâu xử lý ưu tiên",
+        "priority": "high",
+        "targetRole": "WAREHOUSE_DISPATCHER",
+        "rationale": "Giảm tải cho kho",
+        "evidenceCodes": ["CURRENT_AFFECTED_COUNT", "MAXIMUM_AGE_HOURS"],
+        "riskImpact": {
+          "severity": "high",
+          "potentialConsequence": "Trễ đơn dài hạn"
+        },
+        "prerequisiteData": ["Danh sách ca trực"],
+        "manualApprovalRequired": true
+      },
+      {
+        "id": "rec-2",
+        "type": "CONTACT_WAREHOUSE",
+        "title": "Liên hệ kho",
+        "description": "Yêu cầu tăng cường ca đêm",
+        "priority": "medium",
+        "targetRole": "OPERATIONS_LEAD",
+        "rationale": "Xử lý hàng đọng",
+        "evidenceCodes": ["MAXIMUM_AGE_HOURS"],
+        "riskImpact": {
+          "severity": "medium",
+          "potentialConsequence": "Tăng chi phí ca đêm"
+        },
+        "prerequisiteData": ["Mã kho"],
+        "manualApprovalRequired": true
+      }
+    ],
+    "investigations": [],
+    "blockedOptions": [],
+    "nextReview": {
+      "source": "PLANNER_POLICY",
+      "reviewAt": "2026-08-07T00:00:00Z",
+      "reviewAfterMinutes": 60,
+      "rationale": "Theo dõi tiến độ"
+    },
+    "limitations": []
+  }
+}

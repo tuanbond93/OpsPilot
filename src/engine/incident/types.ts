@@ -80,4 +80,10 @@ export interface Incident {
   averageAgeHours: number | null;
   maximumAgeHours: number | null;
   oldestOrderCode: string | null;
+  pickupJourneyCoveragePercent?: number;
+  pickupDelayedOrderCount?: number;
+  maximumPickupWaitHours?: number | null;
+  pickupDelayOrderCodes?: string[];
+  pickupDelayedCustomerBreakdown?: Array<{ name: string; count: number }>;
+  pickupDelayedWarehouseBreakdown?: Array<{ id: string; name: string; count: number }>;
 }

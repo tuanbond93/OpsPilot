@@ -1,0 +1,31 @@
+# Local dependencies and temporary recovery copies
+node_modules
+node_modules_*
+
+# Local Next.js build and cache artifacts
+.next
+.next-*
+out
+build
+
+# Local reports, coverage, and rendered inspection assets
+coverage
+tmp
+
+# Local configuration and secrets
+.env
+.env*.local
+
+# Repository- and editor-only metadata
+.git
+.github
+.agents
+.codex
+.vscode
+.idea
+
+# Local logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*

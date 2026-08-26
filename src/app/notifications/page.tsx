@@ -1,6 +1,8 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import { handleApiAccess } from "@/app/_components/apiAccess";
+import { useOpsSession } from "@/app/_components/useOpsSession";
 
 interface ActionItem {
   id: string;
@@ -31,7 +33,11 @@ interface ProviderHealthItem {
   details?: string;
 }
 
+const actionStatusLabel: Record<string,string>={PENDING:"Đang chờ",PROCESSING:"Đang xử lý",SENT:"Đã gửi",SIMULATED:"Mô phỏng",FAILED:"Thất bại",CANCELLED:"Đã hủy"};
+const providerStatusLabel: Record<string,string>={Healthy:"Ổn định",Degraded:"Suy giảm",Offline:"Ngoại tuyến"};
+
 export default function NotificationsDashboard() {
+  const session = useOpsSession();
   const [actions, setActions] = useState<ActionItem[]>([]);
   const [providers, setProviders] = useState<ProviderHealthItem[]>([]);
   const [metrics, setMetrics] = useState<Record<string, number>>({});
@@ -39,10 +45,12 @@ export default function NotificationsDashboard() {
   const [statusFilter, setStatusFilter] = useState<string>("ALL");
   const [searchQuery, setSearchQuery] = useState<string>("");
   const [operatingId, setOperatingId] = useState<string | null>(null);
+  const [error, setError] = useState("");
 
   async function loadData() {
     try {
       setLoading(true);
+      setError("");
       const [actionsRes, providersRes] = await Promise.all([
         fetch("/api/debug/actions"),
         fetch("/api/debug/providers"),
@@ -51,11 +59,14 @@ export default function NotificationsDashboard() {
       const actionsJson = await actionsRes.json();
       const providersJson = await providersRes.json();
 
+      handleApiAccess(actionsRes, actionsJson, "Không thể tải hàng đợi thông báo.");
+      handleApiAccess(providersRes, providersJson, "Không thể tải trạng thái nhà cung cấp.");
+
       setActions(actionsJson.actions || []);
       setMetrics(actionsJson.metrics || {});
       setProviders(providersJson.providers || []);
-    } catch (err: unknown) {
-      console.error("Failed to load notifications data", err);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught));
     } finally {
       setLoading(false);
     }
@@ -69,10 +80,11 @@ export default function NotificationsDashboard() {
     try {
       setOperatingId(actionId);
       const res = await fetch(`/api/debug/actions/${actionId}/retry`, { method: "POST" });
-      if (!res.ok) throw new Error("Retry failed");
+      const payload = await res.json();
+      handleApiAccess(res, payload, "Không thể thử gửi lại.");
       await loadData();
     } catch (err: unknown) {
-      alert(`Retry Error: ${err instanceof Error ? err.message : String(err)}`);
+      setError(err instanceof Error ? err.message : String(err));
     } finally {
       setOperatingId(null);
     }
@@ -82,10 +94,11 @@ export default function NotificationsDashboard() {
     try {
       setOperatingId(actionId);
       const res = await fetch(`/api/debug/actions/${actionId}/cancel`, { method: "POST" });
-      if (!res.ok) throw new Error("Cancel failed");
+      const payload = await res.json();
+      handleApiAccess(res, payload, "Không thể hủy action.");
       await loadData();
     } catch (err: unknown) {
-      alert(`Cancel Error: ${err instanceof Error ? err.message : String(err)}`);
+      setError(err instanceof Error ? err.message : String(err));
     } finally {
       setOperatingId(null);
     }
@@ -97,13 +110,13 @@ export default function NotificationsDashboard() {
       const res = await fetch(`/api/debug/actions/${actionId}/confirm`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ confirmedBy: "Dashboard Operator" }),
+        body: JSON.stringify({ confirmedBy: session.actor }),
       });
       const json = await res.json();
-      if (!res.ok) throw new Error(json.message || "Manual confirmation failed");
+      handleApiAccess(res, json, "Không thể xác nhận delivery.");
       await loadData();
     } catch (err: unknown) {
-      alert(`Confirmation Error: ${err instanceof Error ? err.message : String(err)}`);
+      setError(err instanceof Error ? err.message : String(err));
     } finally {
       setOperatingId(null);
     }
@@ -120,34 +133,37 @@ export default function NotificationsDashboard() {
   });
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 p-6 max-w-6xl mx-auto space-y-8">
+    <main id="main-content" tabIndex={-1} className="min-h-dvh bg-slate-950 text-slate-100 p-6 max-w-6xl mx-auto space-y-8">
       <header className="border-b border-slate-800 pb-4 flex items-center justify-between">
         <div>
           <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-indigo-500/10 border border-indigo-500/20 text-indigo-400 text-xs font-semibold uppercase tracking-wider mb-2">
-            Notification Platform & Action Governance (Sprint 5 Hardened)
+            Trung tâm thông báo và kiểm soát action
           </div>
-          <h1 className="text-3xl font-extrabold text-slate-100">Notification Center</h1>
+          <h1 className="text-3xl font-extrabold text-slate-100">Trung tâm thông báo</h1>
           <p className="text-sm text-slate-400">
-            Decoupled asynchronous message queue with atomic claiming and audit events
+            Theo dõi hàng đợi gửi bất đồng bộ, trạng thái nhà cung cấp và lịch sử xử lý.
           </p>
         </div>
         <button
           onClick={loadData}
           className="px-4 py-2 bg-slate-900 hover:bg-slate-800 border border-slate-800 text-xs font-semibold rounded-xl text-slate-300 transition"
         >
-          Refresh Queue
+          Làm mới hàng đợi
         </button>
       </header>
 
+      {error && <p role="alert" className="rounded-xl border border-rose-500/40 bg-rose-500/10 p-4 text-sm text-rose-100">{error}</p>}
+      {!session.loading && !session.can("MANAGE_SYSTEM") && <p role="status" className="rounded-xl border border-amber-500/30 bg-amber-500/5 p-4 text-sm text-amber-100">Vai trò {session.role} được xem hàng đợi nhưng không có quyền retry, cancel hoặc xác nhận delivery.</p>}
+
       {/* Provider Health Section */}
       <section className="space-y-3">
-        <h2 className="text-sm font-bold text-slate-300 uppercase tracking-wider">Registered Notification Providers</h2>
+        <h2 className="text-sm font-bold text-slate-300 uppercase tracking-wider">Nhà cung cấp thông báo</h2>
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
           {providers.map((p) => (
             <div key={p.name} className="p-4 bg-slate-900 border border-slate-800 rounded-2xl flex items-center justify-between">
               <div>
                 <span className="font-bold text-sm text-slate-100 capitalize block">{p.name} Provider</span>
-                <span className="text-xs text-slate-400 block mt-0.5">{p.details || "Ready"}</span>
+                <span className="text-xs text-slate-400 block mt-0.5">{p.details || "Sẵn sàng"}</span>
               </div>
               <span
                 className={`text-xs font-extrabold uppercase px-2.5 py-1 rounded-full border ${
@@ -158,7 +174,7 @@ export default function NotificationsDashboard() {
                     : "bg-rose-500/10 text-rose-400 border-rose-500/20"
                 }`}
               >
-                {p.status}
+                {providerStatusLabel[p.status]||p.status}
               </span>
             </div>
           ))}
@@ -168,31 +184,31 @@ export default function NotificationsDashboard() {
       {/* Metrics Row */}
       <div className="grid grid-cols-2 sm:grid-cols-7 gap-2 text-xs">
         <div className="p-3 bg-slate-900 rounded-xl border border-slate-800">
-          <span className="text-slate-400 block font-semibold">Total Actions</span>
+          <span className="text-slate-400 block font-semibold">Tổng action</span>
           <span className="text-lg font-bold text-slate-100 mt-1 block">{metrics.total || 0}</span>
         </div>
         <div className="p-3 bg-slate-900 rounded-xl border border-slate-800">
-          <span className="text-amber-400 block font-semibold">Pending</span>
+          <span className="text-amber-400 block font-semibold">Đang chờ</span>
           <span className="text-lg font-bold text-amber-300 mt-1 block">{metrics.pending || 0}</span>
         </div>
         <div className="p-3 bg-slate-900 rounded-xl border border-slate-800">
-          <span className="text-blue-400 block font-semibold">Processing</span>
+          <span className="text-blue-400 block font-semibold">Đang xử lý</span>
           <span className="text-lg font-bold text-blue-300 mt-1 block">{metrics.processing || 0}</span>
         </div>
         <div className="p-3 bg-slate-900 rounded-xl border border-slate-800">
-          <span className="text-emerald-400 block font-semibold">Sent (Delivered)</span>
+          <span className="text-emerald-400 block font-semibold">Đã gửi</span>
           <span className="text-lg font-bold text-emerald-300 mt-1 block">{metrics.sent || 0}</span>
         </div>
         <div className="p-3 bg-slate-900 rounded-xl border border-slate-800">
-          <span className="text-purple-400 block font-semibold">Simulated</span>
+          <span className="text-purple-400 block font-semibold">Mô phỏng</span>
           <span className="text-lg font-bold text-purple-300 mt-1 block">{metrics.simulated || 0}</span>
         </div>
         <div className="p-3 bg-slate-900 rounded-xl border border-slate-800">
-          <span className="text-rose-400 block font-semibold">Failed</span>
+          <span className="text-rose-400 block font-semibold">Thất bại</span>
           <span className="text-lg font-bold text-rose-300 mt-1 block">{metrics.failed || 0}</span>
         </div>
         <div className="p-3 bg-slate-900 rounded-xl border border-slate-800">
-          <span className="text-slate-500 block font-semibold">Cancelled</span>
+          <span className="text-slate-500 block font-semibold">Đã hủy</span>
           <span className="text-lg font-bold text-slate-400 mt-1 block">{metrics.cancelled || 0}</span>
         </div>
       </div>
@@ -217,7 +233,7 @@ export default function NotificationsDashboard() {
 
         <input
           type="text"
-          placeholder="Search by action, provider, or target..."
+          placeholder="Tìm theo action, nhà cung cấp hoặc đối tượng..."
           value={searchQuery}
           onChange={(e) => setSearchQuery(e.target.value)}
           className="w-full sm:w-64 px-3 py-1.5 bg-slate-950 border border-slate-800 rounded-xl text-xs text-slate-200 focus:outline-none focus:border-indigo-500"
@@ -226,7 +242,7 @@ export default function NotificationsDashboard() {
 
       {/* Action Queue List */}
       {loading ? (
-        <div className="p-8 text-center text-slate-500 animate-pulse">Loading action queue...</div>
+        <div className="p-8 text-center text-slate-500 animate-pulse">Đang tải hàng đợi action…</div>
       ) : (
         <div className="space-y-4">
           {filteredActions.map((a) => {
@@ -262,36 +278,36 @@ export default function NotificationsDashboard() {
                           : "bg-slate-800 text-slate-400 border-slate-700"
                       }`}
                     >
-                      {a.status}
+                      {actionStatusLabel[a.status]||a.status}
                     </span>
 
-                    {isSimulated && (
+                    {isSimulated && session.can("MANAGE_SYSTEM") && (
                       <button
                         onClick={() => handleConfirmSimulated(a.id)}
                         disabled={operatingId === a.id}
                         className="px-3 py-1 bg-indigo-500 hover:bg-indigo-400 text-slate-950 font-bold text-xs rounded-xl shadow transition"
                       >
-                        {operatingId === a.id ? "Confirming..." : "Confirm Delivery (Dev)"}
+                        {operatingId === a.id ? "Đang xác nhận…" : "Xác nhận delivery"}
                       </button>
                     )}
 
-                    {isFailed && (
+                    {isFailed && session.can("MANAGE_SYSTEM") && (
                       <button
                         onClick={() => handleRetry(a.id)}
                         disabled={operatingId === a.id}
                         className="px-3 py-1 bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs rounded-xl shadow transition"
                       >
-                        {operatingId === a.id ? "Retrying..." : "Retry"}
+                        {operatingId === a.id ? "Đang thử lại…" : "Thử gửi lại"}
                       </button>
                     )}
 
-                    {isPending && (
+                    {isPending && session.can("MANAGE_SYSTEM") && (
                       <button
                         onClick={() => handleCancel(a.id)}
                         disabled={operatingId === a.id}
                         className="px-3 py-1 bg-rose-500/20 hover:bg-rose-500/30 text-rose-400 border border-rose-500/30 font-semibold text-xs rounded-xl transition"
                       >
-                        {operatingId === a.id ? "Cancelling..." : "Cancel"}
+                        {operatingId === a.id ? "Đang hủy…" : "Hủy"}
                       </button>
                     )}
                   </div>
@@ -299,27 +315,27 @@ export default function NotificationsDashboard() {
 
                 <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 text-xs text-slate-400">
                   <div>
-                    <span className="block text-slate-500">Target</span>
+                    <span className="block text-slate-500">Đối tượng</span>
                     <span className="text-slate-200 font-medium">{a.target_type}:{a.target_id || "global"}</span>
                   </div>
                   <div>
-                    <span className="block text-slate-500">Outcome</span>
+                    <span className="block text-slate-500">Kết quả</span>
                     <span className="text-slate-200 font-medium uppercase">{a.outcome || a.status}</span>
                   </div>
                   <div>
-                    <span className="block text-slate-500">Message ID</span>
+                    <span className="block text-slate-500">Mã thông điệp</span>
                     <span className="text-slate-200 font-mono text-[11px] truncate block">
                       {a.provider_message_id || "N/A"}
                     </span>
                   </div>
                   <div>
-                    <span className="block text-slate-500">Retries</span>
+                    <span className="block text-slate-500">Số lần thử lại</span>
                     <span className="text-slate-200 font-medium">{a.retry_count} / {a.max_retry}</span>
                   </div>
                   <div>
-                    <span className="block text-slate-500">Lock Info</span>
+                    <span className="block text-slate-500">Thông tin khóa</span>
                     <span className="text-slate-300 font-mono text-[11px] truncate block">
-                      {a.locked_by ? `${a.locked_by}` : "Unlocked"}
+                      {a.locked_by ? `${a.locked_by}` : "Không khóa"}
                     </span>
                   </div>
                 </div>
@@ -333,7 +349,7 @@ export default function NotificationsDashboard() {
                 {a.payload && (
                   <details className="text-xs text-slate-400 cursor-pointer">
                     <summary className="hover:text-slate-200 font-semibold select-none">
-                      Inspect Payload & Provider Response
+                      Xem payload và phản hồi nhà cung cấp
                     </summary>
                     <pre className="mt-2 p-3 bg-slate-950 rounded-xl border border-slate-800 font-mono text-[11px] overflow-x-auto text-slate-300">
                       {JSON.stringify({ payload: a.payload, provider_response: a.provider_response }, null, 2)}
@@ -346,11 +362,11 @@ export default function NotificationsDashboard() {
 
           {filteredActions.length === 0 && (
             <div className="p-8 text-center text-slate-500 bg-slate-900 border border-slate-800 rounded-2xl">
-              No notification actions found matching your criteria.
+              Không có action thông báo phù hợp bộ lọc.
             </div>
           )}
         </div>
       )}
-    </div>
+    </main>
   );
 }

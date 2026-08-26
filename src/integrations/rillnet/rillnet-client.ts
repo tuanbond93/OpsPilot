@@ -1,6 +1,7 @@
 import type { ComponentHealth, HealthCheckable } from "../health";
 import { SecretProvider } from "../secrets";
 import { RillnetErrorCode, RillnetDownloadError } from "./errors";
+import { logger } from "@/observability/logger";
 
 export { RillnetErrorCode, RillnetDownloadError };
 
@@ -223,12 +224,33 @@ export class RillnetClient implements HealthCheckable {
         const totalDurationMs = Math.round(performance.now() - totalStart);
 
         const sanitizeUrl = (u: string) => u.split("?")[0];
-        console.log(
-          `[ RillnetDownload ] attempt=${attempts} stage=body durationMs=${durationMs} status=success bytes=${buffer.byteLength} urlRefreshed=false remainingDeadlineMs=${this.totalDeadlineMs - totalDurationMs}`
-        );
-        console.log(
-          `[ RillnetDownload Summary ] attempts=${attempts} | urlRefreshes=${urlRefreshes} | totalDurationMs=${totalDurationMs} | downloadBytes=${buffer.byteLength} | result=success | finalErrorCode=none`
-        );
+        logger.info({
+          component: "RillnetClient",
+          operation: "downloadSnapshot",
+          status: "success",
+          message: `[ RillnetDownload ] attempt=${attempts} stage=body durationMs=${durationMs} status=success bytes=${buffer.byteLength} urlRefreshed=false remainingDeadlineMs=${this.totalDeadlineMs - totalDurationMs}`,
+          durationMs,
+          metadata: {
+            attempt: attempts,
+            retryCount: attempts - 1,
+            urlRefreshCount: urlRefreshes,
+            bytes: buffer.byteLength,
+            remainingDeadlineMs: this.totalDeadlineMs - totalDurationMs,
+          },
+        });
+        logger.info({
+          component: "RillnetClient",
+          operation: "downloadSnapshot",
+          status: "success",
+          message: `[ RillnetDownload Summary ] attempts=${attempts} | urlRefreshes=${urlRefreshes} | totalDurationMs=${totalDurationMs} | downloadBytes=${buffer.byteLength} | result=success | finalErrorCode=none`,
+          durationMs: totalDurationMs,
+          metadata: {
+            attempts,
+            urlRefreshes,
+            downloadBytes: buffer.byteLength,
+            finalErrorCode: "none",
+          },
+        });
 
         this.lastSuccessAt = new Date().toISOString();
         return {
@@ -256,9 +278,20 @@ export class RillnetClient implements HealthCheckable {
         if (downloadErr.code === RillnetErrorCode.SIGNED_URL_EXPIRED_OR_INVALID && urlRefreshes < this.maxUrlRefreshes) {
           urlRefreshes++;
           const remMs = Math.max(0, this.totalDeadlineMs - Math.round(performance.now() - totalStart));
-          console.warn(
-            `[ RillnetDownload ] attempt=${attempts} stage=url durationMs=${durationMs} status=retry errorCode=${downloadErr.code} urlRefreshed=true remainingDeadlineMs=${remMs}`
-          );
+          logger.warn({
+            component: "RillnetClient",
+            operation: "downloadSnapshot",
+            status: "retry",
+            message: `[ RillnetDownload ] attempt=${attempts} stage=url durationMs=${durationMs} status=retry errorCode=${downloadErr.code} urlRefreshed=true remainingDeadlineMs=${remMs}`,
+            durationMs,
+            errorCode: downloadErr.code,
+            metadata: {
+              attempt: attempts,
+              retryCount: attempts - 1,
+              urlRefreshed: true,
+              remainingDeadlineMs: remMs,
+            },
+          });
 
           try {
             const fresh = await this.requestSnapshotUrl();
@@ -266,16 +299,32 @@ export class RillnetClient implements HealthCheckable {
             currentUpdatedAt = fresh.updatedAt;
             continue; // Immediately retry with fresh URL
           } catch (urlErr: any) {
-            console.warn(`[ RillnetDownload ] URL refresh failed: ${urlErr?.message || String(urlErr)}`);
+            logger.warn({
+              component: "RillnetClient",
+              operation: "requestSnapshotUrl",
+              status: "error",
+              message: `[ RillnetDownload ] URL refresh failed: ${urlErr?.message || String(urlErr)}`,
+              error: urlErr,
+            });
           }
         }
 
         // Non-retryable error fails immediately
         if (!isRetryable) {
           const remMs = Math.max(0, this.totalDeadlineMs - Math.round(performance.now() - totalStart));
-          console.error(
-            `[ RillnetDownload ] attempt=${attempts} stage=body durationMs=${durationMs} status=failed errorCode=${downloadErr.code} urlRefreshed=false remainingDeadlineMs=${remMs}`
-          );
+          logger.error({
+            component: "RillnetClient",
+            operation: "downloadSnapshot",
+            status: "failed",
+            message: `[ RillnetDownload ] attempt=${attempts} stage=body durationMs=${durationMs} status=failed errorCode=${downloadErr.code} urlRefreshed=false remainingDeadlineMs=${remMs}`,
+            durationMs,
+            errorCode: downloadErr.code,
+            error: downloadErr,
+            metadata: {
+              attempt: attempts,
+              remainingDeadlineMs: remMs,
+            },
+          });
           break;
         }
 
@@ -284,9 +333,19 @@ export class RillnetClient implements HealthCheckable {
 
         if (attempts >= this.maxRetries || currentRemaining <= 0) {
           const finalCode = currentRemaining <= 0 ? RillnetErrorCode.TOTAL_DOWNLOAD_DEADLINE_EXCEEDED : downloadErr.code;
-          console.error(
-            `[ RillnetDownload ] attempt=${attempts} stage=body durationMs=${durationMs} status=failed errorCode=${finalCode} urlRefreshed=false remainingDeadlineMs=${Math.max(0, currentRemaining)}`
-          );
+          logger.error({
+            component: "RillnetClient",
+            operation: "downloadSnapshot",
+            status: "failed",
+            message: `[ RillnetDownload ] attempt=${attempts} stage=body durationMs=${durationMs} status=failed errorCode=${finalCode} urlRefreshed=false remainingDeadlineMs=${Math.max(0, currentRemaining)}`,
+            durationMs,
+            errorCode: finalCode,
+            error: downloadErr,
+            metadata: {
+              attempt: attempts,
+              remainingDeadlineMs: Math.max(0, currentRemaining),
+            },
+          });
           break;
         }
 
@@ -295,9 +354,19 @@ export class RillnetClient implements HealthCheckable {
         const delayMs = Math.min(baseDelay + jitter, currentRemaining);
         baseDelay *= 2;
 
-        console.warn(
-          `[ RillnetDownload ] attempt=${attempts} stage=body durationMs=${durationMs} status=retry errorCode=${downloadErr.code} bytes=0 urlRefreshed=false remainingDeadlineMs=${currentRemaining}`
-        );
+        logger.warn({
+          component: "RillnetClient",
+          operation: "downloadSnapshot",
+          status: "retry",
+          message: `[ RillnetDownload ] attempt=${attempts} stage=body durationMs=${durationMs} status=retry errorCode=${downloadErr.code} bytes=0 urlRefreshed=false remainingDeadlineMs=${currentRemaining}`,
+          durationMs,
+          errorCode: downloadErr.code,
+          metadata: {
+            attempt: attempts,
+            bytes: 0,
+            remainingDeadlineMs: currentRemaining,
+          },
+        });
 
         await new Promise((resolve) => setTimeout(resolve, delayMs));
       }
@@ -308,9 +377,21 @@ export class RillnetClient implements HealthCheckable {
       lastError ||
       new RillnetDownloadError(RillnetErrorCode.TOTAL_DOWNLOAD_DEADLINE_EXCEEDED, "Rillnet acquisition failed");
 
-    console.error(
-      `[ RillnetDownload Summary ] attempts=${attempts} | urlRefreshes=${urlRefreshes} | totalDurationMs=${totalDurationMs} | downloadBytes=0 | result=failed | finalErrorCode=${finalErr.code}`
-    );
+    logger.error({
+      component: "RillnetClient",
+      operation: "downloadSnapshot",
+      status: "failed",
+      message: `[ RillnetDownload Summary ] attempts=${attempts} | urlRefreshes=${urlRefreshes} | totalDurationMs=${totalDurationMs} | downloadBytes=0 | result=failed | finalErrorCode=${finalErr.code}`,
+      durationMs: totalDurationMs,
+      errorCode: finalErr.code,
+      error: finalErr,
+      metadata: {
+        attempts,
+        urlRefreshes,
+        downloadBytes: 0,
+        finalErrorCode: finalErr.code,
+      },
+    });
 
     throw finalErr;
   }
@@ -349,8 +430,20 @@ export class RillnetClient implements HealthCheckable {
         );
       }
 
+      let resolvedDownloadUrl: string;
+      try {
+        resolvedDownloadUrl = new URL(downloadUrl, this.endpointApi).toString();
+      } catch (urlError: any) {
+        throw new RillnetDownloadError(
+          RillnetErrorCode.MALFORMED_SNAPSHOT,
+          `Response contained an invalid snapshot download URL: ${urlError.message}`,
+          undefined,
+          urlError
+        );
+      }
+
       return {
-        downloadUrl,
+        downloadUrl: resolvedDownloadUrl,
         updatedAt: data.liveUpdated || data.updated || new Date().toISOString(),
       };
     } catch (err: any) {

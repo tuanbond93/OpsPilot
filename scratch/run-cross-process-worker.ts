@@ -2,6 +2,9 @@ import { SyncService } from "../src/services/impl/SyncService";
 import { MockSyncRunRepository } from "../src/repositories/mock/MockSyncRunRepository";
 import { MockIncidentRepository } from "../src/repositories/mock/MockIncidentRepository";
 import type { SyncPhase } from "../src/connectors/supabase/types";
+import { installRillnetFetchFixture } from "../src/__tests__/fixtures/rillnet-fetch";
+
+installRillnetFetchFixture();
 
 async function main() {
   const arg = process.argv.find((a) => a.startsWith("--phase="));
