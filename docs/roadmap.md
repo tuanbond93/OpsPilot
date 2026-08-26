@@ -1,6 +1,34 @@
 # OpsPilot Roadmap
 
-Last Updated: 2026-08-07
+Last Updated: 2026-08-26
+
+## Season 2 Level C Roadmap
+
+North Star:
+
+```text
+REAL DATA → AUTO DETECT → AI RCA → AI OPTIONS → AI FINAL DECISION
+→ DECISION CRITIC → HUMAN APPROVE/REJECT → EXECUTION
+→ AUTO FOLLOW-UP → REAL OUTCOME → AUTO VERIFICATION
+→ DECISION MEMORY → PnL / VERIFIED MONEY
+```
+
+Delivered and validated:
+
+1. **LC-00:** repository audit and first-missing-link identification.
+2. **LC-01:** deterministic Final Decision Engine with provenance and safe human-investigation disposition.
+3. **LC-02:** independent Decision Critic with evidence/confidence/prerequisite checks.
+4. **LC-03:** guarded recording of externally executed work; no autonomous operational action.
+
+Next sequence:
+
+1. **LC-04 — Automatic Follow-up Scheduling:** create a decision-linked follow-up plan after `EXECUTED`, with idempotency and no external platform dependency.
+2. **LC-05 — Outcome Observation Contract:** define baselines, measurement window and required actual-data evidence.
+3. **LC-06 — Outcome Verifier:** automatically classify `SUCCESS`, `FAILURE` or `INCONCLUSIVE` from real evidence.
+4. **LC-07 — Decision Memory:** retrieve comparable decisions and verified outcomes without treating correlation as causation.
+5. **LC-08 — Financial Handoff:** send verified operational evidence to P15-B.1; do not calculate money inside Decision Core.
+
+Frozen until company access exists: GHN Data API, MCP Gateway and GTalk. `AUTONOMOUS` mode and any new saving/cost semantics remain frozen.
 
 > Implementation update (2026-08-23): Sprint 13 UI integration, review UX, executive control center, product polish, Decision Core, Pilot feedback/quality, learning-data export, and Supabase RBAC are implemented. Evidence-dependent work remains: accumulate representative pilot samples, close reviewed feedback, record observed Decision outcomes, and validate shared production rate limiting/log retention.
 
