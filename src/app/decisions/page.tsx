@@ -289,6 +289,11 @@ export default function DecisionInboxPage() {
                 <p className="mt-1 text-slate-300">Kiểm tra lại lúc {new Date(decision.followupSchedule.checkAt).toLocaleString("vi-VN")} · Policy {decision.followupSchedule.policyVersion} · Risk snapshot {decision.followupSchedule.riskLevelAtSchedule}</p>
                 <p className="mt-1 text-xs text-slate-500">Đây là lịch thu thập bằng chứng, chưa phải kết luận outcome hay giá trị tài chính.</p>
               </div>}
+              {decision.outcomeObservationContract && <div className="mt-3 rounded-lg border border-violet-500/30 bg-violet-500/5 p-3 text-sm text-violet-100">
+                <p className="font-semibold">Outcome observation contract</p>
+                <p className="mt-1 text-slate-300">Baseline snapshot: {new Date(decision.outcomeObservationContract.baselineCapturedAt).toLocaleString("vi-VN")} · Cửa sổ đo: {new Date(decision.outcomeObservationContract.measurementWindowStart).toLocaleString("vi-VN")} → {new Date(decision.outcomeObservationContract.measurementWindowEnd).toLocaleString("vi-VN")}</p>
+                <p className="mt-1 text-xs text-slate-400">Yêu cầu evidence: {decision.outcomeObservationContract.requiredEvidenceTypes.join(" · ")}. Contract này chưa phải outcome verdict hay PnL.</p>
+              </div>}
             </article>;
           })}
         </section>

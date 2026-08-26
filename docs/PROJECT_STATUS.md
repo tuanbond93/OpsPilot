@@ -4,7 +4,7 @@ Last Updated: 2026-08-26
 
 ## Season 2 — Level C Decision System
 
-- Current state: **VALIDATED THROUGH LC-04**; runtime/database rollout evidence is not yet recorded.
+- Current state: **VALIDATED THROUGH LC-05**; runtime/database rollout evidence is not yet recorded.
 - Current branch: `codex/season2-safe-checkpoint`
 - Safe worktree checkpoint: `4211b1a` — Season 2 decision platform and worktree hygiene.
 - Latest implementation checkpoint: LC-04 automatic Decision follow-up scheduling.
@@ -22,7 +22,7 @@ Last Updated: 2026-08-26
 | LC-02 Decision Critic | VALIDATED | Independent fail-safe checks, reason codes and critic provenance |
 | LC-03 Execution Boundary | VALIDATED | Manual external execution reference, idempotency, audit and critic guard |
 | LC-04 Automatic Follow-up Scheduling | VALIDATED | One immutable decision-linked schedule after `EXECUTED`; risk cadence, retry idempotency and Inbox visibility |
-| LC-05 Outcome Observation Contract | PLANNED | Next work package: baseline, window and required real-data evidence |
+| LC-05 Outcome Observation Contract | VALIDATED | Immutable baseline/evidence contract, measurement window and human-outcome guard |
 | Outcome Verifier | PLANNED | Starts only after LC-04 |
 | Decision Memory / Learning | PLANNED | Requires verified outcomes |
 | PnL / Verified Money | PLANNED | Must remain downstream of verification and P15-B.1 |
@@ -32,10 +32,10 @@ Current Level C flow:
 ```text
 REAL/CURRENT DATA → AUTO DETECT → AI RCA → AI OPTIONS
 → FINAL DECISION → DECISION CRITIC → HUMAN APPROVE/REJECT
-→ MANUAL EXTERNAL EXECUTION RECORD → AUTO FOLLOW-UP SCHEDULE
+→ MANUAL EXTERNAL EXECUTION RECORD → AUTO FOLLOW-UP SCHEDULE → OBSERVATION CONTRACT
 ```
 
-First missing link: `scheduled follow-up → outcome observation contract with baseline, measurement window and required actual-data evidence`.
+First missing link: `observation contract → automatic evidence evaluation and outcome classification`.
 
 > Post-V1 update (2026-08-23): the repository now includes the Sprint 13 production UI, Copilot human review, Decision Core, Pilot feedback/quality and learning-data workflows, plus Supabase authentication and role-based authorization. These additions remain subject to the validation evidence recorded by the current release run; the historical Sprint 12.4 declaration below is preserved.
 

@@ -28,6 +28,20 @@ export interface DecisionFollowupSchedule {
   createdAt: string;
 }
 
+export interface DecisionOutcomeObservationContract {
+  contractId: string;
+  decisionId: string;
+  followupScheduleId: string;
+  baselineEvidenceSnapshotId?: string | null;
+  baselineCapturedAt: string;
+  baselineSnapshot: DecisionEvidenceSnapshot;
+  measurementWindowStart: string;
+  measurementWindowEnd: string;
+  requiredEvidenceTypes: readonly string[];
+  contractVersion: "LC05_V1";
+  createdAt: string;
+}
+
 export interface DecisionSourceLinks {
   incidentId?: string;
   rootCauseRunId?: string;
@@ -76,6 +90,7 @@ export interface Decision {
   outcomeStatus?: DecisionOutcomeStatus | null;
   outcomeRecordedAt?: string | null;
   followupSchedule?: DecisionFollowupSchedule | null;
+  outcomeObservationContract?: DecisionOutcomeObservationContract | null;
 }
 
 export interface DecisionAuditEvent {

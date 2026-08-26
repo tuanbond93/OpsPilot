@@ -87,3 +87,15 @@ LOW 480 phút. Retry execution không tạo lịch trùng.
 Schedule chỉ trả lời “khi nào cần lấy bằng chứng mới”. Nó không tự thực thi action,
 không tự kết luận outcome và không tính expected/realized saving. Outcome observation
 contract thuộc LC-05; financial authority vẫn là P15-B.1.
+
+## LC-05 — Outcome observation contract
+
+Mỗi schedule LC-04 tạo đúng một `decision_outcome_observation_contracts` record trong
+cùng transaction. Contract là immutable và ghi lại baseline evidence snapshot, thời điểm
+execution, điểm kết thúc cửa sổ đo (`checkAt`) và evidence bắt buộc: execution reference
+và post-execution operational snapshot.
+
+Với `HUMAN_APPROVAL`, outcome chỉ được ghi tại hoặc sau khi cửa sổ đo kết thúc và phải có
+evidence reference. LC-05 chưa tự phân loại outcome; đó là trách nhiệm LC-06. Baseline có
+nguồn là snapshot lúc Decision được tạo, nên Outcome Verifier phải đánh giá freshness và
+đủ dữ liệu trước khi dùng nó để kết luận.

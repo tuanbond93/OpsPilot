@@ -69,9 +69,25 @@ describe("Decision Core lifecycle and safety", () => {
     await service.transition({ decisionId: id, targetStatus: "READY_FOR_REVIEW", actor: "a", idempotencyKey: "r" });
     await service.transition({ decisionId: id, targetStatus: "APPROVED", actor: "a", idempotencyKey: "a" });
     await service.transition({ decisionId: id, targetStatus: "EXECUTED", actor: "a", idempotencyKey: "e", executionReference: "external-ticket-1" });
-    const result = await service.recordOutcome({ decisionId: id, status: "SUCCESS", observedOutcome: "Backlog returned below SLA", measuredAt: new Date().toISOString(), evidenceRefs: ["snapshot:2"], actor: "observer", idempotencyKey: "o" });
+    const contract = await repository.getOutcomeObservationContract(id);
+    expect(contract).toMatchObject({ decisionId: id, contractVersion: "LC05_V1", requiredEvidenceTypes: ["EXECUTION_REFERENCE", "POST_EXECUTION_OPERATIONAL_SNAPSHOT"] });
+    const result = await service.recordOutcome({ decisionId: id, status: "SUCCESS", observedOutcome: "Backlog returned below SLA", measuredAt: contract!.measurementWindowEnd, evidenceRefs: ["snapshot:2"], actor: "observer", idempotencyKey: "o" });
     expect(result.ok).toBe(true); expect((result.data as any).financialImpact).toEqual({ status: "NOT_EVALUATED" });
     expect(JSON.stringify(await repository.getOutcomes(id))).not.toMatch(/saving|cost|financial/i);
+  });
+
+  it("requires a completed observation window and post-execution evidence for a human-approved outcome", async () => {
+    const created = await service.create(input({ sourceFingerprint: "outcome-contract", idempotencyKey: "outcome-contract-create" }));
+    const id = (created.data as any).decisionId;
+    await service.transition({ decisionId: id, targetStatus: "READY_FOR_REVIEW", actor: "manager", idempotencyKey: "outcome-contract-ready" });
+    await service.transition({ decisionId: id, targetStatus: "APPROVED", actor: "manager", idempotencyKey: "outcome-contract-approve" });
+    await service.recordExecution({ decisionId: id, actor: "operator", idempotencyKey: "outcome-contract-execute", executionReference: "ticket:contract" });
+    const contract = await repository.getOutcomeObservationContract(id);
+    expect(contract?.baselineSnapshot.operationalFacts).toMatchObject({ affectedOrders: 42 });
+    const early = await service.recordOutcome({ decisionId: id, status: "SUCCESS", observedOutcome: "Too early", measuredAt: contract!.measurementWindowStart, evidenceRefs: ["snapshot:early"], actor: "observer", idempotencyKey: "outcome-contract-early" });
+    expect(early.error).toBe("OUTCOME_MEASUREMENT_WINDOW_NOT_REACHED");
+    const missingEvidence = await service.recordOutcome({ decisionId: id, status: "SUCCESS", observedOutcome: "No refs", measuredAt: contract!.measurementWindowEnd, actor: "observer", idempotencyKey: "outcome-contract-no-evidence" });
+    expect(missingEvidence.error).toBe("OUTCOME_EVIDENCE_REQUIRED");
   });
 
   it("records only externally performed work and keeps execution idempotent", async () => {

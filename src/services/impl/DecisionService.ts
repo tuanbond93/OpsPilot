@@ -45,7 +45,7 @@ export class DecisionService implements IDecisionService {
     try {
       const decision = await this.repository.getById(decisionId);
       if (!decision) throw new DecisionDomainError("NOT_FOUND", `Decision '${decisionId}' not found.`);
-      return { ok: true, data: { decision, auditEvents: await this.repository.getAuditEvents(decisionId), outcomes: await this.repository.getOutcomes(decisionId), followupSchedules: await this.repository.getFollowupSchedules(decisionId) } };
+      return { ok: true, data: { decision, auditEvents: await this.repository.getAuditEvents(decisionId), outcomes: await this.repository.getOutcomes(decisionId), followupSchedules: await this.repository.getFollowupSchedules(decisionId), outcomeObservationContract: await this.repository.getOutcomeObservationContract(decisionId) } };
     } catch (error) { return this.failure(error); }
   }
 
@@ -70,6 +70,18 @@ export class DecisionService implements IDecisionService {
     try {
       this.assertWriteAllowed();
       validateOutcomeInput(input);
+      const decision = await this.repository.getById(input.decisionId);
+      if (!decision) throw new DecisionDomainError("NOT_FOUND", `Decision '${input.decisionId}' not found.`);
+      if (decision.mode === "HUMAN_APPROVAL") {
+        const contract = await this.repository.getOutcomeObservationContract(input.decisionId);
+        if (!contract) throw new DecisionDomainError("OUTCOME_OBSERVATION_CONTRACT_REQUIRED", "A follow-up observation contract is required before recording a human-approved outcome.");
+        if (new Date(input.measuredAt).getTime() < new Date(contract.measurementWindowEnd).getTime()) {
+          throw new DecisionDomainError("OUTCOME_MEASUREMENT_WINDOW_NOT_REACHED", "Outcome evidence must be measured at or after the scheduled follow-up window.");
+        }
+        if (!input.evidenceRefs?.length) {
+          throw new DecisionDomainError("OUTCOME_EVIDENCE_REQUIRED", "Human-approved outcomes require post-execution evidence references.");
+        }
+      }
       const result = await this.repository.recordOutcome(input);
       return { ok: true, data: result.decision, idempotent: result.idempotent };
     } catch (error) { return this.failure(error); }

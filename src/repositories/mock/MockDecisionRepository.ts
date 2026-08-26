@@ -2,12 +2,14 @@ import type { IDecisionRepository, DecisionMutationResult } from "../interfaces/
 import {
   assertDecisionTransition,
   buildDecisionFollowupSchedule,
+  buildOutcomeObservationContract,
   DecisionDomainError,
   immutableSnapshot,
   type CreateDecisionInput,
   type Decision,
   type DecisionAuditEvent,
   type DecisionFollowupSchedule,
+  type DecisionOutcomeObservationContract,
   type DecisionOutcomeRecord,
   type RecordOutcomeInput,
   type TransitionDecisionInput,
@@ -18,12 +20,14 @@ export class MockDecisionRepository implements IDecisionRepository {
   private auditEvents: DecisionAuditEvent[] = [];
   private outcomes: DecisionOutcomeRecord[] = [];
   private followupSchedules: DecisionFollowupSchedule[] = [];
+  private outcomeObservationContracts: DecisionOutcomeObservationContract[] = [];
 
   clearMemory(): void {
     this.decisions.clear();
     this.auditEvents = [];
     this.outcomes = [];
     this.followupSchedules = [];
+    this.outcomeObservationContracts = [];
   }
 
   async create(input: CreateDecisionInput): Promise<DecisionMutationResult> {
@@ -99,6 +103,9 @@ export class MockDecisionRepository implements IDecisionRepository {
       }));
       this.followupSchedules.push(schedule);
       updated.followupSchedule = schedule;
+      const contract = buildOutcomeObservationContract({ decision: updated, schedule });
+      this.outcomeObservationContracts.push(contract);
+      updated.outcomeObservationContract = contract;
     }
     this.decisions.set(input.decisionId, updated);
     return { decision: immutableSnapshot(updated), idempotent: false };
@@ -158,5 +165,10 @@ export class MockDecisionRepository implements IDecisionRepository {
 
   async getFollowupSchedules(decisionId: string): Promise<readonly DecisionFollowupSchedule[]> {
     return immutableSnapshot(this.followupSchedules.filter((item) => item.decisionId === decisionId));
+  }
+
+  async getOutcomeObservationContract(decisionId: string): Promise<DecisionOutcomeObservationContract | null> {
+    const contract = this.outcomeObservationContracts.find((item) => item.decisionId === decisionId);
+    return contract ? immutableSnapshot(contract) : null;
   }
 }

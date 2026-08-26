@@ -1,11 +1,12 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { IDecisionRepository, DecisionMutationResult } from "../interfaces/IDecisionRepository";
-import type { CreateDecisionInput, Decision, DecisionAuditEvent, DecisionEvidenceSnapshot, DecisionFollowupSchedule, DecisionOutcomeRecord, RecordOutcomeInput, TransitionDecisionInput } from "@/domain/decision";
+import type { CreateDecisionInput, Decision, DecisionAuditEvent, DecisionEvidenceSnapshot, DecisionFollowupSchedule, DecisionOutcomeObservationContract, DecisionOutcomeRecord, RecordOutcomeInput, TransitionDecisionInput } from "@/domain/decision";
 
 type DbRow = Record<string, any>;
 
 function mapDecision(row: DbRow, evidence?: DecisionEvidenceSnapshot): Decision {
   const scheduleRow = row.decision_followup_schedules?.[0];
+  const contractRow = row.decision_outcome_observation_contracts?.[0];
   return {
     decisionId: row.id, sourceLinks: row.source_links, sourceFingerprint: row.source_fingerprint,
     idempotencyKey: row.idempotency_key, problem: row.problem, rootCause: row.root_cause,
@@ -17,6 +18,7 @@ function mapDecision(row: DbRow, evidence?: DecisionEvidenceSnapshot): Decision 
     rejectReason: row.reject_reason, executedBy: row.executed_by, executedAt: row.executed_at,
     executionReference: row.execution_reference, outcomeStatus: row.outcome_status, outcomeRecordedAt: row.outcome_recorded_at,
     followupSchedule: scheduleRow ? mapFollowupSchedule(scheduleRow) : null,
+    outcomeObservationContract: contractRow ? mapOutcomeObservationContract(contractRow) : null,
   };
 }
 
@@ -29,7 +31,17 @@ function mapFollowupSchedule(row: DbRow): DecisionFollowupSchedule {
   };
 }
 
-const DECISION_SELECT = "*, decision_evidence_snapshots(snapshot), decision_followup_schedules(*)";
+function mapOutcomeObservationContract(row: DbRow): DecisionOutcomeObservationContract {
+  return {
+    contractId: row.id, decisionId: row.decision_id, followupScheduleId: row.followup_schedule_id,
+    baselineEvidenceSnapshotId: row.baseline_evidence_snapshot_id, baselineCapturedAt: row.baseline_captured_at,
+    baselineSnapshot: row.baseline_snapshot, measurementWindowStart: row.measurement_window_start,
+    measurementWindowEnd: row.measurement_window_end, requiredEvidenceTypes: row.required_evidence_types,
+    contractVersion: row.contract_version, createdAt: row.created_at,
+  };
+}
+
+const DECISION_SELECT = "*, decision_evidence_snapshots(snapshot), decision_followup_schedules(*), decision_outcome_observation_contracts(*)";
 
 export class SupabaseDecisionRepository implements IDecisionRepository {
   constructor(private readonly client: SupabaseClient) {}
@@ -81,5 +93,11 @@ export class SupabaseDecisionRepository implements IDecisionRepository {
     const { data, error } = await this.client.from("decision_followup_schedules").select("*").eq("decision_id", decisionId).order("created_at");
     if (error) throw error;
     return (data || []).map(mapFollowupSchedule);
+  }
+
+  async getOutcomeObservationContract(decisionId: string): Promise<DecisionOutcomeObservationContract | null> {
+    const { data, error } = await this.client.from("decision_outcome_observation_contracts").select("*").eq("decision_id", decisionId).maybeSingle();
+    if (error) throw error;
+    return data ? mapOutcomeObservationContract(data) : null;
   }
 }
