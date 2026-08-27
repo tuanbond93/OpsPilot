@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
-import { Activity, Bell, BellRing, BookOpen, CheckSquare2, Gauge, ListChecks, Menu, Scale, Settings, ShieldCheck, UserRound, UsersRound, X } from "lucide-react";
+import { Activity, Bell, BellRing, BookOpen, CheckSquare2, Gauge, ListChecks, Menu, Scale, Settings, ShieldCheck, Truck, UserRound, UsersRound, X } from "lucide-react";
 import { useOpsSession } from "@/app/_components/useOpsSession";
 
 const items = [
@@ -12,6 +12,7 @@ const items = [
   { href: "/reviews", label: "Cần phê duyệt", icon: CheckSquare2, mobile: true },
   { href: "/followups", label: "Kết quả", icon: ListChecks, mobile: true },
   { href: "/decisions", label: "Quyết định", icon: Scale, mobile: false },
+  { href: "/b2b-consolidation", label: "Ghép chuyến B2B", icon: Truck, mobile: false },
   { href: "/notifications", label: "Thông báo", icon: Bell, mobile: false },
   { href: "/pilot-quality", label: "Chất lượng Pilot", icon: ShieldCheck, mobile: false },
   { href: "/guide", label: "Hướng dẫn", icon: BookOpen, mobile: false },
