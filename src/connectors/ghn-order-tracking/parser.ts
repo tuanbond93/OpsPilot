@@ -51,7 +51,7 @@ export function parseLiveOrderTracking(
   for (const entry of chronological) {
     const patch = entry.new_data || {};
     const at = entry.created_at!;
-    const patchAction = text(patch.action);
+    const patchAction = text(patch.action) || text(patch.operation) || text(patch.event);
     const patchWarehouse = text(patch.current_warehouse_id);
 
     if (patchWarehouse && patchWarehouse !== currentWarehouseId) {
@@ -65,12 +65,13 @@ export function parseLiveOrderTracking(
         current.departureAction = patchAction;
       }
     }
-    const patchStatus = text(patch.status);
-    if (!deliveryStartedAt && ["delivering", "money_collect_delivering"].includes(patchStatus || "")) {
+    const patchStatus = (text(patch.status) || text(patch.order_status) || text(patch.orderStatus) || text(patch.current_status))?.toLowerCase() || null;
+    const deliveryAction = (patchAction || "").toUpperCase();
+    if (!deliveryStartedAt && (["delivering", "money_collect_delivering"].includes(patchStatus || "") || /DELIVER|OUT_FOR_DELIVERY|SHIPPER/.test(deliveryAction))) {
       deliveryStartedAt = at;
       deliveryStartedAtInferred = true;
     }
-    if (["delivered", "success"].includes(patchStatus || "")) {
+    if (["delivered", "success"].includes(patchStatus || "") || /DELIVERED|DELIVERY_SUCCESS|SUCCESS/.test(deliveryAction)) {
       endDeliveryAt ||= at;
       endSuccessAt ||= at;
     }
