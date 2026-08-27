@@ -5,7 +5,7 @@ import type { LiveOrderTracking } from "@/connectors/ghn-order-tracking";
 function tracking(overrides: Partial<LiveOrderTracking>): LiveOrderTracking {
   return {
     orderCode: "ORDER1", customerId: "5035963", customerName: "MDLZ", status: "storing", statusLabel: "Đang lưu tại kho", phase: "AT_WAREHOUSE",
-    currentWarehouseId: null, currentWarehouseName: null, nextWarehouseId: null, nextWarehouseName: null, pickWarehouseId: null, deliverWarehouseId: null,
+    currentWarehouseId: null, currentWarehouseName: null, nextWarehouseId: null, nextWarehouseName: null, pickWarehouseId: null, deliverWarehouseId: null, deliverWarehouseName: null,
     lastAction: null, lastEventAt: null, checkedAt: "2026-08-25T08:00:00.000Z", journey: [], ...overrides,
   };
 }
@@ -121,5 +121,17 @@ describe("operational root-cause playbook", () => {
     const groups = groupOperationalDiagnoses([diagnoseOperationalJourney({ ...base, orderCode: "ORDER_A" }), diagnoseOperationalJourney({ ...base, orderCode: "ORDER_B" })]);
     expect(groups).toHaveLength(1);
     expect(groups[0].orderCodes).toEqual(["ORDER_A", "ORDER_B"]);
+  });
+
+  it("routes a GHN warehouse holding a return-bound order to its confirmed final post office", () => {
+    const diagnosis = diagnoseOperationalJourney(tracking({
+      orderCode: "GY8N99NH", checkedAt: "2026-08-27T03:09:03.157Z",
+      currentWarehouseId: "21158000", currentWarehouseName: "Kho Giao Hàng Nặng Lào Cai",
+      deliverWarehouseId: "21448000", deliverWarehouseName: "Bưu cục Lào Cai",
+      journey: [{ warehouseId: "21158000", warehouseName: "Kho Giao Hàng Nặng Lào Cai", arrivedAt: "2026-08-25T00:51:45.985Z", current: true }],
+    }));
+    expect(diagnosis.findings).toHaveLength(1);
+    expect(diagnosis.findings[0]).toMatchObject({ code: "GHN_TO_FINAL_POST_OFFICE_NOT_EXPORTED", ownerWarehouseId: "21158000", groupingKey: "GHN_TO_FINAL_POST_OFFICE_NOT_EXPORTED:21448000" });
+    expect(diagnosis.findings[0].action).toContain("Bưu cục Lào Cai");
   });
 });

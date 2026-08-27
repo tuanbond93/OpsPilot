@@ -1,10 +1,11 @@
 import type { LiveOrderTracking } from "@/connectors/ghn-order-tracking";
 
-export const OPERATIONAL_PLAYBOOK_VERSION = "2026-08-25.6";
+export const OPERATIONAL_PLAYBOOK_VERSION = "2026-08-27.1";
 export const GHN_MORNING_COT_HOUR = 7;
 
 export type OperationalFinding = {
   code: string;
+  groupingKey?: string;
   ownerWarehouseId: string;
   ownerWarehouseName: string;
   severity: "high" | "medium";
@@ -24,6 +25,7 @@ export type OperationalDiagnosis = {
 
 const hours = (start: string, end: string) => Math.round(((Date.parse(end) - Date.parse(start)) / 3_600_000) * 10) / 10;
 const isGhnWarehouse = (name: string) => /giao hàng nặng|kho ghn/i.test(name);
+const isPostOffice = (name: string | null) => /bưu cục|buu cuc/i.test(name || "");
 const isTransitWarehouse = (name: string) => /chuyển tiếp|trung chuyển/i.test(name);
 const isLargeTransitWarehouse = (name: string) => /trung chuyển|\bhub\b/i.test(name);
 const isLargeCustomerWarehouse = (name: string) => /kh lớn|khl|key account/i.test(name);
@@ -89,7 +91,20 @@ export function diagnoseOperationalJourney(tracking: LiveOrderTracking, referenc
     if (morningGhnIntakeNotAssigned) {
       findings.push({ code: "GHN_MORNING_INTAKE_NOT_ASSIGNED_DELIVERY", ownerWarehouseId: point.warehouseId, ownerWarehouseName: point.warehouseName, severity: "high", title: "Kho GHN chưa gán/xuất giao hàng nhận buổi sáng", evidence: `Đơn nhập ${point.warehouseName} lúc ${viTime(point.arrivedAt)}, sau ${dwell} giờ vẫn ở trạng thái lưu kho, chưa chuyển sang đang giao.`, action: `Kiểm tra với ${point.warehouseName}: vì sao hàng nhận từ KCT buổi sáng chưa được gán giao và xuất giao trong ngày.` });
     }
-    if (isGhnWarehouse(point.warehouseName) && point.current && tracking.status === "storing" && !morningGhnIntakeNotAssigned && currentTime > nextMorningCot(point.arrivedAt)) {
+    const finalPostOffice = tracking.deliverWarehouseId && tracking.deliverWarehouseId !== point.warehouseId && isPostOffice(tracking.deliverWarehouseName);
+    if (isGhnWarehouse(point.warehouseName) && point.current && tracking.status === "storing" && !morningGhnIntakeNotAssigned && finalPostOffice && currentTime > nextMorningCot(point.arrivedAt)) {
+      const cot = nextMorningCot(point.arrivedAt);
+      findings.push({
+        code: "GHN_TO_FINAL_POST_OFFICE_NOT_EXPORTED",
+        groupingKey: `GHN_TO_FINAL_POST_OFFICE_NOT_EXPORTED:${tracking.deliverWarehouseId}`,
+        ownerWarehouseId: point.warehouseId,
+        ownerWarehouseName: point.warehouseName,
+        severity: "high",
+        title: "Kho GHN chưa xuất đơn về bưu cục giao cuối",
+        evidence: `Đơn nhập ${point.warehouseName} lúc ${viTime(point.arrivedAt)}; kho giao cuối là ${tracking.deliverWarehouseName}. Đến ${viTime(referenceTime)} vẫn lưu tại ${point.warehouseName}, đã qua COT 07:00 ngày ${viTime(cot.toISOString())} và chưa có log xuất về bưu cục.`,
+        action: `Kiểm tra với ${point.warehouseName}: vì sao đơn chưa được xuất về bưu cục ${tracking.deliverWarehouseName} sau COT 07:00; đối soát log đổi kho và chuyến xuất gần nhất.`,
+      });
+    } else if (isGhnWarehouse(point.warehouseName) && point.current && tracking.status === "storing" && !morningGhnIntakeNotAssigned && currentTime > nextMorningCot(point.arrivedAt)) {
       const cot = nextMorningCot(point.arrivedAt);
       findings.push({ code: "GHN_MISSED_0700_COT", ownerWarehouseId: point.warehouseId, ownerWarehouseName: point.warehouseName, severity: "high", title: "Kho GHN đã lỡ COT 07:00", evidence: `Đơn nhập kho lúc ${viTime(point.arrivedAt)}, đã qua COT 07:00 ngày ${viTime(cot.toISOString())} nhưng chưa xuất giao.`, action: `Kiểm tra với ${point.warehouseName}: vì sao đơn chưa được xuất giao sau COT 07:00.` });
     }
@@ -106,7 +121,7 @@ export function diagnoseOperationalJourney(tracking: LiveOrderTracking, referenc
     }
   }
 
-  const codes = [...new Set(findings.map((finding) => finding.code))].sort().join("+") || "NO_RULE_MATCH";
+  const codes = [...new Set(findings.map((finding) => finding.groupingKey || finding.code))].sort().join("+") || "NO_RULE_MATCH";
   const ownerIds = [...new Set(findings.map((finding) => finding.ownerWarehouseId))].sort().join("+") || tracking.currentWarehouseId || "unknown";
   return {
     orderCode: tracking.orderCode,

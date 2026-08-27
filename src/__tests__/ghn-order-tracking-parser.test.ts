@@ -29,6 +29,7 @@ describe("GHN live order tracking parser", () => {
       "21365000": "Kho trung chuyển 1",
       "1121": "Kho trung chuyển 2",
       "21321000": "Kho tiếp theo",
+      "20749000": "Bưu cục giao cuối",
     }, "2026-08-25T08:00:00.000Z");
 
     expect(result.orderCode).toBe("ORDER_DYNAMIC_01");
@@ -36,6 +37,7 @@ describe("GHN live order tracking parser", () => {
     expect(result.phase).toBe("IN_TRANSIT");
     expect(result.currentWarehouseId).toBe("1121");
     expect(result.nextWarehouseId).toBe("21321000");
+    expect(result.deliverWarehouseName).toBe("Bưu cục giao cuối");
     expect(result.journey.map((point) => point.warehouseId)).toEqual(["22958000", "21365000", "1121"]);
     expect(result.journey.every((point) => !point.current)).toBe(true);
   });

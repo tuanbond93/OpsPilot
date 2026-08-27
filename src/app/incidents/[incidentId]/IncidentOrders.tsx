@@ -75,7 +75,7 @@ export function IncidentOrders({ incidentId, onAnalysisChange }: { incidentId: s
     const currentDiagnoses = Object.values(liveOrders).map((tracking) => diagnoseOperationalJourney(tracking));
     const aggregates = new Map<string, OperationalRollup["groups"][number]>();
     for (const diagnosis of currentDiagnoses) for (const finding of diagnosis.findings) {
-      const key = `${finding.code}|${finding.ownerWarehouseId}`;
+      const key = `${finding.groupingKey || finding.code}|${finding.ownerWarehouseId}`;
       const existing = aggregates.get(key);
       if (existing) { existing.orderCodes.push(diagnosis.orderCode); existing.orderCount = existing.orderCodes.length; }
       else aggregates.set(key, { key, title: finding.title, warehouseName: finding.ownerWarehouseName, orderCount: 1, orderCodes: [diagnosis.orderCode], evidence: finding.evidence, action: finding.action });

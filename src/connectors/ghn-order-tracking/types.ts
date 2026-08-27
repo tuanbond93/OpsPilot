@@ -42,6 +42,7 @@ export type LiveOrderTracking = {
   nextWarehouseName: string | null;
   pickWarehouseId: string | null;
   deliverWarehouseId: string | null;
+  deliverWarehouseName: string | null;
   lastAction: string | null;
   lastEventAt: string | null;
   checkedAt: string;

@@ -101,6 +101,7 @@ export function parseLiveOrderTracking(
     nextWarehouseName: nameFor(nextWarehouseId),
     pickWarehouseId,
     deliverWarehouseId,
+    deliverWarehouseName: nameFor(deliverWarehouseId),
     lastAction,
     lastEventAt,
     checkedAt,
