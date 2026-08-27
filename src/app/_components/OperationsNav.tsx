@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
-import { Activity, Bell, BookOpen, CheckSquare2, Gauge, ListChecks, Menu, Scale, Settings, ShieldCheck, UserRound, UsersRound, X } from "lucide-react";
+import { Activity, Bell, BellRing, BookOpen, CheckSquare2, Gauge, ListChecks, Menu, Scale, Settings, ShieldCheck, UserRound, UsersRound, X } from "lucide-react";
 import { useOpsSession } from "@/app/_components/useOpsSession";
 
 const items = [
@@ -18,6 +18,7 @@ const items = [
   { href: "/account", label: "Tài khoản", icon: UserRound, mobile: false },
   { href: "/admin/users", label: "Quản trị", icon: Settings, mobile: false, adminOnly: true },
   { href: "/admin/telegram-pilot", label: "Telegram Pilot", icon: UsersRound, mobile: false, adminOnly: true },
+  { href: "/telegram-work-orders", label: "Nhắc việc TG", icon: BellRing, mobile: false },
 ] as const;
 
 function Brand() {
