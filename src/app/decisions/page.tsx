@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
-import { ArrowUpRight, Check, CircleAlert, Eye, Plus, RefreshCw, X } from "lucide-react";
+import { ArrowUpRight, Check, CircleAlert, Eye, Plus, RefreshCw, Send, X } from "lucide-react";
 import type { Decision } from "@/domain/decision";
 import type { ExecutionWorkOrder } from "@/domain/execution-work-order";
 import { repairOperationalText, translateStatus } from "@/app/_components/operationalText";
@@ -30,6 +30,10 @@ interface OutcomePreview {
   shadowFollowup?: { occurredAt: string; observationState: "READY_TO_VERIFY" | "AWAITING_POST_WINDOW_EVIDENCE"; observedAt: string | null; observedAffectedOrders: number | null; source: string | null } | null;
   verification?: { classification: string; reason_code: string; observed_at: string; evidence_refs: string[]; observed_affected_orders: number | null } | null;
 }
+
+type TelegramCandidate = { memberId: string; groupId: string; groupTitle: string; displayName: string; username: string | null; pilotRole: string };
+type TelegramDispatch = { id: string; status: "PENDING" | "SENT" | "FAILED"; telegram_message_id: number | null; recipient_member_ids: string[]; sent_at: string | null; failure_reason: string | null };
+type TelegramDispatchState = { candidates: TelegramCandidate[]; dispatch: TelegramDispatch | null };
 
 const badge: Record<string, string> = {
   READY_FOR_REVIEW: "border-amber-400/40 bg-amber-400/10 text-amber-300",
@@ -96,6 +100,8 @@ export default function DecisionInboxPage() {
   const [executions, setExecutions] = useState<Record<string, { performedDate: string; performedTime: string; note: string }>>({});
   const [workOrders, setWorkOrders] = useState<Record<string, ExecutionWorkOrder | null>>({});
   const [workOrderForms, setWorkOrderForms] = useState<Record<string, { owner: string; dueDate: string; dueTime: string; actionItems: string[] }>>({});
+  const [telegramDispatches, setTelegramDispatches] = useState<Record<string, TelegramDispatchState>>({});
+  const [telegramRecipients, setTelegramRecipients] = useState<Record<string, string[]>>({});
   const [outcomePreviews, setOutcomePreviews] = useState<Record<string, OutcomePreview>>({});
 
   const load = useCallback(async () => {
@@ -116,6 +122,12 @@ export default function DecisionInboxPage() {
         return [item.decisionId, response.ok ? workOrderPayload.data || null : null] as const;
       }));
       setWorkOrders(Object.fromEntries(entries));
+      const dispatchEntries = await Promise.all(entries.filter((entry): entry is readonly [string, ExecutionWorkOrder] => Boolean(entry[1])).map(async ([id]) => {
+        const response = await fetch(`/api/decisions/${id}/telegram-dispatch`, { cache: "no-store" });
+        const dispatchPayload = await response.json();
+        return [id, response.ok ? { candidates: dispatchPayload.data?.candidates || [], dispatch: dispatchPayload.data?.dispatch || null } : { candidates: [], dispatch: null }] as const;
+      }));
+      setTelegramDispatches(Object.fromEntries(dispatchEntries));
       const pending = nextDecisions.filter((item: Decision) => item.mode === "HUMAN_APPROVAL" && ["EXECUTED", "OUTCOME_PENDING", "SUCCESS", "FAILURE", "INCONCLUSIVE"].includes(item.decisionStatus));
       const previews = await Promise.all(pending.map(async (item: Decision) => {
         const response = await fetch(`/api/decisions/${item.decisionId}/outcome-preview`, { cache: "no-store" });
@@ -217,6 +229,18 @@ export default function DecisionInboxPage() {
     try {
       const response = await fetch(`/api/decisions/${decision.decisionId}/work-order/status`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ actor: actor.trim(), targetStatus, idempotencyKey: `work-order:${decision.decisionId}:${targetStatus}` }) });
       const payload = await response.json(); handleApiAccess(response, payload, "Không thể cập nhật work order."); await load();
+    } catch (caught) { setError(caught instanceof Error ? caught.message : String(caught)); }
+    finally { setSubmitting(null); }
+  }
+
+  async function dispatchWorkOrderToTelegram(decision: Decision) {
+    const recipientMemberIds = telegramRecipients[decision.decisionId] || [];
+    if (!actor.trim()) { setError("Vui lòng đăng nhập để gửi work order vào Telegram."); return; }
+    if (!recipientMemberIds.length) { setError("Chọn ít nhất một nhân viên Telegram đã kích hoạt."); return; }
+    setSubmitting(decision.decisionId); setError("");
+    try {
+      const response = await fetch(`/api/decisions/${decision.decisionId}/telegram-dispatch`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ actor: actor.trim(), recipientMemberIds }) });
+      const payload = await response.json(); handleApiAccess(response, payload, "Không thể gửi work order vào Telegram."); await load();
     } catch (caught) { setError(caught instanceof Error ? caught.message : String(caught)); }
     finally { setSubmitting(null); }
   }
@@ -425,6 +449,7 @@ export default function DecisionInboxPage() {
                 <ol className="mt-2 list-decimal space-y-1 pl-5 text-slate-300">{workOrder.actionItems.map((item, index) => <li key={`${workOrder.workOrderId}-${index}`}>{repairOperationalText(item)}</li>)}</ol>
                 {roleCan(role, "MANAGE_DECISION") && workOrder.status === "OPEN" && <button type="button" onClick={() => void transitionWorkOrder(decision, "IN_PROGRESS")} disabled={submitting === decision.decisionId} className="mt-3 inline-flex min-h-10 items-center justify-center rounded-lg border border-cyan-400/50 px-4 text-sm font-semibold text-cyan-100 hover:bg-cyan-500/10 disabled:opacity-60">Bắt đầu thực hiện</button>}
                 {roleCan(role, "MANAGE_DECISION") && workOrder.status === "IN_PROGRESS" && <button type="button" onClick={() => void transitionWorkOrder(decision, "COMPLETED")} disabled={submitting === decision.decisionId} className="mt-3 inline-flex min-h-10 items-center justify-center rounded-lg bg-cyan-600 px-4 text-sm font-semibold text-white hover:bg-cyan-500 disabled:opacity-60">Xác nhận work order hoàn tất</button>}
+                {roleCan(role, "MANAGE_DECISION") && (() => { const telegram = telegramDispatches[decision.decisionId]; const selected = telegramRecipients[decision.decisionId] || []; const selectedGroupId = telegram?.candidates.find((candidate) => selected.includes(candidate.memberId))?.groupId; return <section className="mt-4 border-t border-cyan-500/20 pt-4" aria-label={`Gửi ${workOrder.workOrderCode} vào Telegram`}><h4 className="flex items-center gap-2 font-semibold text-cyan-100"><Send aria-hidden="true" size={16}/>Gửi work order vào Telegram</h4><p className="mt-1 text-xs leading-5 text-slate-400">Manager chọn người nhận đã map với kho owner rồi chủ động gửi một tin vào group. Telegram chỉ nhận việc và phản hồi; không tự đổi trạng thái work order.</p>{telegram?.dispatch?.status === "SENT" ? <p role="status" className="mt-3 rounded-lg border border-emerald-500/30 bg-emerald-500/5 p-3 text-sm text-emerald-100">Đã gửi vào Telegram lúc {telegram.dispatch.sent_at ? new Date(telegram.dispatch.sent_at).toLocaleString("vi-VN") : "—"} · Message ID {telegram.dispatch.telegram_message_id || "—"}. Delivery audit đã được lưu.</p> : telegram?.dispatch?.status === "PENDING" ? <p role="status" className="mt-3 rounded-lg border border-amber-500/30 bg-amber-500/5 p-3 text-sm text-amber-100">Tin đang chờ gửi; chưa bấm lại để tránh gửi trùng.</p> : telegram?.candidates?.length ? <><fieldset className="mt-3"><legend className="text-xs font-semibold text-slate-200">Nhân viên nhận việc <span className="text-rose-300">(chọn ít nhất một, cùng group)</span></legend><div className="mt-2 grid gap-2 md:grid-cols-2">{telegram.candidates.map((candidate) => { const checked = selected.includes(candidate.memberId); const blocked = Boolean(selectedGroupId && selectedGroupId !== candidate.groupId); return <label key={candidate.memberId} className={`flex min-h-11 items-center gap-3 rounded-lg border p-3 text-sm ${blocked ? "cursor-not-allowed border-slate-800 opacity-50" : "cursor-pointer border-slate-700 bg-slate-950/70"}`}><input type="checkbox" checked={checked} disabled={blocked} onChange={(event) => setTelegramRecipients((current) => ({ ...current, [decision.decisionId]: event.target.checked ? [...selected, candidate.memberId] : selected.filter((id) => id !== candidate.memberId) }))} className="h-4 w-4 accent-cyan-400"/><span><strong>{candidate.username ? `@${candidate.username}` : candidate.displayName}</strong><span className="block text-xs text-slate-400">{candidate.groupTitle} · {candidate.pilotRole === "MANAGER" ? "Manager" : "Nhân viên"}</span></span></label>; })}</div></fieldset>{telegram.dispatch?.status === "FAILED" && <p role="alert" className="mt-3 text-sm text-rose-200">Lần gửi trước lỗi: {telegram.dispatch.failure_reason || "không xác định"}. Bạn có thể gửi lại sau khi kiểm tra bot trong group.</p>}<button type="button" onClick={() => void dispatchWorkOrderToTelegram(decision)} disabled={submitting === decision.decisionId || !selected.length || workOrder.status === "COMPLETED"} className="mt-3 inline-flex min-h-11 items-center justify-center gap-2 rounded-lg bg-cyan-600 px-4 text-sm font-semibold text-white hover:bg-cyan-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-300 disabled:opacity-60"><Send aria-hidden="true" size={16}/>{submitting === decision.decisionId ? "Đang gửi…" : telegram.dispatch?.status === "FAILED" ? "Gửi lại Telegram" : "Gửi Telegram"}</button></> : <p className="mt-3 rounded-lg border border-amber-500/30 bg-amber-500/5 p-3 text-sm text-amber-100">Chưa có nhân viên Telegram ACTIVE được map với kho <strong>{workOrder.owner}</strong>. Vào Telegram Pilot để cấu hình trước.</p>}</section>; })()}
               </div>}
               {decision.mode === "HUMAN_APPROVAL" && decision.decisionStatus === "APPROVED" && workOrder?.status === "COMPLETED" && roleCan(role, "MANAGE_DECISION") && <div className="mt-4 rounded-lg border border-emerald-500/25 bg-emerald-500/5 p-4">
                 <h3 className="text-sm font-semibold text-emerald-100">Ghi nhận hành động đã thực hiện bên ngoài</h3>

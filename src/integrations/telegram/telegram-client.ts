@@ -44,6 +44,13 @@ export class TelegramClient implements HealthCheckable {
       };
     }
 
+    return this.sendToChat(this.chatId, text);
+  }
+
+  /** Sends an operational message to a mapped pilot group. Never falls back to a default chat. */
+  async sendToChat(chatId: string, text: string): Promise<{ messageId: string; response: any }> {
+    if (!this.botToken) throw new Error("Telegram bot token is not configured.");
+    if (!chatId.trim()) throw new Error("Telegram pilot group is not configured.");
     const url = `https://api.telegram.org/bot${this.botToken}/sendMessage`;
     let delay = 1000;
 
@@ -56,9 +63,9 @@ export class TelegramClient implements HealthCheckable {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            chat_id: this.chatId,
+            chat_id: chatId,
             text,
-            parse_mode: "Markdown",
+            disable_web_page_preview: true,
           }),
           signal: controller.signal,
         });
