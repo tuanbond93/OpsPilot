@@ -4,7 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Check, CircleAlert, Eye, Plus, RefreshCw, X } from "lucide-react";
 import type { Decision } from "@/domain/decision";
 import type { ExecutionWorkOrder } from "@/domain/execution-work-order";
-import { repairOperationalText } from "@/app/_components/operationalText";
+import { repairOperationalText, translateStatus } from "@/app/_components/operationalText";
 import { createClient } from "@/lib/supabase/client";
 import { roleCan, roleFromMetadata, type OpsRole } from "@/security/roles";
 import { handleApiAccess } from "@/app/_components/apiAccess";
@@ -36,6 +36,48 @@ const badge: Record<string, string> = {
   REJECTED: "border-rose-400/40 bg-rose-400/10 text-rose-300",
   SHADOW: "border-sky-400/40 bg-sky-400/10 text-sky-300",
 };
+
+type EvidenceFact = { label: string; value: string; emphasis?: boolean };
+
+function finiteNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function readableTimestamp(value: unknown): string | null {
+  if (typeof value !== "string" || !value) return null;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date.toLocaleString("vi-VN");
+}
+
+function buildEvidenceFacts(decision: Decision): EvidenceFact[] {
+  const facts = decision.evidence.operationalFacts;
+  const rows: EvidenceFact[] = [];
+  const affected = finiteNumber(facts.affectedOrderCount);
+  const analyzed = finiteNumber(facts.analyzedCount);
+  const averageAge = finiteNumber(facts.averageAgeHours);
+  const maximumAge = finiteNumber(facts.maximumAgeHours);
+  const gapCount = finiteNumber(facts.gapCount);
+  const oldestOrder = typeof facts.oldestOrderCode === "string" && facts.oldestOrderCode ? facts.oldestOrderCode : null;
+
+  if (affected !== null) rows.push({ label: "Đơn đang bị ảnh hưởng", value: `${affected} đơn`, emphasis: true });
+  if (analyzed !== null) rows.push({ label: "Đơn được phân tích", value: `${analyzed} đơn`, emphasis: true });
+  if (averageAge !== null) rows.push({ label: "Tuổi tồn trung bình", value: `${averageAge.toFixed(1)} giờ` });
+  if (maximumAge !== null) rows.push({ label: "Tuổi tồn cao nhất", value: `${maximumAge.toFixed(1)} giờ`, emphasis: true });
+  if (gapCount !== null) rows.push({ label: "Hạng mục cần kiểm tra", value: `${gapCount} hạng mục` });
+  if (oldestOrder) rows.push({ label: "Mã đơn tồn lâu nhất", value: oldestOrder });
+  return rows;
+}
+
+function evidenceGroups(value: unknown): Array<{ title: string; action: string; orderCount: number | null }> {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item) => {
+    if (!item || typeof item !== "object") return [];
+    const group = item as Record<string, unknown>;
+    const title = typeof group.title === "string" ? group.title : "Hạng mục cần kiểm tra";
+    const action = typeof group.action === "string" ? group.action : "";
+    return [{ title, action, orderCount: finiteNumber(group.orderCount) }];
+  }).slice(0, 3);
+}
 
 export default function DecisionInboxPage() {
   const [decisions, setDecisions] = useState<Decision[]>([]);
@@ -268,6 +310,17 @@ export default function DecisionInboxPage() {
           {decisions.map((decision) => {
             const reviewable = decision.mode === "HUMAN_APPROVAL" && decision.decisionStatus === "READY_FOR_REVIEW";
             const workOrder = workOrders[decision.decisionId];
+            const facts = buildEvidenceFacts(decision);
+            const sampleOrderCodes = Array.isArray(decision.evidence.operationalFacts.sampleOrderCodes)
+              ? decision.evidence.operationalFacts.sampleOrderCodes.filter((value): value is string => typeof value === "string" && Boolean(value)).slice(0, 5)
+              : [];
+            const groups = evidenceGroups(decision.evidence.operationalFacts.groups);
+            const followupState = typeof decision.evidence.operationalFacts.followupState === "string" ? decision.evidence.operationalFacts.followupState : null;
+            const evidenceCapturedAt = readableTimestamp(decision.evidence.capturedAt) || readableTimestamp(decision.evidence.operationalFacts.capturedAt);
+            const humanInvestigation = decision.evidence.actionContext?.humanInvestigation;
+            const investigationAction = humanInvestigation && typeof humanInvestigation === "object"
+              && typeof (humanInvestigation as Record<string, unknown>).action === "string"
+              ? (humanInvestigation as Record<string, unknown>).action as string : null;
             return <article key={decision.decisionId} className="rounded-xl border border-slate-800 bg-slate-900 p-4 shadow-lg sm:p-5">
               <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
                 <div className="min-w-0"><div className="flex flex-wrap gap-2 text-xs font-bold">
@@ -281,10 +334,22 @@ export default function DecisionInboxPage() {
                   <dt className="text-slate-500">Financial</dt><dd className="font-mono text-amber-300">NOT_EVALUATED</dd>
                 </dl>
               </div>
-              <div className="mt-4 rounded-lg border border-slate-800 bg-slate-950/70 p-3 text-sm">
-                <p className="flex items-center gap-2 font-semibold text-slate-200"><Eye aria-hidden="true" size={16}/> Evidence snapshot</p>
-                <p className="mt-1 break-words text-slate-400">{Object.entries(decision.evidence.operationalFacts).slice(0, 4).map(([key, value]) => `${key}: ${String(value)}`).join(" · ") || "Không có tóm tắt facts"}</p>
-              </div>
+              <section aria-label={`Bằng chứng cho quyết định ${decision.problem}`} className="mt-4 rounded-lg border border-slate-800 bg-slate-950/70 p-4 text-sm">
+                <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+                  <h3 className="flex items-center gap-2 font-semibold text-slate-100"><Eye aria-hidden="true" size={16}/> Facts tại thời điểm chụp</h3>
+                  {evidenceCapturedAt && <p className="text-xs text-slate-400">Chụp lúc {evidenceCapturedAt}</p>}
+                </div>
+                {facts.length > 0 ? <dl className="mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
+                  {facts.map((fact) => <div key={fact.label} className="rounded-md border border-slate-800 bg-slate-900/70 px-3 py-2">
+                    <dt className="text-xs text-slate-400">{fact.label}</dt>
+                    <dd className={`mt-0.5 break-words font-semibold ${fact.emphasis ? "text-amber-200" : "text-slate-100"}`}>{fact.value}</dd>
+                  </div>)}
+                </dl> : <p className="mt-2 text-slate-400">Chưa có facts định lượng trong snapshot này.</p>}
+                {followupState && <p className="mt-3 text-slate-300"><strong>Trạng thái follow-up:</strong> {translateStatus(followupState)}</p>}
+                {sampleOrderCodes.length > 0 && <div className="mt-3"><p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Mã đơn mẫu để đối soát</p><div className="mt-2 flex flex-wrap gap-2">{sampleOrderCodes.map((code) => <span key={code} className="rounded border border-cyan-400/30 bg-cyan-400/5 px-2 py-1 font-mono text-xs text-cyan-100">{code}</span>)}</div></div>}
+                {groups.length > 0 && <div className="mt-3 border-t border-slate-800 pt-3"><p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Điểm cần kiểm tra</p><ul className="mt-2 space-y-2 text-slate-300">{groups.map((group, index) => <li key={`${group.title}-${index}`}><strong className="text-slate-100">{group.title}</strong>{group.orderCount !== null ? ` · ${group.orderCount} đơn` : ""}{group.action ? <span className="block text-slate-400">{repairOperationalText(group.action)}</span> : null}</li>)}</ul></div>}
+                {investigationAction && <aside className="mt-3 rounded-md border border-amber-400/30 bg-amber-400/5 p-3 text-amber-100"><strong>Điều còn thiếu trước khi quyết định:</strong> {repairOperationalText(investigationAction)}</aside>}
+              </section>
               {decision.mode === "SHADOW" && <p className="mt-4 text-sm text-sky-300">SHADOW: chỉ quan sát recommendation/evidence; không có control tác động operation.</p>}
               {decision.mode === "SHADOW" && roleCan(role, "RECORD_OUTCOME") && <div className="mt-4 rounded-lg border border-sky-500/20 bg-sky-500/5 p-3">
                 <h3 className="text-sm font-semibold text-sky-100">Ghi nhận observed outcome</h3>

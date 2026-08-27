@@ -22,4 +22,9 @@ describe("repairOperationalText", () => {
     expect(repairOperationalText("Đánh giá vận hành. (Dynamic explanation unavailable)&#x20;"))
       .toBe("Đánh giá vận hành. (Chưa có giải thích từ AI) ");
   });
+
+  it("translates the decision-investigation fallback into operational Vietnamese", () => {
+    expect(repairOperationalText("Review incident evidence with the responsible operations lead."))
+      .toBe("Rà soát bằng chứng sự cố cùng đầu mối vận hành phụ trách trước khi đưa ra phương án.");
+  });
 });

@@ -5,6 +5,8 @@ const FALLBACK_TRANSLATIONS: Record<string, string> = {
   "No escalation required.": "Không cần leo thang.",
   "No executive summary available.": "Chưa có tóm tắt điều hành.",
   "Root cause not determined.": "Chưa xác định được nguyên nhân gốc.",
+  "Review incident evidence with the responsible operations lead.": "Rà soát bằng chứng sự cố cùng đầu mối vận hành phụ trách trước khi đưa ra phương án.",
+  "Human investigation is required before an operational decision can be made.": "Cần điều tra bổ sung bởi con người trước khi có thể đưa ra quyết định vận hành.",
 };
 
 /** Repairs legacy UTF-8/Latin-1 mojibake without changing normal text. */
