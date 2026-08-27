@@ -22,6 +22,6 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     idempotencyKey: typeof body.idempotencyKey === "string" ? body.idempotencyKey : "",
     decisionDeadline: typeof body.decisionDeadline === "string" ? body.decisionDeadline : undefined,
   });
-  const status = result.ok ? 201 : result.error === "NOT_FOUND" ? 404 : result.error === "WRITE_CONTROLS_DISABLED" ? 403 : 400;
+  const status = result.ok ? 201 : result.error === "NOT_FOUND" ? 404 : result.error === "WRITE_CONTROLS_DISABLED" ? 403 : result.error === "INCIDENT_ALREADY_HAS_DECISION" ? 409 : 400;
   return NextResponse.json(result.ok ? result : { error: result.error, message: result.message }, { status });
 }

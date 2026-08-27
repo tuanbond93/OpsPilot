@@ -30,6 +30,14 @@ export class DecisionPilotService implements IDecisionPilotService {
       if (!input.incidentId?.trim()) throw new DecisionDomainError("VALIDATION_ERROR", "incidentId is required.");
       const incident = await this.incidentRepo.getIncidentById(input.incidentId);
       if (!incident) throw new DecisionDomainError("NOT_FOUND", `Incident '${input.incidentId}' not found.`);
+      const existingDecisions = await this.decisionService.list(200);
+      if (!existingDecisions.ok) throw new DecisionDomainError("DECISION_LOOKUP_FAILED", existingDecisions.message || "Unable to check existing decisions for this incident.");
+      const listedDecisions = Array.isArray(existingDecisions.data)
+        ? existingDecisions.data as Array<{ decisionId: string; decisionStatus: string; sourceLinks?: { incidentId?: string } }>
+        : [];
+      const existing = listedDecisions
+        .find((decision) => decision?.sourceLinks?.incidentId === incident.id);
+      if (existing) throw new DecisionDomainError("INCIDENT_ALREADY_HAS_DECISION", `Incident này đã có decision ${existing.decisionId} ở trạng thái ${existing.decisionStatus}; không tạo SHADOW trùng.`);
 
       const history = await this.historyRepo.getIncidentHistory(incident.id);
       // Follow-up records are keyed by incident_id, but older adapters also

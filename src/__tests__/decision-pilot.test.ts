@@ -36,14 +36,14 @@ describe("Decision pilot adapter", () => {
     expect((result.data as any).financialImpact).toEqual({ status: "NOT_EVALUATED" });
   });
 
-  it("deduplicates repeated pilot creation from the same source fingerprint", async () => {
+  it("blocks repeated pilot creation when the incident already has a decision", async () => {
     const repository = new MockDecisionRepository();
     const { incidentRepo, historyRepo, followupRepo, plannerRepo } = repos();
     const service = new DecisionPilotService(incidentRepo, historyRepo, followupRepo, plannerRepo, new DecisionService(repository));
     const input = { incidentId: "incident-1", actor: "pilot" };
     const first = await service.createShadowFromIncident(input);
     const second = await service.createShadowFromIncident(input);
-    expect(first.ok).toBe(true); expect(second.ok).toBe(true); expect(second.idempotent).toBe(true);
+    expect(first.ok).toBe(true); expect(second.ok).toBe(false); expect(second.error).toBe("INCIDENT_ALREADY_HAS_DECISION");
     expect(await repository.list()).toHaveLength(1);
   });
 

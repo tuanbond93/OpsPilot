@@ -259,6 +259,10 @@ export default function DecisionInboxPage() {
     finally { setSubmitting(null); }
   }
 
+  const decisionByIncidentId = new Map(decisions.flatMap((decision) => decision.sourceLinks.incidentId ? [[decision.sourceLinks.incidentId, decision] as const] : []));
+  const availableIncidents = incidents.filter((incident) => !decisionByIncidentId.has(incident.incidentId));
+  const selectedExistingDecision = incidentId ? decisionByIncidentId.get(incidentId) : undefined;
+
   return (
     <main id="main-content" tabIndex={-1} className="min-h-dvh bg-slate-950 px-4 py-6 text-slate-100 sm:px-6 lg:px-8">
       <div className="mx-auto max-w-7xl space-y-5">
@@ -285,21 +289,23 @@ export default function DecisionInboxPage() {
           <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
             <div>
               <h2 className="text-sm font-bold text-sky-100">Tạo quyết định quan sát từ sự cố</h2>
-              <p className="mt-1 text-xs text-slate-400">Chọn một sự cố đã kiểm tra để lưu khuyến nghị và snapshot bằng chứng. Chế độ SHADOW không tác động vận hành.</p>
+              <p className="mt-1 text-xs text-slate-400">Chỉ hiển thị sự cố chưa có decision để tránh tạo SHADOW trùng. Chế độ SHADOW không tác động vận hành.</p>
             </div>
             <div className="flex w-full flex-col gap-2 sm:flex-row lg:w-auto">
               <label htmlFor="pilot-incident-id" className="sr-only">Chọn sự cố</label>
               <select id="pilot-incident-id" value={incidentId} onChange={(event) => setIncidentId(event.target.value)}
                 className="min-h-11 min-w-0 rounded-lg border border-slate-700 bg-slate-950 px-3 text-base focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-400 sm:w-[28rem]">
                 <option value="">Chọn sự cố đã kiểm tra…</option>
-                {incidents.map((incident) => <option key={incident.incidentId} value={incident.incidentId}>{incident.reasonName} · {incident.warehouseName} · {incident.affectedOrderCount} đơn</option>)}
+                {availableIncidents.map((incident) => <option key={incident.incidentId} value={incident.incidentId}>{incident.reasonName} · {incident.warehouseName} · {incident.affectedOrderCount} đơn</option>)}
               </select>
-              <button type="button" onClick={() => void createShadowFromIncident()} disabled={creating}
+              <button type="button" onClick={() => void createShadowFromIncident()} disabled={creating || !incidentId || Boolean(selectedExistingDecision)}
                 className="inline-flex min-h-11 items-center justify-center gap-2 rounded-lg bg-sky-600 px-4 font-semibold text-white hover:bg-sky-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-300 disabled:opacity-60">
                 <Plus aria-hidden="true" size={17} /> {creating ? "Đang tạo…" : "Tạo quyết định SHADOW"}
               </button>
             </div>
           </div>
+          {selectedExistingDecision && <p role="status" className="mt-3 rounded-lg border border-amber-500/30 bg-amber-500/5 p-3 text-sm text-amber-100">Sự cố này đã có decision <span className="font-mono">{selectedExistingDecision.decisionId}</span> ({selectedExistingDecision.decisionStatus}); hãy tiếp tục theo decision hiện có, không tạo SHADOW mới.</p>}
+          {!loading && availableIncidents.length === 0 && <p className="mt-3 text-sm text-slate-400">Không còn sự cố đủ điều kiện tạo SHADOW; tất cả sự cố đang hiển thị đã có decision tương ứng.</p>}
         </section>}
 
         <div aria-live="polite" aria-atomic="true">
