@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OpsPilot GHN Tracking Bridge
 // @namespace    https://opspilot-tau-lyart.vercel.app/
-// @version      1.6.0
+// @version      1.7.0
 // @description  Tra cứu lộ trình GHN trực tiếp cho OpsPilot mà không gửi token lên server.
 // @author       OpsPilot
 // @match        https://tracuunoibo.ghn.vn/*
@@ -20,6 +20,7 @@
   "use strict";
 
   const TOKEN_KEY = "opspilot_ghn_tracking_token";
+  const ORDER_DETAIL_PREFIX = "opspilot_ghn_order_detail:";
   const ORDER_LOGS_ENDPOINT = "https://fe-online-gateway.ghn.vn/order-tracking/public-api/internal/order-logs";
   const META_ENDPOINT = "https://rillnet-app.vercel.app/wh_meta.json";
   const ORDER_CODE_PATTERN = /^[A-Z0-9_-]{4,40}$/i;
@@ -59,6 +60,23 @@
       for (const key of Object.keys(headers)) if (/^(token|authorization|x-auth-token)$/i.test(key)) remember(headers[key]);
     };
 
+    const detailField = (value, keys) => {
+      if (!value || typeof value !== "object") return null;
+      for (const key of keys) if (text(value[key])) return text(value[key]);
+      return null;
+    };
+    const saveOrderDetails = (value, hintedOrderCode) => {
+      if (!value || typeof value !== "object") return;
+      const candidates = [value, value.data, value.order, value.data && value.data.order].filter(Boolean);
+      for (const candidate of candidates) {
+        const orderCode = text(candidate.order_code) || text(candidate.orderCode) || hintedOrderCode;
+        const recipientName = detailField(candidate, ["to_name", "recipient_name", "receiver_name", "consignee_name", "customer_name"]);
+        const recipientAddress = detailField(candidate, ["to_address", "recipient_address", "receiver_address", "consignee_address", "address"]);
+        if (orderCode && recipientName && recipientAddress) GM_setValue(`${ORDER_DETAIL_PREFIX}${String(orderCode).trim().toUpperCase()}`, { recipientName, recipientAddress, capturedAt: new Date().toISOString() });
+      }
+    };
+    const hintedOrderCode = (input) => { try { const url = new URL(typeof input === "string" ? input : input.url, location.href); return text(url.searchParams.get("order_code")) || text(url.searchParams.get("orderCode")); } catch (_) { return null; } };
+    const observeJson = (response, code) => { try { response.clone().json().then((value) => saveOrderDetails(value, code)).catch(() => {}); } catch (_) {} };
     const originalFetch = pageWindow.fetch;
     if (typeof originalFetch === "function") {
       pageWindow.fetch = function (input, init) {
@@ -66,16 +84,24 @@
           readHeaders(init && init.headers);
           if (input && typeof input === "object") readHeaders(input.headers);
         } catch (_) {}
-        return originalFetch.apply(this, arguments);
+        const code = hintedOrderCode(input);
+        return originalFetch.apply(this, arguments).then((response) => { observeJson(response, code); return response; });
       };
     }
 
     const xhrPrototype = pageWindow.XMLHttpRequest && pageWindow.XMLHttpRequest.prototype;
     if (xhrPrototype) {
+      const originalOpen = xhrPrototype.open;
+      xhrPrototype.open = function (_method, url) { this.__opspilotOrderCode = hintedOrderCode(url); return originalOpen.apply(this, arguments); };
       const originalSetRequestHeader = xhrPrototype.setRequestHeader;
       xhrPrototype.setRequestHeader = function (header, value) {
         if (/^(token|authorization|x-auth-token)$/i.test(String(header))) remember(value);
         return originalSetRequestHeader.apply(this, arguments);
+      };
+      const originalSend = xhrPrototype.send;
+      xhrPrototype.send = function () {
+        this.addEventListener("load", function () { try { saveOrderDetails(JSON.parse(this.responseText), this.__opspilotOrderCode); } catch (_) {} }, { once: true });
+        return originalSend.apply(this, arguments);
       };
     }
     return;
@@ -176,6 +202,7 @@
       for (const id of [nextWarehouseId, pickWarehouseId, deliverWarehouseId]) if (id) ids.add(id);
     }
     const warehouses = await fetchWarehouseDetails([...ids]);
+    const recipient = await GM_getValue(`${ORDER_DETAIL_PREFIX}${orderCode}`, null);
     const nameFor = (id) => id ? (warehouses[id] && warehouses[id].name) || `Kho ${id}` : null;
     const phase = phaseFor(status);
     return {
@@ -202,6 +229,8 @@
       deliveryStartedAtInferred,
       endDeliveryAt,
       endSuccessAt,
+      recipientName: recipient && text(recipient.recipientName),
+      recipientAddress: recipient && text(recipient.recipientAddress),
       journey: journey.map((point, index) => ({ ...point, warehouseName: nameFor(point.warehouseId), current: index === journey.length - 1 && phase !== "IN_TRANSIT" && phase !== "COMPLETED" }))
     };
   }

@@ -33,6 +33,8 @@ export type LiveOrderTracking = {
   deliveryStartedAtInferred?: boolean;
   endDeliveryAt?: string | null;
   endSuccessAt?: string | null;
+  recipientName?: string | null;
+  recipientAddress?: string | null;
   status: string | null;
   statusLabel: string;
   phase: "AT_WAREHOUSE" | "IN_TRANSIT" | "DELIVERING" | "COMPLETED" | "UNKNOWN";
