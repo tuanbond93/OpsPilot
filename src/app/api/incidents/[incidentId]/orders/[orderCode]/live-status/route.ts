@@ -36,6 +36,12 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
   const linked = await resolveLinkedOrder(request, incidentId, orderCode);
   if (!linked.ok) return linked.response;
 
+  if (request.nextUrl.searchParams.get("cache") === "only") {
+    const cached = await cachedTracking(linked.guard.client, orderCode);
+    if (cached) return NextResponse.json(cached, { headers: { "cache-control": "no-store" } });
+    return NextResponse.json({ error: "TRACKING_CACHE_MISS" }, { status: 404, headers: { "cache-control": "no-store" } });
+  }
+
   const client = new GhnOrderTrackingClient();
   try {
     const entries = await client.fetchOrderLogs(orderCode);

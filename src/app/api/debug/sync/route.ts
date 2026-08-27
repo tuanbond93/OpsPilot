@@ -11,7 +11,8 @@ async function runSync(request: NextRequest) {
     if (!access.ok) return access.response;
   }
 
-  const result = await syncRillnet({ forceReprocessSource: true });
+  const mode = request.nextUrl.searchParams.get("mode");
+  const result = await syncRillnet({ forceReprocessSource: mode === "rebuild" });
 
   if (!result.ok) {
     if (result.error?.code === "SYNC_ALREADY_RUNNING") {

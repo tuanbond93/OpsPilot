@@ -398,14 +398,14 @@ export default function ExecutiveDashboardPage() {
     return () => clearInterval(timer);
   }, [syncing]);
 
-  async function handleFreshSync() {
+  async function handleFreshSync(rebuild = false) {
     if (!session.can("MANAGE_SYSTEM")) { setSyncMessage("Chỉ ADMIN được yêu cầu đồng bộ thủ công."); return; }
     setSyncMessage(null);
     setSyncPhase("FETCHING_SNAPSHOT");
     setSyncElapsedSeconds(0);
     setSyncing(true);
     try {
-      const response = await fetch("/api/debug/sync", { method: "POST" });
+      const response = await fetch(`/api/debug/sync${rebuild ? "?mode=rebuild" : ""}`, { method: "POST" });
       const result = await response.json();
       if (response.status === 409) {
         setSyncMessage("Một phiên đồng bộ khác đang chạy. Hãy thử lại sau khi phiên đó hoàn tất.");
@@ -414,7 +414,10 @@ export default function ExecutiveDashboardPage() {
       handleApiAccess(response, result, "Đồng bộ dữ liệu thất bại.");
       if (!result.ok) throw new Error(result.message || result.error?.message || "Đồng bộ dữ liệu thất bại");
       setSyncPhase("COMPLETED");
-      setSyncMessage(`Đã đồng bộ và tái tạo bằng chứng cho ${result.fetchedOrderCount} đơn, phát hiện ${result.incidentCount} sự cố trong ${Math.max(1, Math.round(result.durationMs / 1000))} giây.`);
+      const durationSeconds = Math.max(1, Math.round(result.durationMs / 1000));
+      setSyncMessage(result.skipReason === "SOURCE_UNCHANGED"
+        ? `Nguồn chưa thay đổi — kiểm tra hoàn tất trong ${durationSeconds} giây, giữ nguyên snapshot và bằng chứng hiện có.`
+        : `Đã đồng bộ ${result.fetchedOrderCount} đơn, phát hiện ${result.incidentCount} sự cố trong ${durationSeconds} giây.`);
       await fetchDashboardData();
     } catch (syncError: unknown) {
       setSyncMessage(`Không thể đồng bộ: ${syncError instanceof Error ? syncError.message : String(syncError)}`);
@@ -614,7 +617,8 @@ export default function ExecutiveDashboardPage() {
           >
             🔄 Làm mới ({timings?.totalMs || 0}ms)
           </button>
-          <button type="button" onClick={() => void handleFreshSync()} disabled={syncing || !session.can("MANAGE_SYSTEM")} title={!session.can("MANAGE_SYSTEM") ? "Chỉ ADMIN được đồng bộ thủ công" : "Đồng bộ và tái tạo bằng chứng từ snapshot Rillnet"} aria-describedby={syncing ? "sync-progress" : undefined} className="inline-flex min-h-11 items-center gap-2 whitespace-nowrap rounded-xl bg-blue-600 px-4 text-xs font-semibold text-white transition hover:bg-blue-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-300 disabled:cursor-not-allowed disabled:opacity-50"><span aria-hidden="true" className={syncing ? "animate-spin motion-reduce:animate-none" : ""}>↻</span>{syncing ? `Đang đồng bộ ${String(Math.floor(syncElapsedSeconds/60)).padStart(2,"0")}:${String(syncElapsedSeconds%60).padStart(2,"0")}` : "Đồng bộ dữ liệu mới"}</button>
+          <button type="button" onClick={() => void handleFreshSync()} disabled={syncing || !session.can("MANAGE_SYSTEM")} title={!session.can("MANAGE_SYSTEM") ? "Chỉ ADMIN được đồng bộ thủ công" : "Kiểm tra nguồn Rillnet mới; nếu không đổi, giữ nguyên snapshot và hoàn tất nhanh"} aria-describedby={syncing ? "sync-progress" : undefined} className="inline-flex min-h-11 items-center gap-2 whitespace-nowrap rounded-xl bg-blue-600 px-4 text-xs font-semibold text-white transition hover:bg-blue-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-300 disabled:cursor-not-allowed disabled:opacity-50"><span aria-hidden="true" className={syncing ? "animate-spin motion-reduce:animate-none" : ""}>↻</span>{syncing ? `Đang đồng bộ ${String(Math.floor(syncElapsedSeconds/60)).padStart(2,"0")}:${String(syncElapsedSeconds%60).padStart(2,"0")}` : "Đồng bộ dữ liệu mới"}</button>
+          <button type="button" onClick={() => void handleFreshSync(true)} disabled={syncing || !session.can("MANAGE_SYSTEM")} title={!session.can("MANAGE_SYSTEM") ? "Chỉ ADMIN được tái tạo toàn bộ" : "Chỉ dùng sau khi thay đổi rule/schema: tái tạo bằng chứng dù nguồn Rillnet không đổi"} className="inline-flex min-h-11 items-center whitespace-nowrap rounded-xl border border-slate-700 px-3 text-xs font-semibold text-slate-300 transition hover:border-slate-500 hover:text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-slate-300 disabled:cursor-not-allowed disabled:opacity-50">Tái tạo toàn bộ</button>
           <button type="button" onClick={() => void handleShadowFollowupRun()} disabled={shadowRunning || !session.can("MANAGE_SYSTEM")} title={!session.can("MANAGE_SYSTEM") ? "Chỉ ADMIN được chạy LC-10 SHADOW" : "Chỉ thu evidence follow-up đến hạn; không tự verify outcome"} aria-describedby={shadowRunning ? "shadow-run-progress" : undefined} className="inline-flex min-h-11 items-center gap-2 whitespace-nowrap rounded-xl border border-cyan-400/50 bg-cyan-500/10 px-4 text-xs font-semibold text-cyan-100 transition hover:bg-cyan-500/20 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cyan-300 disabled:cursor-not-allowed disabled:opacity-50"><span aria-hidden="true" className={shadowRunning ? "animate-spin motion-reduce:animate-none" : ""}>↻</span>{shadowRunning ? "Đang chạy LC-10…" : "Chạy LC-10 SHADOW"}</button>
         </div>
       </header>

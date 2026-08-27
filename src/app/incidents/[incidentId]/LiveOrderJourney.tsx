@@ -18,9 +18,8 @@ export function waitForBridge() {
   });
 }
 
-export async function requestThroughBridge(orderCode: string): Promise<ApiData> {
-  await waitForBridge();
-  return await new Promise<ApiData>((resolve, reject) => {
+export function requestThroughReadyBridge(orderCode: string): Promise<ApiData> {
+  return new Promise<ApiData>((resolve, reject) => {
     const requestId = crypto.randomUUID();
     const eventName = `GHN_ORDER_TRACKING_RESPONSE_${requestId}`;
     const timer = window.setTimeout(() => { window.removeEventListener(eventName, receive as EventListener); reject(new Error("BRIDGE_TIMEOUT")); }, 12_000);
@@ -33,6 +32,20 @@ export async function requestThroughBridge(orderCode: string): Promise<ApiData> 
     };
     window.addEventListener(eventName, receive as EventListener, { once: true });
     window.dispatchEvent(new CustomEvent("GHN_ORDER_TRACKING_REQUEST", { detail: { requestId, orderCode } }));
+  });
+}
+
+export async function requestThroughBridge(orderCode: string): Promise<ApiData> {
+  await waitForBridge();
+  return requestThroughReadyBridge(orderCode);
+}
+
+export function cacheBridgeTracking(incidentId: string, tracking: ApiData) {
+  const { recipientName: _recipientName, recipientAddress: _recipientAddress, ...safeToCache } = tracking;
+  return fetch(`/api/incidents/${encodeURIComponent(incidentId)}/orders/${encodeURIComponent(tracking.orderCode)}/live-status`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(safeToCache),
   });
 }
 
@@ -64,8 +77,7 @@ export function LiveOrderJourney({ orderCode, onResolved }: { orderCode: string;
       let payload: ApiData;
       try {
         payload = await requestThroughBridge(orderCode);
-        const { recipientName: _recipientName, recipientAddress: _recipientAddress, ...safeToCache } = payload;
-        void fetch(`/api/incidents/${encodeURIComponent(incidentId)}/orders/${encodeURIComponent(orderCode)}/live-status`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(safeToCache) });
+        void cacheBridgeTracking(incidentId, payload);
       } catch (bridgeError) {
         const response = await fetch(`/api/incidents/${encodeURIComponent(incidentId)}/orders/${encodeURIComponent(orderCode)}/live-status`, { cache: "no-store" });
         if (!response.ok) throw bridgeError;
