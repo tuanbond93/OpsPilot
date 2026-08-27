@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OpsPilot GHN Tracking Bridge
 // @namespace    https://opspilot-tau-lyart.vercel.app/
-// @version      1.9.0
+// @version      2.0.0
 // @description  Tra cứu lộ trình GHN trực tiếp cho OpsPilot mà không gửi token lên server.
 // @author       OpsPilot
 // @match        https://tracuunoibo.ghn.vn/*
@@ -24,6 +24,7 @@
   const ORDER_LOGS_ENDPOINT = "https://fe-online-gateway.ghn.vn/order-tracking/public-api/internal/order-logs";
   const META_ENDPOINT = "https://rillnet-app.vercel.app/wh_meta.json";
   const ORDER_CODE_PATTERN = /^[A-Z0-9_-]{4,40}$/i;
+  const BRIDGE_VERSION = "2.0.0";
   const STATUS_LABELS = {
     ready_to_pick: "Chờ lấy hàng", picking: "Đang lấy hàng", picked: "Đã lấy hàng",
     storing: "Đang lưu tại kho", transporting: "Đang trung chuyển", delivering: "Đang giao hàng",
@@ -70,25 +71,47 @@
       const lines = String(source || "").split(/\n+/).map((line) => text(line)).filter(Boolean);
       const at = lines.findIndex((line) => labelKey(line).startsWith(labelKey(label)));
       if (at < 0) return null;
-      const inline = text(lines[at].replace(new RegExp(`^${label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*:?\\s*`, "i")));
-      const candidate = inline && labelKey(inline) !== labelKey(label) ? inline : lines[at + 1];
+      const colonAt = lines[at].indexOf(":");
+      const inline = colonAt >= 0 ? text(lines[at].slice(colonAt + 1)) : null;
+      const candidate = inline || lines[at + 1] || null;
       return candidate && !stopLabels.some((stop) => labelKey(candidate).startsWith(labelKey(stop))) ? candidate : null;
     };
+    const looksLikeOrderCode = (value) => Boolean(value && ORDER_CODE_PATTERN.test(value) && /[a-z]/i.test(value) && /\d/.test(value));
     const orderCodeFromPage = (pageText) => {
-      const fromUrl = hintedOrderCode(location.href);
-      if (fromUrl) return fromUrl.toUpperCase();
-      const input = [...document.querySelectorAll("input")].map((element) => text(element.value)).find((value) => value && ORDER_CODE_PATTERN.test(value));
-      if (input) return input.toUpperCase();
       const orderLabelMatch = String(pageText || "").match(/Mã\s*đơn\s*hàng\s*:?\s*([A-Z0-9_-]{4,40})/i);
-      return orderLabelMatch && ORDER_CODE_PATTERN.test(orderLabelMatch[1]) ? orderLabelMatch[1].toUpperCase() : null;
+      if (orderLabelMatch && looksLikeOrderCode(orderLabelMatch[1])) return orderLabelMatch[1].toUpperCase();
+      const fromUrl = hintedOrderCode(location.href);
+      if (looksLikeOrderCode(fromUrl)) return fromUrl.toUpperCase();
+      const input = [...document.querySelectorAll("input")].map((element) => text(element.value)).find(looksLikeOrderCode);
+      if (input) return input.toUpperCase();
+      return null;
     };
-    const captureRecipientFromPage = () => {
+    const recipientSectionFromPage = (pageText) => {
+      const source = String(pageText || "");
+      const at = source.toLocaleLowerCase("vi").indexOf("thông tin người nhận");
+      return at >= 0 ? source.slice(at) : source;
+    };
+    const saveRecipient = async (orderCode, recipientName, recipientAddress, source) => {
+      if (!orderCode || (!recipientName && !recipientAddress)) return false;
+      const key = `${ORDER_DETAIL_PREFIX}${orderCode}`;
+      const existing = await GM_getValue(key, null);
+      await GM_setValue(key, {
+        ...(existing && typeof existing === "object" ? existing : {}),
+        ...(recipientName ? { recipientName } : {}),
+        ...(recipientAddress ? { recipientAddress } : {}),
+        capturedAt: new Date().toISOString(),
+        source
+      });
+      return true;
+    };
+    const captureRecipientFromPage = async () => {
       const pageText = document.body && document.body.innerText;
       const orderCode = orderCodeFromPage(pageText);
-      if (!orderCode || !pageText) return;
-      const recipientName = detailValueFromPage(pageText, "Họ và tên", ["Số điện thoại", "Địa chỉ", "Quận/Huyện"]);
-      const recipientAddress = detailValueFromPage(pageText, "Địa chỉ", ["Quận/Huyện", "Phường/Xã", "Khu vực giao hàng"]);
-      if (recipientName && recipientAddress) GM_setValue(`${ORDER_DETAIL_PREFIX}${orderCode}`, { recipientName, recipientAddress, capturedAt: new Date().toISOString(), source: "ghn_order_detail_dom" });
+      if (!orderCode || !pageText) return false;
+      const recipientSection = recipientSectionFromPage(pageText);
+      const recipientName = detailValueFromPage(recipientSection, "Họ và tên", ["Số điện thoại", "Địa chỉ", "Quận/Huyện"]);
+      const recipientAddress = detailValueFromPage(recipientSection, "Địa chỉ", ["Quận/Huyện", "Phường/Xã", "Khu vực giao hàng"]);
+      return await saveRecipient(orderCode, recipientName, recipientAddress, "ghn_order_detail_dom");
     };
     const saveOrderDetails = (value, hintedOrderCode) => {
       if (!value || typeof value !== "object") return;
@@ -97,7 +120,7 @@
         const orderCode = text(candidate.order_code) || text(candidate.orderCode) || hintedOrderCode;
         const recipientName = detailField(candidate, ["to_name", "recipient_name", "receiver_name", "consignee_name", "customer_name"]);
         const recipientAddress = detailField(candidate, ["to_address", "recipient_address", "receiver_address", "consignee_address", "address"]);
-        if (orderCode && recipientName && recipientAddress) GM_setValue(`${ORDER_DETAIL_PREFIX}${String(orderCode).trim().toUpperCase()}`, { recipientName, recipientAddress, capturedAt: new Date().toISOString() });
+        if (orderCode && (recipientName || recipientAddress)) void saveRecipient(String(orderCode).trim().toUpperCase(), recipientName, recipientAddress, "ghn_order_detail_api");
       }
     };
     const hintedOrderCode = (input) => { try { const url = new URL(typeof input === "string" ? input : input.url, location.href); return text(url.searchParams.get("order_code")) || text(url.searchParams.get("orderCode")); } catch (_) { return null; } };
@@ -129,10 +152,14 @@
         return originalSend.apply(this, arguments);
       };
     }
-    const observer = new MutationObserver(() => captureRecipientFromPage());
-    observer.observe(document.documentElement, { childList: true, subtree: true });
-    window.setTimeout(captureRecipientFromPage, 1500);
-    window.setTimeout(captureRecipientFromPage, 5000);
+    const observer = new MutationObserver(() => { void captureRecipientFromPage(); });
+    if (document.documentElement) observer.observe(document.documentElement, { childList: true, subtree: true, characterData: true });
+    let captureAttempts = 0;
+    const captureTimer = window.setInterval(async () => {
+      captureAttempts += 1;
+      const captured = await captureRecipientFromPage();
+      if (captured || captureAttempts >= 15) window.clearInterval(captureTimer);
+    }, 2000);
     return;
   }
 
@@ -268,7 +295,7 @@
     window.dispatchEvent(new CustomEvent(`GHN_ORDER_TRACKING_RESPONSE_${requestId}`, { detail }));
   }
 
-  window.addEventListener("GHN_BRIDGE_PING", () => window.dispatchEvent(new CustomEvent("GHN_BRIDGE_READY", { detail: { version: "1.9.0" } })));
+  window.addEventListener("GHN_BRIDGE_PING", () => window.dispatchEvent(new CustomEvent("GHN_BRIDGE_READY", { detail: { version: BRIDGE_VERSION } })));
   window.addEventListener("GHN_ORDER_TRACKING_REQUEST", async (event) => {
     const detail = event && event.detail;
     const requestId = detail && typeof detail.requestId === "string" ? detail.requestId : "";
@@ -280,5 +307,5 @@
       respond(requestId, { error: error instanceof Error ? error.message : "GHN_BRIDGE_ERROR" });
     }
   });
-  window.dispatchEvent(new CustomEvent("GHN_BRIDGE_READY", { detail: { version: "1.9.0" } }));
+  window.dispatchEvent(new CustomEvent("GHN_BRIDGE_READY", { detail: { version: BRIDGE_VERSION } }));
 })();
