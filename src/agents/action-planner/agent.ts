@@ -1,9 +1,11 @@
+import createHash from "crypto";
 import type { IncidentRow, IncidentHistoryRow, OrderExceptionRow, FollowupCaseRow, FollowupEventRow } from "@/connectors/supabase";
 import { logger } from "@/observability/logger";
 import { serializePromptVersion } from "@/repositories/planner/prompt-version-mapper";
 import type { IPlannerRepository } from "@/repositories/interfaces/IPlannerRepository";
 import type { NotificationActionRow } from "../../engine/action-queue";
 import type { RootCauseResult } from "../root-cause/schema";
+import type { ApprovedPlaybookGuidance } from "@/services/playbook-guidance";
 import { generate } from "../../ai/provider";
 import { buildPlannerContext, type PlannerContext } from "./context-builder";
 import { calculateConfidence } from "./confidence-calculator";
@@ -34,6 +36,7 @@ export interface PlannerAgentParams {
   followupEvents?: FollowupEventRow[];
   actionHistory?: NotificationActionRow[];
   activeExceptions?: OrderExceptionRow[];
+  approvedPlaybookGuidance?: ApprovedPlaybookGuidance[];
   options?: ActionPlannerAgentOptions;
   referenceTimeMs?: number;
 }
@@ -76,6 +79,11 @@ export class ActionPlannerAgent {
       1,
       1
     );
+    // Approved guidance changes the planner context and therefore invalidates a prior cached draft.
+    // It remains contextual evidence only; deterministic matcher behaviour is unchanged.
+    if (params.approvedPlaybookGuidance?.length) {
+      ctx.contextHash = createHash.createHash("sha256").update(`${ctx.contextHash}:${JSON.stringify(params.approvedPlaybookGuidance)}`).digest("hex");
+    }
 
 
     // 2. Cache Lifecycle & Force Regeneration Check
@@ -138,6 +146,15 @@ export class ActionPlannerAgent {
       evidenceList: ctx.evidenceList.map((e) => `[${e.code}] ${e.statement}`),
       followupState: params.followupCase ? params.followupCase.current_state : "Chưa có case theo dõi",
       rootCauseSummary: params.rootCauseResult ? params.rootCauseResult.summary : "Chưa có chẩn đoán nguyên nhân gốc",
+      approvedPlaybookGuidance: (params.approvedPlaybookGuidance || []).map((guidance) => ({
+        orderCodes: guidance.orderCodes,
+        trigger: guidance.triggerDescription,
+        owner: guidance.responsibleOwner,
+        verifiedRootCause: guidance.rootCause,
+        standardAction: guidance.standardAction,
+        evidence: guidance.evidence,
+      })),
+      guidancePolicy: "Approved playbook guidance is human-reviewed context only. Do not invent facts, do not auto-execute, and require human approval for every recommendation.",
     };
 
     let result: PlannerResult;

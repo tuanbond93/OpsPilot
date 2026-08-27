@@ -9,6 +9,7 @@ import type { IAiJobRepository } from "@/repositories/interfaces/IAiJobRepositor
 import type { IActionQueue } from "@/engine/action-queue/IActionQueue";
 import { RootCauseAgent } from "@/agents/root-cause";
 import { ActionPlannerAgent } from "@/agents/action-planner";
+import { readApprovedPlaybookGuidance } from "@/services/playbook-guidance";
 
 const MAX_REVIEWED_BY_LENGTH = 200;
 
@@ -64,6 +65,8 @@ export class PlannerService implements IPlannerService {
       const followupEvents = followupCase ? await this.followupRepo.getEventsByCaseId(followupCase.id) : [];
       const activeExceptions = await this.exceptionRepo.getActiveExceptions();
       const actionHistory = await (this.actionQueue as any).getAllActions?.() || [];
+      let approvedPlaybookGuidance: import("@/services/playbook-guidance").ApprovedPlaybookGuidance[] = [];
+      try { approvedPlaybookGuidance = await readApprovedPlaybookGuidance(dbInc.id); } catch { /* Guidance is optional; planner remains safe without it. */ }
 
       let rootCauseResult = null;
       try {
@@ -100,6 +103,7 @@ export class PlannerService implements IPlannerService {
         followupEvents,
         actionHistory,
         activeExceptions,
+        approvedPlaybookGuidance,
         options: { provider, model, forceRegenerate, requestedBy },
       });
 
