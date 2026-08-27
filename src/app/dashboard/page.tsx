@@ -111,17 +111,6 @@ interface TimelineItem {
   actor: string | null;
 }
 
-interface ShadowFollowupRunItem {
-  eventId: string;
-  decisionId: string;
-  actor: string;
-  occurredAt: string;
-  observationState: "READY_TO_VERIFY" | "AWAITING_POST_WINDOW_EVIDENCE";
-  observedAt: string | null;
-  observedAffectedOrders: number | null;
-  source: string | null;
-}
-
 interface HealthIndicator {
   status: "green" | "yellow" | "red" | "unknown";
   healthReason: string;
@@ -216,36 +205,6 @@ const syncPhaseLabels: Record<string, string> = {
   FAILED: "Đồng bộ thất bại",
 };
 
-const notificationActionLabels: Record<string, string> = {
-  DISPATCH: "Gửi thông báo",
-  RETRY: "Gửi lại thông báo",
-  CANCEL: "Hủy thông báo",
-};
-
-const notificationProviderLabels: Record<string, string> = {
-  console: "Bảng điều khiển",
-  telegram: "Telegram",
-};
-
-const notificationStatusLabels: Record<string, string> = {
-  PENDING: "CHỜ GỬI",
-  PROCESSING: "ĐANG GỬI",
-  SENT: "ĐÃ GỬI",
-  SIMULATED: "MÔ PHỎNG",
-  FAILED: "GỬI THẤT BẠI",
-  CANCELLED: "ĐÃ HỦY",
-};
-
-const plannerRecommendationLabels: Record<string, string> = {
-  PRIORITIZE_OLD_ORDERS: "Ưu tiên đơn tồn lâu",
-  VERIFY_EXCEPTION: "Xác minh ngoại lệ",
-  REVIEW_ASSIGNMENT: "Kiểm tra phân công",
-  CONTACT_WAREHOUSE: "Liên hệ kho",
-  PREPARE_ESCALATION: "Chuẩn bị hồ sơ leo thang",
-  CONTINUE_MONITORING: "Tiếp tục theo dõi",
-  NO_ACTION: "Chưa cần hành động",
-};
-
 function priorityPresentation(score: number) {
   if (score >= 75) return { label: "Rất cao", tone: "border-rose-500/40 bg-rose-500/10 text-rose-200" };
   if (score >= 50) return { label: "Cao", tone: "border-amber-500/40 bg-amber-500/10 text-amber-200" };
@@ -293,26 +252,10 @@ export default function ExecutiveDashboardPage() {
   const [filterReason, setFilterReason] = useState<string>("all");
   const [sortBy, setSortBy] = useState<"priority" | "age" | "newest">("priority");
 
-  // Notification action message
-  const [actionMessage, setActionMessage] = useState<string | null>(null);
   const [syncing, setSyncing] = useState(false);
   const [syncMessage, setSyncMessage] = useState<string | null>(null);
   const [syncElapsedSeconds, setSyncElapsedSeconds] = useState(0);
   const [syncPhase, setSyncPhase] = useState("CREATED");
-  const [shadowRuns, setShadowRuns] = useState<ShadowFollowupRunItem[]>([]);
-  const [shadowRunning, setShadowRunning] = useState(false);
-  const [shadowRunMessage, setShadowRunMessage] = useState<string | null>(null);
-
-  const fetchShadowRuns = useCallback(async () => {
-    try {
-      const response = await fetch("/api/decision-followups/shadow-runs", { cache: "no-store" });
-      const result = await response.json();
-      handleApiAccess(response, result, "Không thể tải lịch sử LC-10.");
-      setShadowRuns(result.data || []);
-    } catch {
-      setShadowRuns([]);
-    }
-  }, []);
 
   const selectedScope = selectedWarehouse
     ? selectedWarehouse
@@ -386,10 +329,9 @@ export default function ExecutiveDashboardPage() {
 
   useEffect(() => {
     fetchDashboardData();
-    void fetchShadowRuns();
     const interval = setInterval(fetchDashboardData, 30000);
     return () => clearInterval(interval);
-  }, [fetchDashboardData, fetchShadowRuns]);
+  }, [fetchDashboardData]);
 
   useEffect(() => {
     if (!syncing) return;
@@ -426,85 +368,6 @@ export default function ExecutiveDashboardPage() {
     }
   }
 
-  async function handleShadowFollowupRun() {
-    if (!session.can("MANAGE_SYSTEM")) { setShadowRunMessage("Chỉ ADMIN được chạy LC-10 SHADOW thủ công."); return; }
-    setShadowRunMessage(null);
-    setShadowRunning(true);
-    try {
-      const response = await fetch("/api/decision-followups/shadow-runs", { method: "POST" });
-      const result = await response.json();
-      handleApiAccess(response, result, "Không thể chạy LC-10 SHADOW.");
-      const summary = result.data;
-      setShadowRunMessage(`LC-10 SHADOW hoàn tất: quét ${summary.scannedCount}, ghi evidence ${summary.capturedCount}, chờ evidence ${summary.awaitingEvidenceCount}, lỗi ${summary.failedCount}. Không có outcome nào được tự verify.`);
-      await fetchShadowRuns();
-    } catch (runError: unknown) {
-      setShadowRunMessage(`Không thể chạy LC-10 SHADOW: ${runError instanceof Error ? runError.message : String(runError)}`);
-    } finally {
-      setShadowRunning(false);
-    }
-  }
-
-  async function handleNotificationAction(actionId: string, op: "retry" | "cancel") {
-    if (!session.can("MANAGE_SYSTEM")) { setActionMessage("Tài khoản hiện tại không có quyền điều khiển action thông báo."); return; }
-    if (!data?.writeControlsEnabled) {
-      alert("Write controls are disabled in production environment.");
-      return;
-    }
-
-    const confirmed = confirm(`Xác nhận thực hiện thao tác ${op.toUpperCase()} cho Action #${actionId}?`);
-    if (!confirmed) return;
-
-    try {
-      setActionMessage(null);
-      const endpoint = `/api/debug/actions/${encodeURIComponent(actionId)}/${op}`;
-      const res = await fetch(endpoint, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ actor: session.actor, reason: `Operator manual ${op}` }),
-      });
-      const json = await res.json();
-      handleApiAccess(res, json, `Không thể ${op} action.`);
-      if (json.error) {
-        throw new Error(json.message || json.error || `${op} failed`);
-      }
-      setActionMessage(`Thao tác ${op.toUpperCase()} thành công bởi ${session.actor}`);
-      fetchDashboardData();
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      alert(`Action error: ${msg}`);
-    }
-  }
-
-  async function handlePlannerReview(runId: string, decision: "APPROVED" | "REJECTED") {
-    if (!session.can("REVIEW_COPILOT")) { setActionMessage("Tài khoản hiện tại không có quyền duyệt Planner."); return; }
-    if (!data?.writeControlsEnabled) {
-      alert("Write controls are disabled in production environment.");
-      return;
-    }
-
-    const confirmed = confirm(`Xác nhận ${decision === "APPROVED" ? "PHÊ DUYỆT" : "TỪ CHỐI"} Planner Run #${runId}?`);
-    if (!confirmed) return;
-
-    try {
-      setActionMessage(null);
-      const res = await fetch(`/api/debug/planner-runs/${encodeURIComponent(runId)}/review`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ decision, reviewedBy: session.actor }),
-      });
-      const json = await res.json();
-      handleApiAccess(res, json, "Không thể duyệt Planner.");
-      if (json.error) {
-        throw new Error(json.message || json.error || "Review failed");
-      }
-      setActionMessage(`Đã ${decision === "APPROVED" ? "PHÊ DUYỆT" : "TỪ CHỐI"} bởi ${session.actor}`);
-      fetchDashboardData();
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      alert(`Review error: ${msg}`);
-    }
-  }
-
   if (loading && !data) {
     return (
       <main id="main-content" tabIndex={-1} className="min-h-dvh bg-slate-950 text-slate-100 p-6 max-w-7xl mx-auto space-y-6 animate-pulse motion-reduce:animate-none">
@@ -522,8 +385,6 @@ export default function ExecutiveDashboardPage() {
   const kpis = data?.kpis;
   const incidentsPayload = data?.incidents;
   const incidents = incidentsPayload?.items || [];
-  const notifications = data?.notifications;
-  const planner = data?.plannerSummary;
   const health = data?.health;
   const timings = data?.diagnostics?.timings;
 
@@ -619,21 +480,10 @@ export default function ExecutiveDashboardPage() {
           </button>
           <button type="button" onClick={() => void handleFreshSync()} disabled={syncing || !session.can("MANAGE_SYSTEM")} title={!session.can("MANAGE_SYSTEM") ? "Chỉ ADMIN được đồng bộ thủ công" : "Kiểm tra nguồn Rillnet mới; nếu không đổi, giữ nguyên snapshot và hoàn tất nhanh"} aria-describedby={syncing ? "sync-progress" : undefined} className="inline-flex min-h-11 items-center gap-2 whitespace-nowrap rounded-xl bg-blue-600 px-4 text-xs font-semibold text-white transition hover:bg-blue-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-300 disabled:cursor-not-allowed disabled:opacity-50"><span aria-hidden="true" className={syncing ? "animate-spin motion-reduce:animate-none" : ""}>↻</span>{syncing ? `Đang đồng bộ ${String(Math.floor(syncElapsedSeconds/60)).padStart(2,"0")}:${String(syncElapsedSeconds%60).padStart(2,"0")}` : "Đồng bộ dữ liệu mới"}</button>
           <button type="button" onClick={() => void handleFreshSync(true)} disabled={syncing || !session.can("MANAGE_SYSTEM")} title={!session.can("MANAGE_SYSTEM") ? "Chỉ ADMIN được tái tạo toàn bộ" : "Chỉ dùng sau khi thay đổi rule/schema: tái tạo bằng chứng dù nguồn Rillnet không đổi"} className="inline-flex min-h-11 items-center whitespace-nowrap rounded-xl border border-slate-700 px-3 text-xs font-semibold text-slate-300 transition hover:border-slate-500 hover:text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-slate-300 disabled:cursor-not-allowed disabled:opacity-50">Tái tạo toàn bộ</button>
-          <button type="button" onClick={() => void handleShadowFollowupRun()} disabled={shadowRunning || !session.can("MANAGE_SYSTEM")} title={!session.can("MANAGE_SYSTEM") ? "Chỉ ADMIN được chạy LC-10 SHADOW" : "Chỉ thu evidence follow-up đến hạn; không tự verify outcome"} aria-describedby={shadowRunning ? "shadow-run-progress" : undefined} className="inline-flex min-h-11 items-center gap-2 whitespace-nowrap rounded-xl border border-cyan-400/50 bg-cyan-500/10 px-4 text-xs font-semibold text-cyan-100 transition hover:bg-cyan-500/20 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cyan-300 disabled:cursor-not-allowed disabled:opacity-50"><span aria-hidden="true" className={shadowRunning ? "animate-spin motion-reduce:animate-none" : ""}>↻</span>{shadowRunning ? "Đang chạy LC-10…" : "Chạy LC-10 SHADOW"}</button>
         </div>
       </header>
 
       {syncing && <div id="sync-progress" role="status" aria-live="polite" className="rounded-xl border border-blue-500/30 bg-blue-500/10 p-4 text-sm text-blue-100"><div className="flex flex-wrap items-center justify-between gap-2"><strong>{syncPhaseLabels[syncPhase] || "Đang đồng bộ dữ liệu"}</strong><span className="font-mono text-blue-200">{String(Math.floor(syncElapsedSeconds/60)).padStart(2,"0")}:{String(syncElapsedSeconds%60).padStart(2,"0")}</span></div><div className="mt-3 h-1.5 overflow-hidden rounded-full bg-slate-800" aria-hidden="true"><div className="h-full w-1/3 animate-pulse rounded-full bg-blue-400 motion-reduce:animate-none" /></div><p className="mt-2 text-blue-200/80">Snapshot gần nhất vẫn đang được hiển thị; bạn có thể tiếp tục sử dụng các màn hình khác.</p></div>}{syncMessage && <div role="status" className={`rounded-xl border p-3 text-sm ${syncMessage.startsWith("Không thể") ? "border-rose-500/30 bg-rose-500/10 text-rose-200" : "border-emerald-500/30 bg-emerald-500/10 text-emerald-200"}`}>{syncMessage}</div>}
-      {shadowRunning && <div id="shadow-run-progress" role="status" aria-live="polite" aria-busy="true" className="rounded-xl border border-cyan-500/30 bg-cyan-500/10 p-3 text-sm text-cyan-100">Đang quét follow-up đến hạn và ghi evidence ở chế độ SHADOW. Decision, outcome và PnL sẽ không bị thay đổi.</div>}
-      {shadowRunMessage && <div role={shadowRunMessage.startsWith("Không thể") || shadowRunMessage.startsWith("Chỉ ADMIN") ? "alert" : "status"} aria-live="polite" className={`rounded-xl border p-3 text-sm ${shadowRunMessage.startsWith("Không thể") || shadowRunMessage.startsWith("Chỉ ADMIN") ? "border-rose-500/30 bg-rose-500/10 text-rose-200" : "border-cyan-500/30 bg-cyan-500/10 text-cyan-100"}`}>{shadowRunMessage}</div>}
-      {shadowRuns.length > 0 && <section className="rounded-xl border border-cyan-500/20 bg-slate-900/70 p-4"><div className="flex flex-wrap items-center justify-between gap-2"><div><h2 className="text-sm font-bold text-cyan-100">LC-10 SHADOW — lịch sử evidence</h2><p className="mt-1 text-xs text-slate-400">Các lượt chạy chỉ thu evidence; không phải outcome verdict.</p></div><Link href="/decisions" className="text-xs font-semibold text-cyan-200 hover:text-cyan-100">Mở Decision Inbox →</Link></div><ul className="mt-3 space-y-2">{shadowRuns.slice(0, 5).map((run) => <li key={run.eventId} className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-800 bg-slate-950/60 px-3 py-2 text-xs"><span className={run.observationState === "READY_TO_VERIFY" ? "font-semibold text-emerald-200" : "font-semibold text-amber-200"}>{run.observationState === "READY_TO_VERIFY" ? `Evidence ${run.observedAffectedOrders ?? "—"} đơn` : "Chờ evidence"}</span><span className="font-mono text-slate-400">{run.decisionId.slice(0, 8)}</span><span className="text-slate-400">{new Date(run.occurredAt).toLocaleString("vi-VN")}</span></li>)}</ul></section>}
-
-      {actionMessage && (
-        <div className="p-3 bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-xs rounded-xl font-semibold flex items-center justify-between">
-          <span>{actionMessage}</span>
-          <button onClick={() => setActionMessage(null)} className="text-slate-400 hover:text-slate-200">✕</button>
-        </div>
-      )}
 
       {error && (
         <div className="p-4 bg-rose-500/10 border border-rose-500/20 text-rose-400 text-xs rounded-xl font-semibold">
@@ -742,10 +592,6 @@ export default function ExecutiveDashboardPage() {
             <span className="text-2xl font-extrabold text-indigo-400 block font-mono">{kpis?.followupsWaiting || 0}</span>
           </div>
 
-          <div className="p-4 bg-slate-900 border border-amber-500/30 rounded-2xl space-y-1">
-            <span className="text-amber-400 font-semibold">Đề xuất xử lý bản nháp</span>
-            <span className="text-2xl font-extrabold text-amber-400 block font-mono">{kpis?.plannerDraftsWaitingReview || 0}</span>
-          </div>
         </div>
       </section>
 
@@ -854,104 +700,6 @@ export default function ExecutiveDashboardPage() {
           </table>
         </div>
       </section>
-
-      {/* SECTION 5 & 6: NOTIFICATION CENTER & PLANNER RECOMMENDATIONS */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        {/* SECTION 5: NOTIFICATION CENTER */}
-        <section className="bg-slate-900 border border-slate-800 p-6 rounded-2xl space-y-4 shadow-xl">
-          <div className="flex flex-col gap-2 border-b border-slate-800 pb-3 sm:flex-row sm:items-start sm:justify-between">
-            <div>
-              <h2 className="flex items-center gap-2 text-base font-bold text-slate-100">
-                <span aria-hidden="true" className="h-2.5 w-2.5 rounded-full bg-emerald-400"></span> Hàng đợi thông báo
-              </h2>
-              <p className="mt-1 text-xs leading-5 text-slate-400">Các thông báo hệ thống đang chờ gửi hoặc đã xử lý.</p>
-            </div>
-            <span className="shrink-0 text-xs text-slate-400">
-              Hiển thị {notifications?.displayedCount || 0}/{notifications?.totalCount || 0}
-            </span>
-          </div>
-
-          <div className="space-y-2 text-xs">
-            <div className="space-y-2 max-h-56 overflow-y-auto pr-1">
-              {notifications?.items.map((act) => (
-                <div key={act.id} className="flex flex-col gap-3 rounded-xl border border-slate-800 bg-slate-950 p-3 sm:flex-row sm:items-center sm:justify-between">
-                  <div className="space-y-0.5">
-                    <div className="flex flex-wrap items-center gap-2 text-[11px]">
-                      <span className="font-bold text-slate-200">{notificationActionLabels[act.actionType] || repairOperationalText(act.actionType)}</span>
-                      <span className="text-slate-400">qua {notificationProviderLabels[act.provider.toLowerCase()] || repairOperationalText(act.provider)}</span>
-                      <span className={`px-1.5 py-0.2 rounded text-[9px] font-bold ${act.status === "SENT" ? "bg-emerald-500/20 text-emerald-400" : act.status === "FAILED" ? "bg-rose-500/20 text-rose-400" : "bg-amber-500/20 text-amber-400"}`}>
-                        {notificationStatusLabels[act.status] || translateStatus(act.status)}
-                      </span>
-                    </div>
-                  </div>
-
-                  {data?.writeControlsEnabled && (
-                    <div className="flex items-center gap-1.5">
-                      {act.status === "FAILED" && session.can("MANAGE_SYSTEM") && (
-                        <button onClick={() => handleNotificationAction(act.id, "retry")} className="px-2 py-1 bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 rounded text-[10px] font-bold">
-                          Thử lại
-                        </button>
-                      )}
-                      {["PENDING", "PROCESSING"].includes(act.status) && session.can("MANAGE_SYSTEM") && (
-                        <button onClick={() => handleNotificationAction(act.id, "cancel")} className="px-2 py-1 bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 rounded text-[10px] font-bold">
-                          Hủy
-                        </button>
-                      )}
-                    </div>
-                  )}
-                </div>
-              ))}
-              {!notifications?.items.length && <p className="rounded-xl border border-dashed border-slate-700 p-4 text-center text-slate-400">Không có thông báo nào trong hàng đợi.</p>}
-            </div>
-          </div>
-        </section>
-
-        {/* SECTION 6: PLANNER RECOMMENDATIONS */}
-        <section className="bg-slate-900 border border-slate-800 p-6 rounded-2xl space-y-4 shadow-xl">
-          <div className="flex flex-col gap-2 border-b border-slate-800 pb-3 sm:flex-row sm:items-start sm:justify-between">
-            <div>
-              <h2 className="flex items-center gap-2 text-base font-bold text-slate-100">
-                <span aria-hidden="true" className="h-2.5 w-2.5 rounded-full bg-purple-400"></span> Đề xuất xử lý
-              </h2>
-              <p className="mt-1 text-xs leading-5 text-slate-400">Những việc hệ thống đề nghị người vận hành kiểm tra hoặc thực hiện; bản nháp phải được duyệt trước khi sử dụng.</p>
-            </div>
-            <div className="flex shrink-0 flex-wrap items-center gap-2 text-xs">
-              <span className="text-amber-400">Bản nháp: {planner?.draftCount || 0}</span>
-              <span className="text-emerald-400">Đã duyệt: {planner?.approvedCount || 0}</span>
-            </div>
-          </div>
-
-          <div className="space-y-3 max-h-72 overflow-y-auto pr-1 text-xs">
-            {planner?.recentRecommendations.items.map((rec, index) => (
-              <div key={`${rec.runId}:${rec.id}:${index}`} className="p-3 bg-slate-950 border border-slate-800 rounded-xl space-y-2">
-                <div className="flex flex-col gap-2 border-b border-slate-900 pb-2 sm:flex-row sm:items-start sm:justify-between">
-                  <div className="min-w-0">
-                    <span className="inline-flex rounded bg-purple-500/20 px-2 py-1 text-[10px] font-bold text-purple-300">
-                      {plannerRecommendationLabels[rec.type] || repairOperationalText(rec.type)}
-                    </span>
-                    <p className="mt-2 break-words font-bold leading-5 text-slate-200">{repairOperationalText(rec.title)}</p>
-                  </div>
-                  <span className={`shrink-0 rounded px-2 py-1 text-[9px] font-bold ${rec.status === "APPROVED" ? "bg-emerald-500/20 text-emerald-400" : rec.status === "REJECTED" ? "bg-rose-500/20 text-rose-400" : "bg-amber-500/20 text-amber-400"}`}>
-                    {translateStatus(rec.status)}
-                  </span>
-                </div>
-
-                {rec.status === "DRAFT" && data?.writeControlsEnabled && (
-                  <div className="flex items-center justify-end gap-2 pt-1 border-t border-slate-900">
-                    {session.can("REVIEW_COPILOT") && <button onClick={() => handlePlannerReview(rec.runId, "REJECTED")} className="px-3 py-1 bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 text-[10px] font-bold rounded">
-                      Từ chối
-                    </button>}
-                    {session.can("REVIEW_COPILOT") && <button onClick={() => handlePlannerReview(rec.runId, "APPROVED")} className="px-3 py-1 bg-emerald-600 hover:bg-emerald-500 text-white text-[10px] font-bold rounded">
-                      Phê duyệt
-                    </button>}
-                  </div>
-                )}
-              </div>
-            ))}
-            {!planner?.recentRecommendations.items.length && <p className="rounded-xl border border-dashed border-slate-700 p-4 text-center text-slate-400">Chưa có khuyến nghị vận hành.</p>}
-          </div>
-        </section>
-      </div>
 
       </>}
     </main>

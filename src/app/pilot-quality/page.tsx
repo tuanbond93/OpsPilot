@@ -5,6 +5,7 @@ import { useCallback, useEffect, useState } from "react";
 import { AlertTriangle, CheckCircle2, CircleDashed, ClipboardCheck, LockKeyhole, RefreshCw, Scale, ShieldCheck } from "lucide-react";
 import type { PilotQualitySnapshot } from "@/services/pilot-quality";
 import type { QualitySummary } from "@/services/interfaces/ICopilotQualityService";
+import { ShadowEvidenceControl } from "./ShadowEvidenceControl";
 
 type Payload = {
   ok: true;
@@ -118,6 +119,7 @@ export default function PilotQualityPage() {
 
       <section className="rounded-2xl border border-blue-500/30 bg-blue-950/20 p-5 sm:p-6"><div className="flex items-start gap-3"><CheckCircle2 aria-hidden="true" className="mt-1 shrink-0 text-blue-300"/><div><h2 className="text-lg font-bold">Cách dùng scorecard này</h2><ol className="mt-3 list-decimal space-y-2 pl-5 leading-6 text-slate-300"><li>Tăng số sự cố được xác minh tại nhiều kho trước khi đánh giá độ chính xác.</li><li>Xem tỷ lệ Duyệt/Sửa/Từ chối để biết Copilot có dùng được nguyên trạng hay cần hiệu chỉnh.</li><li>Đóng vòng SHADOW bằng outcome thực tế; không suy ra hiệu quả khi chưa có outcome.</li><li>Xử lý phản hồi mở để các lỗi dữ liệu, nhãn và UI không làm sai kết luận Pilot.</li></ol><p className="mt-4 text-xs text-slate-500">Cập nhật lúc {new Date(snapshot.generatedAt).toLocaleString("vi-VN")}</p></div></div></section>
       <section className="rounded-2xl border border-violet-500/30 bg-violet-950/10 p-5 sm:p-6"><div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-center"><div><h2 className="text-lg font-bold">Chuẩn bị dữ liệu để AI học tốt hơn</h2><p className="mt-1 max-w-3xl text-sm leading-6 text-slate-400">Ghép Copilot prediction với nguyên nhân thực tế và chỉ xuất những case đã có human review.</p></div><Link href="/ai-learning" className="inline-flex min-h-11 shrink-0 items-center justify-center rounded-lg bg-violet-600 px-4 font-semibold hover:bg-violet-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-violet-400">Mở AI Learning Dataset</Link></div></section>
+      <ShadowEvidenceControl />
     </>}
   </main>;
 }

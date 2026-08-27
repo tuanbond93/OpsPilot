@@ -10,8 +10,8 @@ const items = [
   { href: "/dashboard", label: "Điều hành", icon: Gauge, mobile: true },
   { href: "/incidents", label: "Sự cố", icon: Activity, mobile: true },
   { href: "/reviews", label: "Cần phê duyệt", icon: CheckSquare2, mobile: true },
+  { href: "/decisions", label: "Quyết định", icon: Scale, mobile: true },
   { href: "/followups", label: "Kết quả", icon: ListChecks, mobile: true },
-  { href: "/decisions", label: "Quyết định", icon: Scale, mobile: false },
   { href: "/b2b-consolidation", label: "Ghép chuyến B2B", icon: Truck, mobile: false },
   { href: "/notifications", label: "Thông báo", icon: Bell, mobile: false },
   { href: "/pilot-quality", label: "Chất lượng Pilot", icon: ShieldCheck, mobile: false },
@@ -47,7 +47,7 @@ export function OperationsNav() {
   const active = (href: string) => pathname === href || pathname.startsWith(`${href}/`);
   const visibleItems = items.filter((item) => !("adminOnly" in item && item.adminOnly) || role === "ADMIN");
   const primary = visibleItems.filter((item) => item.mobile);
-  const desktopPrimary = visibleItems.filter((item) => ["/dashboard", "/incidents", "/reviews", "/followups", "/decisions"].includes(item.href));
+  const desktopPrimary = visibleItems.filter((item) => ["/dashboard", "/incidents", "/reviews", "/decisions", "/followups"].includes(item.href));
   const desktopTools = visibleItems.filter((item) => ["/b2b-consolidation", "/pilot-quality", "/guide", "/admin/users", "/admin/telegram-pilot", "/telegram-work-orders"].includes(item.href));
   const toolsActive = desktopTools.some((item) => active(item.href));
   const accountPage = pathname.startsWith("/account");
@@ -71,6 +71,6 @@ export function OperationsNav() {
 
     {open && <><button type="button" aria-label="Đóng trình đơn" onClick={() => setOpen(false)} className="fixed inset-0 z-40 cursor-default bg-black/70 xl:hidden"/><div id="mobile-product-menu" role="dialog" aria-modal="true" aria-label="Tất cả chức năng" className="fixed inset-x-3 bottom-[calc(5.25rem+env(safe-area-inset-bottom))] z-50 max-h-[70dvh] overflow-y-auto rounded-2xl border border-teal-800/70 bg-[#071311] p-3 shadow-2xl shadow-black/70 xl:hidden"><p className="px-3 pb-2 pt-1 text-xs font-semibold uppercase tracking-[.16em] text-teal-300">Tất cả chức năng</p><nav aria-label="Tất cả chức năng"><ul className="grid grid-cols-2 gap-2">{visibleItems.map(({href,label,icon:Icon}) => <li key={href}><Link href={href} aria-current={active(href) ? "page" : undefined} className={`flex min-h-14 items-center gap-3 rounded-xl border px-3 text-sm font-semibold ${active(href) ? "border-teal-400 bg-[#00a19a] text-black" : "border-teal-950 bg-black/50 text-slate-200"}`}><Icon aria-hidden="true" size={19}/><span>{label}</span></Link></li>)}</ul></nav>{authenticated && <p className="px-3 pt-3 text-xs text-slate-400">Vai trò hiện tại: <strong className="text-teal-200">{role}</strong></p>}</div></>}
 
-    {!accountPage && <nav aria-label="Điều hướng nhanh trên di động" className="fixed inset-x-0 bottom-0 z-40 border-t border-teal-900 bg-black/96 px-2 pb-[env(safe-area-inset-bottom)] shadow-[0_-8px_28px_rgba(0,0,0,.45)] backdrop-blur xl:hidden"><ul className="mx-auto grid max-w-md grid-cols-4 gap-2">{primary.map(({href,label,icon:Icon}) => <li key={href}><Link href={href} aria-current={active(href) ? "page" : undefined} className={`flex min-h-[4.75rem] flex-col items-center justify-center gap-1 rounded-xl px-1 text-[11px] font-semibold ${active(href) ? "text-teal-200" : "text-slate-400"}`}><span className={`grid h-8 w-12 place-items-center rounded-full ${active(href) ? "bg-teal-500/20" : ""}`}><Icon aria-hidden="true" size={20}/></span><span>{label}</span></Link></li>)}</ul></nav>}
+    {!accountPage && <nav aria-label="Điều hướng nhanh trên di động" className="fixed inset-x-0 bottom-0 z-40 border-t border-teal-900 bg-black/96 px-2 pb-[env(safe-area-inset-bottom)] shadow-[0_-8px_28px_rgba(0,0,0,.45)] backdrop-blur xl:hidden"><ul className="mx-auto grid max-w-lg grid-cols-5 gap-1">{primary.map(({href,label,icon:Icon}) => <li key={href}><Link href={href} aria-current={active(href) ? "page" : undefined} className={`flex min-h-[4.75rem] flex-col items-center justify-center gap-1 rounded-xl px-1 text-[10px] font-semibold ${active(href) ? "text-teal-200" : "text-slate-400"}`}><span className={`grid h-8 w-10 place-items-center rounded-full ${active(href) ? "bg-teal-500/20" : ""}`}><Icon aria-hidden="true" size={19}/></span><span>{label}</span></Link></li>)}</ul></nav>}
   </>;
 }
