@@ -26,15 +26,15 @@ export async function PATCH(request: NextRequest) {
   const auth = await authorizeApiRequest(request, "MANAGE_SYSTEM", { limit: 20, windowMs: 60_000 });
   if (!auth.ok) return auth.response;
   const memberId = typeof parsed.body.memberId === "string" ? parsed.body.memberId : "";
-  const warehouseName = typeof parsed.body.warehouseName === "string" ? parsed.body.warehouseName.trim() : "";
+  const warehouseNames = Array.isArray(parsed.body.warehouseNames) ? Array.from(new Set(parsed.body.warehouseNames.filter((value): value is string => typeof value === "string").map((value) => value.trim()).filter(Boolean))) : [];
   const pilotRole = parsed.body.pilotRole === "MANAGER" ? "MANAGER" : "OPERATOR";
   const status = ["PENDING", "ACTIVE", "SUSPENDED"].includes(String(parsed.body.status)) ? String(parsed.body.status) : "PENDING";
-  if (!memberId || !warehouseName) return NextResponse.json({ error: "MEMBER_AND_WAREHOUSE_REQUIRED" }, { status: 400 });
-  if (!warehouseOptions.some((warehouse) => warehouse.warehouseName === warehouseName)) return NextResponse.json({ error: "UNKNOWN_WAREHOUSE" }, { status: 400 });
+  if (!memberId || warehouseNames.length === 0) return NextResponse.json({ error: "MEMBER_AND_WAREHOUSE_REQUIRED" }, { status: 400 });
+  if (warehouseNames.length > 30 || warehouseNames.some((warehouseName) => !warehouseOptions.some((warehouse) => warehouse.warehouseName === warehouseName))) return NextResponse.json({ error: "UNKNOWN_WAREHOUSE" }, { status: 400 });
   const client = createAdminClient();
-  const { data, error } = await client.from("telegram_pilot_members").update({ warehouse_name: warehouseName, pilot_role: pilotRole, status, mapped_at: new Date().toISOString(), mapped_by: auth.identity?.actor || "legacy-admin" }).eq("id", memberId).select("*").maybeSingle();
+  const { data, error } = await client.from("telegram_pilot_members").update({ warehouse_name: warehouseNames[0], warehouse_names: warehouseNames, pilot_role: pilotRole, status, mapped_at: new Date().toISOString(), mapped_by: auth.identity?.actor || "legacy-admin" }).eq("id", memberId).select("*").maybeSingle();
   if (error) return NextResponse.json({ error: "TELEGRAM_PILOT_MAP_FAILED", message: error.message }, { status: 503 });
   if (!data) return NextResponse.json({ error: "TELEGRAM_MEMBER_NOT_FOUND" }, { status: 404 });
-  console.info(JSON.stringify({ category: "ADMIN_AUDIT", event: "TELEGRAM_PILOT_MEMBER_MAPPED", actor: auth.identity?.actor, memberId, warehouseName, pilotRole, status, occurredAt: new Date().toISOString() }));
+  console.info(JSON.stringify({ category: "ADMIN_AUDIT", event: "TELEGRAM_PILOT_MEMBER_MAPPED", actor: auth.identity?.actor, memberId, warehouseNames, pilotRole, status, occurredAt: new Date().toISOString() }));
   return NextResponse.json({ ok: true, member: data });
 }
