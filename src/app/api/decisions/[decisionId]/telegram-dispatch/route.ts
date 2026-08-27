@@ -34,9 +34,13 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       client.from("telegram_work_order_dispatches").select("*").eq("work_order_id", workOrder.workOrderId).order("created_at", { ascending: false }).maybeSingle(),
     ]);
     if (memberError || groupError || dispatchError) throw memberError || groupError || dispatchError;
+    const { data: feedbacks, error: feedbackError } = dispatch
+      ? await client.from("telegram_work_order_feedbacks").select("id, member_id, feedback_text, received_at, telegram_message_id, telegram_pilot_members(display_name, username)").eq("dispatch_id", dispatch.id).order("received_at", { ascending: true })
+      : { data: [], error: null };
+    if (feedbackError) throw feedbackError;
     const groupById = new Map((groups || []).map((group: PilotGroup) => [group.id, group]));
     const candidates = (members || []).filter((member: PilotMember) => warehouseNames(member).includes(workOrder.owner) && groupById.has(member.group_id)).map((member: PilotMember) => ({ memberId: member.id, groupId: member.group_id, groupTitle: groupById.get(member.group_id)?.title || "Telegram group", displayName: member.display_name, username: member.username, pilotRole: member.pilot_role }));
-    return NextResponse.json({ ok: true, data: { workOrder, candidates, dispatch: dispatch || null } });
+    return NextResponse.json({ ok: true, data: { workOrder, candidates, dispatch: dispatch ? { ...dispatch, feedbacks: feedbacks || [] } : null } });
   } catch (error) { return failure(error); }
 }
 

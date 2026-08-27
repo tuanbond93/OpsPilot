@@ -43,7 +43,8 @@ export async function POST(request: NextRequest) {
   const client = createAdminClient();
   const { data: alreadySeen, error: seenError } = await client.from("telegram_pilot_events").select("id").eq("telegram_update_id", update.update_id).maybeSingle();
   if (seenError) return NextResponse.json({ error: "TELEGRAM_AUDIT_READ_FAILED", message: seenError.message }, { status: 503 });
-  if (alreadySeen) return NextResponse.json({ ok: true, duplicate: true });
+  const isReplyUpdate = Boolean(update.message?.reply_to_message?.message_id);
+  if (alreadySeen && !isReplyUpdate) return NextResponse.json({ ok: true, duplicate: true });
 
   const { data: group, error: groupError } = await client.from("telegram_pilot_groups").upsert({ telegram_chat_id: chat.id, title: String(chat.title || "Telegram pilot group").slice(0, 240) }, { onConflict: "telegram_chat_id" }).select("*").single();
   if (groupError) return NextResponse.json({ error: "TELEGRAM_GROUP_UPSERT_FAILED", message: groupError.message }, { status: 503 });
@@ -74,6 +75,16 @@ export async function POST(request: NextRequest) {
         ? "OpsPilot: tài khoản Telegram của bạn đang tạm dừng trong pilot. Hãy liên hệ Manager OpsPilot nếu cần hỗ trợ."
         : "OpsPilot đã nhận diện bạn. Manager sẽ gán kho và kích hoạt quyền nhận việc trên OpsPilot.";
     return NextResponse.json({ method: "sendMessage", chat_id: chat.id, reply_to_message_id: message.message_id, text: enrollmentReply });
+  }
+  if (eventType === "FREE_TEXT_FEEDBACK" && text && message.reply_to_message?.message_id && member.status === "ACTIVE") {
+    const { data: dispatch, error: dispatchError } = await client.from("telegram_work_order_dispatches").select("id, recipient_member_ids").eq("group_id", group.id).eq("status", "SENT").eq("telegram_message_id", message.reply_to_message.message_id).maybeSingle();
+    if (dispatchError) return NextResponse.json({ error: "TELEGRAM_DISPATCH_LOOKUP_FAILED", message: dispatchError.message }, { status: 503 });
+    const recipients = Array.isArray(dispatch?.recipient_member_ids) ? dispatch.recipient_member_ids.filter((value): value is string => typeof value === "string") : [];
+    if (dispatch && recipients.includes(member.id)) {
+      const { error: feedbackError } = await client.from("telegram_work_order_feedbacks").insert({ dispatch_id: dispatch.id, member_id: member.id, telegram_update_id: update.update_id, telegram_message_id: message.message_id, feedback_text: text.slice(0, 4000) });
+      if (feedbackError && feedbackError.code !== "23505") return NextResponse.json({ error: "TELEGRAM_FEEDBACK_WRITE_FAILED", message: feedbackError.message }, { status: 503 });
+      return NextResponse.json({ method: "sendMessage", chat_id: chat.id, reply_to_message_id: message.message_id, text: "OpsPilot đã ghi nhận phản hồi. Manager sẽ xem và xác nhận trạng thái work order trên OpsPilot." });
+    }
   }
   return NextResponse.json({ ok: true, eventType });
 }
