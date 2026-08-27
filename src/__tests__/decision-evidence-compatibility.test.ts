@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { normalizeDecisionEvidence } from "@/repositories/supabase/SupabaseDecisionRepository";
+import { normalizeDecisionEvidence, snapshotFromDecisionRelation } from "@/repositories/supabase/SupabaseDecisionRepository";
 
 describe("legacy decision evidence compatibility", () => {
   it("supplies safe empty collections when legacy evidence is missing", () => {
@@ -21,5 +21,22 @@ describe("legacy decision evidence compatibility", () => {
     expect(evidence.sourceIdentifiers.incidentId).toBe("incident-1");
     expect(evidence.operationalFacts.affectedOrders).toBe(42);
     expect(evidence.capturedAt).toBe("2026-08-25T00:00:00.000Z");
+  });
+
+  it("reads the immutable snapshot from Supabase's to-one relation shape", () => {
+    const snapshot = snapshotFromDecisionRelation({
+      snapshot: {
+        sourceIdentifiers: { incidentId: "incident-1" },
+        operationalFacts: { affectedOrderCount: 12, maximumAgeHours: 303.4 },
+      },
+    });
+
+    expect(snapshot?.operationalFacts).toEqual({ affectedOrderCount: 12, maximumAgeHours: 303.4 });
+  });
+
+  it("continues to support array-shaped relations from legacy adapters", () => {
+    const snapshot = snapshotFromDecisionRelation([{ snapshot: { operationalFacts: { affectedOrderCount: 42 } } }]);
+
+    expect(snapshot?.operationalFacts.affectedOrderCount).toBe(42);
   });
 });

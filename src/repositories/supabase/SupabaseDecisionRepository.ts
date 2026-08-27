@@ -16,6 +16,18 @@ export function normalizeDecisionEvidence(value: unknown, capturedAt?: string): 
   };
 }
 
+/**
+ * Supabase returns a to-one embedded relation as an object, while older
+ * adapters and mocks return it as an array. The database contract guarantees
+ * one immutable snapshot per decision, so accept both response shapes.
+ */
+export function snapshotFromDecisionRelation(value: unknown): DecisionEvidenceSnapshot | undefined {
+  const relation = Array.isArray(value) ? value[0] : value;
+  if (!relation || typeof relation !== "object") return undefined;
+  const snapshot = (relation as DbRow).snapshot;
+  return snapshot && typeof snapshot === "object" ? snapshot as DecisionEvidenceSnapshot : undefined;
+}
+
 function mapDecision(row: DbRow, evidence?: DecisionEvidenceSnapshot): Decision {
   const scheduleRow = row.decision_followup_schedules?.[0];
   const contractRow = row.decision_outcome_observation_contracts?.[0];
@@ -73,14 +85,14 @@ export class SupabaseDecisionRepository implements IDecisionRepository {
     const { data, error } = await this.client.from("decisions").select(DECISION_SELECT).eq("id", decisionId).maybeSingle();
     if (error) throw error;
     if (!data) return null;
-    const snapshot = data.decision_evidence_snapshots?.[0]?.snapshot;
+    const snapshot = snapshotFromDecisionRelation(data.decision_evidence_snapshots);
     return mapDecision(data, snapshot);
   }
 
   async list(limit = 100): Promise<Decision[]> {
     const { data, error } = await this.client.from("decisions").select(DECISION_SELECT).order("created_at", { ascending: false }).limit(limit);
     if (error) throw error;
-    return (data || []).map((row) => mapDecision(row, row.decision_evidence_snapshots?.[0]?.snapshot));
+    return (data || []).map((row) => mapDecision(row, snapshotFromDecisionRelation(row.decision_evidence_snapshots)));
   }
 
   transition(input: TransitionDecisionInput) { return this.rpc("transition_decision_core", input); }
@@ -131,7 +143,7 @@ export class SupabaseDecisionRepository implements IDecisionRepository {
       .select("*, decisions!inner(*, decision_evidence_snapshots(snapshot))").order("observed_at", { ascending: false }).limit(limit);
     if (error) throw error;
     return (data || []).map((row) => ({
-      decision: mapDecision(row.decisions, row.decisions.decision_evidence_snapshots?.[0]?.snapshot),
+      decision: mapDecision(row.decisions, snapshotFromDecisionRelation(row.decisions.decision_evidence_snapshots)),
       verification: { verificationId: row.id, decisionId: row.decision_id, contractId: row.contract_id, classification: row.classification,
         reasonCode: row.reason_code, baselineAffectedOrders: row.baseline_affected_orders, observedAffectedOrders: row.observed_affected_orders,
         observedMetrics: row.observed_metrics, observedAt: row.observed_at, source: row.source, evidenceRefs: row.evidence_refs, verifiedBy: row.verified_by, createdAt: row.created_at },
