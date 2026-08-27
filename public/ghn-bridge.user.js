@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OpsPilot GHN Tracking Bridge
 // @namespace    https://opspilot-tau-lyart.vercel.app/
-// @version      1.7.0
+// @version      1.8.0
 // @description  Tra cứu lộ trình GHN trực tiếp cho OpsPilot mà không gửi token lên server.
 // @author       OpsPilot
 // @match        https://tracuunoibo.ghn.vn/*
@@ -65,6 +65,27 @@
       for (const key of keys) if (text(value[key])) return text(value[key]);
       return null;
     };
+    const textBetween = (source, start, endMarkers) => {
+      const startAt = source.indexOf(start);
+      if (startAt < 0) return null;
+      const after = source.slice(startAt + start.length);
+      const ends = endMarkers.map((marker) => after.indexOf(marker)).filter((index) => index >= 0);
+      return text((ends.length ? after.slice(0, Math.min(...ends)) : after).replace(/\s+/g, " "));
+    };
+    const orderCodeFromPage = () => {
+      const fromUrl = hintedOrderCode(location.href);
+      if (fromUrl) return fromUrl.toUpperCase();
+      const input = [...document.querySelectorAll("input")].map((element) => text(element.value)).find((value) => value && ORDER_CODE_PATTERN.test(value));
+      return input ? input.toUpperCase() : null;
+    };
+    const captureRecipientFromPage = () => {
+      const orderCode = orderCodeFromPage();
+      const pageText = document.body && document.body.innerText;
+      if (!orderCode || !pageText) return;
+      const recipientName = textBetween(pageText, "Họ và tên:", ["Số điện thoại:", "Địa chỉ:", "Quận/Huyện:"]);
+      const recipientAddress = textBetween(pageText, "Địa chỉ:", ["Quận/Huyện:", "Phường/Xã:", "Khu vực giao hàng:"]);
+      if (recipientName && recipientAddress) GM_setValue(`${ORDER_DETAIL_PREFIX}${orderCode}`, { recipientName, recipientAddress, capturedAt: new Date().toISOString(), source: "ghn_order_detail_dom" });
+    };
     const saveOrderDetails = (value, hintedOrderCode) => {
       if (!value || typeof value !== "object") return;
       const candidates = [value, value.data, value.order, value.data && value.data.order].filter(Boolean);
@@ -104,6 +125,10 @@
         return originalSend.apply(this, arguments);
       };
     }
+    const observer = new MutationObserver(() => captureRecipientFromPage());
+    observer.observe(document.documentElement, { childList: true, subtree: true });
+    window.setTimeout(captureRecipientFromPage, 1500);
+    window.setTimeout(captureRecipientFromPage, 5000);
     return;
   }
 
