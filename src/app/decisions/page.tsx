@@ -1,7 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { Check, CircleAlert, Eye, Plus, RefreshCw, X } from "lucide-react";
+import Link from "next/link";
+import { ArrowUpRight, Check, CircleAlert, Eye, Plus, RefreshCw, X } from "lucide-react";
 import type { Decision } from "@/domain/decision";
 import type { ExecutionWorkOrder } from "@/domain/execution-work-order";
 import { repairOperationalText, translateStatus } from "@/app/_components/operationalText";
@@ -350,6 +351,10 @@ export default function DecisionInboxPage() {
                 {groups.length > 0 && <div className="mt-3 border-t border-slate-800 pt-3"><p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Điểm cần kiểm tra</p><ul className="mt-2 space-y-2 text-slate-300">{groups.map((group, index) => <li key={`${group.title}-${index}`}><strong className="text-slate-100">{group.title}</strong>{group.orderCount !== null ? ` · ${group.orderCount} đơn` : ""}{group.action ? <span className="block text-slate-400">{repairOperationalText(group.action)}</span> : null}</li>)}</ul></div>}
                 {investigationAction && <aside className="mt-3 rounded-md border border-amber-400/30 bg-amber-400/5 p-3 text-amber-100"><strong>Điều còn thiếu trước khi quyết định:</strong> {repairOperationalText(investigationAction)}</aside>}
               </section>
+              {decision.sourceLinks.incidentId && <div className="mt-4 flex flex-col gap-3 rounded-lg border border-indigo-400/25 bg-indigo-400/5 p-4 sm:flex-row sm:items-center sm:justify-between">
+                <div><h3 className="font-semibold text-indigo-100">Từ facts đến bản quyết định</h3><p className="mt-1 text-sm leading-6 text-slate-300">Mở đúng sự cố này để OpsPilot tự tra cứu timeline, gom nguyên nhân theo playbook và chuẩn bị bản <strong>HUMAN_APPROVAL</strong> khi có đủ bằng chứng.</p></div>
+                <Link href={`/incidents/${encodeURIComponent(decision.sourceLinks.incidentId)}#operational-review`} className="inline-flex min-h-11 shrink-0 items-center justify-center gap-2 rounded-lg bg-indigo-600 px-4 text-sm font-semibold text-white hover:bg-indigo-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-300"><ArrowUpRight aria-hidden="true" size={17}/>Phân tích & chuẩn bị duyệt</Link>
+              </div>}
               {decision.mode === "SHADOW" && <p className="mt-4 text-sm text-sky-300">SHADOW: chỉ quan sát recommendation/evidence; không có control tác động operation.</p>}
               {decision.mode === "SHADOW" && roleCan(role, "RECORD_OUTCOME") && <div className="mt-4 rounded-lg border border-sky-500/20 bg-sky-500/5 p-3">
                 <h3 className="text-sm font-semibold text-sky-100">Ghi nhận observed outcome</h3>
