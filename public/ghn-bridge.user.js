@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OpsPilot GHN Tracking Bridge
 // @namespace    https://opspilot-tau-lyart.vercel.app/
-// @version      1.8.0
+// @version      1.9.0
 // @description  Tra cứu lộ trình GHN trực tiếp cho OpsPilot mà không gửi token lên server.
 // @author       OpsPilot
 // @match        https://tracuunoibo.ghn.vn/*
@@ -65,25 +65,29 @@
       for (const key of keys) if (text(value[key])) return text(value[key]);
       return null;
     };
-    const textBetween = (source, start, endMarkers) => {
-      const startAt = source.indexOf(start);
-      if (startAt < 0) return null;
-      const after = source.slice(startAt + start.length);
-      const ends = endMarkers.map((marker) => after.indexOf(marker)).filter((index) => index >= 0);
-      return text((ends.length ? after.slice(0, Math.min(...ends)) : after).replace(/\s+/g, " "));
+    const labelKey = (value) => String(value || "").toLocaleLowerCase("vi").replace(/\s*:\s*$/, "").replace(/\s+/g, " ").trim();
+    const detailValueFromPage = (source, label, stopLabels) => {
+      const lines = String(source || "").split(/\n+/).map((line) => text(line)).filter(Boolean);
+      const at = lines.findIndex((line) => labelKey(line).startsWith(labelKey(label)));
+      if (at < 0) return null;
+      const inline = text(lines[at].replace(new RegExp(`^${label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*:?\\s*`, "i")));
+      const candidate = inline && labelKey(inline) !== labelKey(label) ? inline : lines[at + 1];
+      return candidate && !stopLabels.some((stop) => labelKey(candidate).startsWith(labelKey(stop))) ? candidate : null;
     };
-    const orderCodeFromPage = () => {
+    const orderCodeFromPage = (pageText) => {
       const fromUrl = hintedOrderCode(location.href);
       if (fromUrl) return fromUrl.toUpperCase();
       const input = [...document.querySelectorAll("input")].map((element) => text(element.value)).find((value) => value && ORDER_CODE_PATTERN.test(value));
-      return input ? input.toUpperCase() : null;
+      if (input) return input.toUpperCase();
+      const orderLabelMatch = String(pageText || "").match(/Mã\s*đơn\s*hàng\s*:?\s*([A-Z0-9_-]{4,40})/i);
+      return orderLabelMatch && ORDER_CODE_PATTERN.test(orderLabelMatch[1]) ? orderLabelMatch[1].toUpperCase() : null;
     };
     const captureRecipientFromPage = () => {
-      const orderCode = orderCodeFromPage();
       const pageText = document.body && document.body.innerText;
+      const orderCode = orderCodeFromPage(pageText);
       if (!orderCode || !pageText) return;
-      const recipientName = textBetween(pageText, "Họ và tên:", ["Số điện thoại:", "Địa chỉ:", "Quận/Huyện:"]);
-      const recipientAddress = textBetween(pageText, "Địa chỉ:", ["Quận/Huyện:", "Phường/Xã:", "Khu vực giao hàng:"]);
+      const recipientName = detailValueFromPage(pageText, "Họ và tên", ["Số điện thoại", "Địa chỉ", "Quận/Huyện"]);
+      const recipientAddress = detailValueFromPage(pageText, "Địa chỉ", ["Quận/Huyện", "Phường/Xã", "Khu vực giao hàng"]);
       if (recipientName && recipientAddress) GM_setValue(`${ORDER_DETAIL_PREFIX}${orderCode}`, { recipientName, recipientAddress, capturedAt: new Date().toISOString(), source: "ghn_order_detail_dom" });
     };
     const saveOrderDetails = (value, hintedOrderCode) => {
@@ -264,7 +268,7 @@
     window.dispatchEvent(new CustomEvent(`GHN_ORDER_TRACKING_RESPONSE_${requestId}`, { detail }));
   }
 
-  window.addEventListener("GHN_BRIDGE_PING", () => window.dispatchEvent(new CustomEvent("GHN_BRIDGE_READY", { detail: { version: "1.5.0" } })));
+  window.addEventListener("GHN_BRIDGE_PING", () => window.dispatchEvent(new CustomEvent("GHN_BRIDGE_READY", { detail: { version: "1.9.0" } })));
   window.addEventListener("GHN_ORDER_TRACKING_REQUEST", async (event) => {
     const detail = event && event.detail;
     const requestId = detail && typeof detail.requestId === "string" ? detail.requestId : "";
@@ -276,5 +280,5 @@
       respond(requestId, { error: error instanceof Error ? error.message : "GHN_BRIDGE_ERROR" });
     }
   });
-  window.dispatchEvent(new CustomEvent("GHN_BRIDGE_READY", { detail: { version: "1.5.0" } }));
+  window.dispatchEvent(new CustomEvent("GHN_BRIDGE_READY", { detail: { version: "1.9.0" } }));
 })();
