@@ -37,9 +37,18 @@ describe("GHN live order tracking parser", () => {
     expect(result.phase).toBe("IN_TRANSIT");
     expect(result.currentWarehouseId).toBe("1121");
     expect(result.nextWarehouseId).toBe("21321000");
-    expect(result.deliverWarehouseName).toBe("Bưu cục giao cuối");
+    expect(result.deliverWarehouseName).toBe("(DBI) Tuần Giáo");
     expect(result.journey.map((point) => point.warehouseId)).toEqual(["22958000", "21365000", "1121"]);
     expect(result.journey.every((point) => !point.current)).toBe(true);
+  });
+
+  it("prefers the canonical warehouse directory when external metadata has an obsolete name", () => {
+    const result = parseLiveOrderTracking("GY8N99D4", [{
+      created_at: "2026-08-25T02:00:00.000Z",
+      new_data: { current_warehouse_id: 21158000, deliver_warehouse_id: 21448000, status: "storing" },
+    }], { "21448000": "Bưu Cục Số 028 Thanh Niên-Than Uyên-Lai Châu" });
+    expect(result.deliverWarehouseName).toBe("(LCH) Than Uyên");
+    expect(result.deliverWarehouseType).toBe("Bưu cục");
   });
 
   it("marks the last warehouse current when the latest state is storing", () => {

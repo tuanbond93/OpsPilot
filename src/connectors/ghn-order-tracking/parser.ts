@@ -1,4 +1,5 @@
 import type { GhnOrderLogEntry, LiveOrderTracking } from "./types";
+import { canonicalWarehouseName, canonicalWarehouseType } from "./warehouse-directory";
 
 const STATUS_LABELS: Record<string, string> = {
   ready_to_pick: "Chờ lấy hàng",
@@ -87,7 +88,7 @@ export function parseLiveOrderTracking(
     deliveryStartedAt = lastEventAt;
     deliveryStartedAtInferred = true;
   }
-  const nameFor = (id: string | null) => id ? warehouseNames[id] || `Kho ${id}` : null;
+  const nameFor = (id: string | null) => canonicalWarehouseName(id, id ? warehouseNames[id] : null);
   return {
     orderCode,
     customerId,
@@ -102,6 +103,7 @@ export function parseLiveOrderTracking(
     pickWarehouseId,
     deliverWarehouseId,
     deliverWarehouseName: nameFor(deliverWarehouseId),
+    deliverWarehouseType: canonicalWarehouseType(deliverWarehouseId),
     lastAction,
     lastEventAt,
     checkedAt,

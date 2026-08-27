@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OpsPilot GHN Tracking Bridge
 // @namespace    https://opspilot-tau-lyart.vercel.app/
-// @version      1.4.0
+// @version      1.5.0
 // @description  Tra cứu lộ trình GHN trực tiếp cho OpsPilot mà không gửi token lên server.
 // @author       OpsPilot
 // @match        https://tracuunoibo.ghn.vn/*
@@ -104,19 +104,27 @@
     return status ? "AT_WAREHOUSE" : "UNKNOWN";
   }
 
-  async function fetchNames(ids) {
+  async function fetchWarehouseDetails(ids) {
     if (!ids.length) return {};
+    const details = {};
+    try {
+      const response = await fetch(`/api/warehouse-directory?ids=${encodeURIComponent(ids.join(","))}`, { cache: "no-store" });
+      if (response.ok) {
+        const payload = await response.json();
+        Object.assign(details, payload && payload.warehouses ? payload.warehouses : {});
+      }
+    } catch (_) {}
     try {
       const response = await gmRequest({ method: "GET", url: META_ENDPOINT, headers: { accept: "application/json" } });
-      if (response.status < 200 || response.status >= 300) return {};
+      if (response.status < 200 || response.status >= 300) return details;
       const metadata = JSON.parse(response.responseText);
-      return Object.fromEntries(ids.flatMap((id) => {
+      for (const id of ids) {
+        if (details[id]) continue;
         const name = metadata[id] && (metadata[id].n || metadata[id].name);
-        return name ? [[id, name]] : [];
-      }));
-    } catch (_) {
-      return {};
-    }
+        if (name) details[id] = { name, type: null };
+      }
+      return details;
+    } catch (_) { return details; }
   }
 
   async function trackOrder(orderCode) {
@@ -157,8 +165,8 @@
       lastEventAt = entry.created_at;
       for (const id of [nextWarehouseId, pickWarehouseId, deliverWarehouseId]) if (id) ids.add(id);
     }
-    const names = await fetchNames([...ids]);
-    const nameFor = (id) => id ? names[id] || `Kho ${id}` : null;
+    const warehouses = await fetchWarehouseDetails([...ids]);
+    const nameFor = (id) => id ? (warehouses[id] && warehouses[id].name) || `Kho ${id}` : null;
     const phase = phaseFor(status);
     return {
       ok: true,
@@ -176,6 +184,7 @@
       pickWarehouseId,
       deliverWarehouseId,
       deliverWarehouseName: nameFor(deliverWarehouseId),
+      deliverWarehouseType: deliverWarehouseId && warehouses[deliverWarehouseId] ? warehouses[deliverWarehouseId].type || null : null,
       lastAction,
       lastEventAt,
       checkedAt: new Date().toISOString(),
@@ -187,7 +196,7 @@
     window.dispatchEvent(new CustomEvent(`GHN_ORDER_TRACKING_RESPONSE_${requestId}`, { detail }));
   }
 
-  window.addEventListener("GHN_BRIDGE_PING", () => window.dispatchEvent(new CustomEvent("GHN_BRIDGE_READY", { detail: { version: "1.4.0" } })));
+  window.addEventListener("GHN_BRIDGE_PING", () => window.dispatchEvent(new CustomEvent("GHN_BRIDGE_READY", { detail: { version: "1.5.0" } })));
   window.addEventListener("GHN_ORDER_TRACKING_REQUEST", async (event) => {
     const detail = event && event.detail;
     const requestId = detail && typeof detail.requestId === "string" ? detail.requestId : "";
@@ -199,5 +208,5 @@
       respond(requestId, { error: error instanceof Error ? error.message : "GHN_BRIDGE_ERROR" });
     }
   });
-  window.dispatchEvent(new CustomEvent("GHN_BRIDGE_READY", { detail: { version: "1.4.0" } }));
+  window.dispatchEvent(new CustomEvent("GHN_BRIDGE_READY", { detail: { version: "1.5.0" } }));
 })();

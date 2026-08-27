@@ -25,7 +25,7 @@ export type OperationalDiagnosis = {
 
 const hours = (start: string, end: string) => Math.round(((Date.parse(end) - Date.parse(start)) / 3_600_000) * 10) / 10;
 const isGhnWarehouse = (name: string) => /giao hàng nặng|kho ghn/i.test(name);
-const isPostOffice = (name: string | null) => /bưu cục|buu cuc/i.test(name || "");
+const isPostOffice = (name: string | null, type: string | null) => type === "Bưu cục" || /bưu cục|buu cuc/i.test(name || "");
 const isTransitWarehouse = (name: string) => /chuyển tiếp|trung chuyển/i.test(name);
 const isLargeTransitWarehouse = (name: string) => /trung chuyển|\bhub\b/i.test(name);
 const isLargeCustomerWarehouse = (name: string) => /kh lớn|khl|key account/i.test(name);
@@ -91,7 +91,7 @@ export function diagnoseOperationalJourney(tracking: LiveOrderTracking, referenc
     if (morningGhnIntakeNotAssigned) {
       findings.push({ code: "GHN_MORNING_INTAKE_NOT_ASSIGNED_DELIVERY", ownerWarehouseId: point.warehouseId, ownerWarehouseName: point.warehouseName, severity: "high", title: "Kho GHN chưa gán/xuất giao hàng nhận buổi sáng", evidence: `Đơn nhập ${point.warehouseName} lúc ${viTime(point.arrivedAt)}, sau ${dwell} giờ vẫn ở trạng thái lưu kho, chưa chuyển sang đang giao.`, action: `Kiểm tra với ${point.warehouseName}: vì sao hàng nhận từ KCT buổi sáng chưa được gán giao và xuất giao trong ngày.` });
     }
-    const finalPostOffice = tracking.deliverWarehouseId && tracking.deliverWarehouseId !== point.warehouseId && isPostOffice(tracking.deliverWarehouseName);
+    const finalPostOffice = tracking.deliverWarehouseId && tracking.deliverWarehouseId !== point.warehouseId && isPostOffice(tracking.deliverWarehouseName, tracking.deliverWarehouseType);
     if (isGhnWarehouse(point.warehouseName) && point.current && tracking.status === "storing" && !morningGhnIntakeNotAssigned && finalPostOffice && currentTime > nextMorningCot(point.arrivedAt)) {
       const cot = nextMorningCot(point.arrivedAt);
       findings.push({
