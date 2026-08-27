@@ -65,7 +65,15 @@ export async function POST(request: NextRequest) {
   }
 
   if (isJoin) {
-    return NextResponse.json({ method: "sendMessage", chat_id: chat.id, reply_to_message_id: message.message_id, text: "OpsPilot đã nhận diện bạn. Manager sẽ gán kho và kích hoạt quyền nhận việc trên OpsPilot." });
+    const warehouseNames = Array.isArray(member.warehouse_names)
+      ? member.warehouse_names.filter((warehouse: unknown): warehouse is string => typeof warehouse === "string" && warehouse.trim().length > 0)
+      : member.warehouse_name ? [member.warehouse_name] : [];
+    const enrollmentReply = member.status === "ACTIVE" && warehouseNames.length > 0
+      ? `OpsPilot: bạn đã được kích hoạt với vai trò ${member.pilot_role === "MANAGER" ? "Manager" : "Nhân viên"}. Kho phụ trách: ${warehouseNames.join(", ")}. Khi pilot gửi work order, hãy phản hồi ngay trong group này.`
+      : member.status === "SUSPENDED"
+        ? "OpsPilot: tài khoản Telegram của bạn đang tạm dừng trong pilot. Hãy liên hệ Manager OpsPilot nếu cần hỗ trợ."
+        : "OpsPilot đã nhận diện bạn. Manager sẽ gán kho và kích hoạt quyền nhận việc trên OpsPilot.";
+    return NextResponse.json({ method: "sendMessage", chat_id: chat.id, reply_to_message_id: message.message_id, text: enrollmentReply });
   }
   return NextResponse.json({ ok: true, eventType });
 }
