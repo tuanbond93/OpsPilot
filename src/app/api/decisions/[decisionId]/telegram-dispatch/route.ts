@@ -2,6 +2,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import { createAdminClient } from "@/connectors/supabase";
 import { TelegramClient } from "@/integrations/telegram";
 import { formatTelegramWorkOrderMessage } from "@/integrations/telegram/work-order-message";
+import { workOrderEvidence } from "@/integrations/telegram/work-order-evidence";
 import { workOrderInlineKeyboard } from "@/integrations/telegram/work-order-actions";
 import { ServiceFactory } from "@/services/ServiceFactory";
 import { readJsonBody, resolveActor } from "@/security/api-security";
@@ -60,6 +61,8 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     const workOrder = await ServiceFactory.getExecutionWorkOrderService(client).get(decisionId);
     if (!workOrder) return NextResponse.json({ error: "WORK_ORDER_NOT_FOUND" }, { status: 404 });
     if (workOrder.status === "COMPLETED") return NextResponse.json({ error: "WORK_ORDER_ALREADY_COMPLETED" }, { status: 409 });
+    const decisionResult = await ServiceFactory.getDecisionService(client).get(decisionId);
+    if (!decisionResult.ok || !decisionResult.data) return NextResponse.json({ error: "DECISION_NOT_FOUND" }, { status: 404 });
     const { data: selected, error: selectedError } = await client.from("telegram_pilot_members").select("*").in("id", memberIds).eq("status", "ACTIVE");
     if (selectedError) throw selectedError;
     const members = (selected || []) as PilotMember[];
@@ -80,7 +83,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     if (insertError) throw insertError;
     await client.from("telegram_work_order_dispatch_events").insert({ dispatch_id: dispatch.id, event_type: "DISPATCH_REQUESTED", actor, metadata: { groupId, recipientMemberIds: memberIds, workOrderCode: workOrder.workOrderCode } });
     try {
-      const sent = await new TelegramClient().sendToChat(String(group.telegram_chat_id), formatTelegramWorkOrderMessage(workOrder, members.map((member) => ({ displayName: member.display_name, username: member.username }))), { inlineKeyboard: workOrderInlineKeyboard(dispatch.id) });
+      const sent = await new TelegramClient().sendToChat(String(group.telegram_chat_id), formatTelegramWorkOrderMessage(workOrder, members.map((member) => ({ displayName: member.display_name, username: member.username })), workOrderEvidence(decisionResult.data as import("@/domain/decision").Decision, workOrder)), { inlineKeyboard: workOrderInlineKeyboard(dispatch.id) });
       const { data: completed, error: completeError } = await client.from("telegram_work_order_dispatches").update({ status: "SENT", telegram_message_id: Number(sent.messageId), sent_at: new Date().toISOString(), failure_reason: null, updated_at: new Date().toISOString() }).eq("id", dispatch.id).select("*").single();
       if (completeError) throw completeError;
       await client.from("telegram_work_order_dispatch_events").insert({ dispatch_id: dispatch.id, event_type: "DISPATCH_SENT", actor, metadata: { telegramMessageId: sent.messageId } });

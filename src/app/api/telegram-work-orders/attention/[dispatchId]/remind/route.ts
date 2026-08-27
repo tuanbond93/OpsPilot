@@ -2,8 +2,10 @@ import { NextResponse, type NextRequest } from "next/server";
 import { createAdminClient } from "@/connectors/supabase";
 import { TelegramClient } from "@/integrations/telegram";
 import { formatTelegramWorkOrderReminder } from "@/integrations/telegram/work-order-reminder";
+import { workOrderEvidence } from "@/integrations/telegram/work-order-evidence";
 import { readJsonBody, authorizeApiRequest, resolveActor } from "@/security/api-security";
 import { deriveAttentionReasons, attentionReasonLabel } from "@/domain/telegram-work-order-attention";
+import { ServiceFactory } from "@/services/ServiceFactory";
 
 type Member = { id: string; display_name: string; username: string | null };
 
@@ -21,6 +23,8 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     const group = dispatch.telegram_pilot_groups as unknown as { telegram_chat_id: string; title: string } | null;
     if (!workOrder || !group) return NextResponse.json({ error: "TELEGRAM_REMINDER_CONTEXT_MISSING" }, { status: 409 });
     if (workOrder.status === "COMPLETED") return NextResponse.json({ error: "WORK_ORDER_ALREADY_COMPLETED" }, { status: 409 });
+    const decisionResult = await ServiceFactory.getDecisionService(client).get(workOrder.decision_id);
+    if (!decisionResult.ok || !decisionResult.data) return NextResponse.json({ error: "DECISION_NOT_FOUND" }, { status: 404 });
     const { data: signalRows, error: signalError } = await client.from("telegram_work_order_signals").select("signal_type").eq("dispatch_id", dispatch.id);
     if (signalError) throw signalError;
     const reasons = deriveAttentionReasons({ status: workOrder.status, dueAt: workOrder.due_at, signals: (signalRows || []).map((signal) => signal.signal_type) });
@@ -41,7 +45,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     const normalized = { workOrderId: workOrder.id, decisionId: workOrder.decision_id, workOrderCode: workOrder.work_order_code, status: workOrder.status, owner: workOrder.owner, dueAt: workOrder.due_at, actionItems: Array.isArray(workOrder.action_items) ? workOrder.action_items.filter((item): item is string => typeof item === "string") : [], createdBy: actor, createdAt: new Date().toISOString() };
     try {
       const recipients = ((members || []) as Member[]).map((member) => ({ displayName: member.display_name, username: member.username }));
-      const sent = await new TelegramClient().sendToChat(String(group.telegram_chat_id), formatTelegramWorkOrderReminder(normalized, recipients, reasons.map((reason) => attentionReasonLabel[reason])));
+      const sent = await new TelegramClient().sendToChat(String(group.telegram_chat_id), formatTelegramWorkOrderReminder(normalized, recipients, reasons.map((reason) => attentionReasonLabel[reason]), workOrderEvidence(decisionResult.data as import("@/domain/decision").Decision, normalized)));
       const { data: completed, error: completeError } = await client.from("telegram_work_order_reminders").update({ status: "SENT", telegram_message_id: Number(sent.messageId), sent_at: new Date().toISOString(), failure_reason: null, updated_at: new Date().toISOString() }).eq("id", reminder.id).select("*").single();
       if (completeError) throw completeError;
       await client.from("telegram_work_order_reminder_events").insert({ reminder_id: reminder.id, event_type: "REMINDER_SENT", actor, metadata: { telegramMessageId: sent.messageId, reasons } });
