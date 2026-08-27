@@ -69,14 +69,15 @@ function buildEvidenceFacts(decision: Decision): EvidenceFact[] {
   return rows;
 }
 
-function evidenceGroups(value: unknown): Array<{ title: string; action: string; orderCount: number | null }> {
+function evidenceGroups(value: unknown): Array<{ title: string; action: string; orderCount: number | null; warehouseName: string | null }> {
   if (!Array.isArray(value)) return [];
   return value.flatMap((item) => {
     if (!item || typeof item !== "object") return [];
     const group = item as Record<string, unknown>;
     const title = typeof group.title === "string" ? group.title : "Hạng mục cần kiểm tra";
     const action = typeof group.action === "string" ? group.action : "";
-    return [{ title, action, orderCount: finiteNumber(group.orderCount) }];
+    const warehouseName = typeof group.warehouseName === "string" && group.warehouseName.trim() ? group.warehouseName.trim() : null;
+    return [{ title, action, orderCount: finiteNumber(group.orderCount), warehouseName }];
   }).slice(0, 3);
 }
 
@@ -94,7 +95,7 @@ export default function DecisionInboxPage() {
   const [outcomes, setOutcomes] = useState<Record<string, { status: string; observedOutcome: string; measuredAt: string; evidenceRefs: string; inconclusiveReason: string }>>({});
   const [executions, setExecutions] = useState<Record<string, { externalTicketId: string; performedAt: string; note: string }>>({});
   const [workOrders, setWorkOrders] = useState<Record<string, ExecutionWorkOrder | null>>({});
-  const [workOrderForms, setWorkOrderForms] = useState<Record<string, { owner: string; dueAt: string; actionItems: string }>>({});
+  const [workOrderForms, setWorkOrderForms] = useState<Record<string, { owner: string; dueDate: string; dueTime: string; actionItems: string[] }>>({});
   const [outcomePreviews, setOutcomePreviews] = useState<Record<string, OutcomePreview>>({});
 
   const load = useCallback(async () => {
@@ -198,13 +199,13 @@ export default function DecisionInboxPage() {
   }
 
   async function createWorkOrder(decision: Decision) {
-    const form = workOrderForms[decision.decisionId] || { owner: "", dueAt: "", actionItems: "" };
-    const actionItems = form.actionItems.split("\n").map((item) => item.trim()).filter(Boolean);
+    const form = workOrderForms[decision.decisionId] || { owner: "", dueDate: "", dueTime: "12:00", actionItems: [] };
+    const actionItems = form.actionItems.map((item) => item.trim()).filter(Boolean);
     if (!actor.trim()) { setError("Vui lòng đăng nhập để tạo work order."); return; }
-    if (!form.owner.trim() || !form.dueAt || actionItems.length === 0) { setError("Owner, hạn xử lý và ít nhất một hạng mục action là bắt buộc."); return; }
+    if (!form.owner.trim() || !form.dueDate || !form.dueTime || actionItems.length === 0) { setError("Owner, ngày/giờ hạn xử lý và ít nhất một hạng mục action là bắt buộc."); return; }
     setSubmitting(decision.decisionId); setError("");
     try {
-      const response = await fetch(`/api/decisions/${decision.decisionId}/work-order`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ actor: actor.trim(), owner: form.owner.trim(), dueAt: new Date(form.dueAt).toISOString(), actionItems, idempotencyKey: `work-order:${decision.decisionId}` }) });
+      const response = await fetch(`/api/decisions/${decision.decisionId}/work-order`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ actor: actor.trim(), owner: form.owner.trim(), dueAt: new Date(`${form.dueDate}T${form.dueTime}`).toISOString(), actionItems, idempotencyKey: `work-order:${decision.decisionId}` }) });
       const payload = await response.json(); handleApiAccess(response, payload, "Không thể tạo work order."); await load();
     } catch (caught) { setError(caught instanceof Error ? caught.message : String(caught)); }
     finally { setSubmitting(null); }
@@ -316,6 +317,9 @@ export default function DecisionInboxPage() {
               ? decision.evidence.operationalFacts.sampleOrderCodes.filter((value): value is string => typeof value === "string" && Boolean(value)).slice(0, 5)
               : [];
             const groups = evidenceGroups(decision.evidence.operationalFacts.groups);
+            const ownerChoices = [...new Set(groups.map((group) => group.warehouseName).filter((value): value is string => Boolean(value)))];
+            const workOrderForm = workOrderForms[decision.decisionId] || { owner: "", dueDate: "", dueTime: "12:00", actionItems: [] as string[] };
+            const actionChoices = [...new Set(groups.filter((group) => group.warehouseName === workOrderForm.owner).map((group) => repairOperationalText(group.action)).filter(Boolean))];
             const followupState = typeof decision.evidence.operationalFacts.followupState === "string" ? decision.evidence.operationalFacts.followupState : null;
             const evidenceCapturedAt = readableTimestamp(decision.evidence.capturedAt) || readableTimestamp(decision.evidence.operationalFacts.capturedAt);
             const humanInvestigation = decision.evidence.actionContext?.humanInvestigation;
@@ -401,13 +405,13 @@ export default function DecisionInboxPage() {
                 </div></div>}
               {decision.mode === "HUMAN_APPROVAL" && decision.decisionStatus === "APPROVED" && roleCan(role, "MANAGE_DECISION") && !workOrder && <div className="mt-4 rounded-lg border border-cyan-500/25 bg-cyan-500/5 p-4">
                 <h3 className="text-sm font-semibold text-cyan-100">Tạo Execution Work Order</h3>
-                <p className="mt-1 text-xs leading-5 text-slate-400">Tự sinh mã OPSP-WO trước khi giao việc. OpsPilot chỉ ghi nhận work order, không tự gửi hoặc điều phối hành động.</p>
+                <p className="mt-1 text-xs leading-5 text-slate-400">Chọn kho chịu trách nhiệm, action đã đề xuất và hạn xử lý. OpsPilot chỉ ghi nhận work order, không tự gửi hoặc điều phối hành động.</p>
                 <div className="mt-3 grid gap-3 md:grid-cols-2">
-                  <div><label htmlFor={`work-owner-${decision.decisionId}`} className="mb-1 block text-xs font-semibold">Owner <span className="text-rose-300">(bắt buộc)</span></label><input id={`work-owner-${decision.decisionId}`} value={workOrderForms[decision.decisionId]?.owner || ""} onChange={(event) => setWorkOrderForms((current) => ({ ...current, [decision.decisionId]: { ...(current[decision.decisionId] || { dueAt: "", actionItems: "" }), owner: event.target.value } }))} placeholder="Email, đội hoặc đầu mối chịu trách nhiệm" className="min-h-10 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 text-sm" /></div>
-                  <div><label htmlFor={`work-due-${decision.decisionId}`} className="mb-1 block text-xs font-semibold">Hạn xử lý <span className="text-rose-300">(bắt buộc)</span></label><input id={`work-due-${decision.decisionId}`} type="datetime-local" value={workOrderForms[decision.decisionId]?.dueAt || ""} onChange={(event) => setWorkOrderForms((current) => ({ ...current, [decision.decisionId]: { ...(current[decision.decisionId] || { owner: "", actionItems: "" }), dueAt: event.target.value } }))} className="min-h-10 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 text-sm" /></div>
-                  <div className="md:col-span-2"><label htmlFor={`work-actions-${decision.decisionId}`} className="mb-1 block text-xs font-semibold">Hạng mục action <span className="text-rose-300">(mỗi dòng một việc)</span></label><textarea id={`work-actions-${decision.decisionId}`} rows={4} value={workOrderForms[decision.decisionId]?.actionItems || ""} onChange={(event) => setWorkOrderForms((current) => ({ ...current, [decision.decisionId]: { ...(current[decision.decisionId] || { owner: "", dueAt: "" }), actionItems: event.target.value } }))} placeholder={repairOperationalText(decision.recommendedAction)} className="w-full rounded-lg border border-slate-700 bg-slate-950 p-3 text-sm" /></div>
+                  <div><label htmlFor={`work-owner-${decision.decisionId}`} className="mb-1 block text-xs font-semibold">Owner / kho chịu trách nhiệm <span className="text-rose-300">(bắt buộc)</span></label><select id={`work-owner-${decision.decisionId}`} value={workOrderForm.owner} onChange={(event) => setWorkOrderForms((current) => ({ ...current, [decision.decisionId]: { ...workOrderForm, owner: event.target.value, actionItems: [] } }))} className="min-h-10 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 text-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-300"><option value="">Chọn kho chịu trách nhiệm…</option>{ownerChoices.map((owner) => <option key={owner} value={owner}>{owner}</option>)}</select></div>
+                  <fieldset><legend className="mb-1 text-xs font-semibold">Hạn xử lý <span className="text-rose-300">(bắt buộc)</span></legend><div className="grid grid-cols-[1fr_7rem] gap-2"><label className="sr-only" htmlFor={`work-due-date-${decision.decisionId}`}>Ngày hạn xử lý</label><input id={`work-due-date-${decision.decisionId}`} type="date" value={workOrderForm.dueDate} onChange={(event) => setWorkOrderForms((current) => ({ ...current, [decision.decisionId]: { ...workOrderForm, dueDate: event.target.value } }))} className="min-h-10 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 text-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-300" /><label className="sr-only" htmlFor={`work-due-time-${decision.decisionId}`}>Giờ hạn xử lý</label><select id={`work-due-time-${decision.decisionId}`} value={workOrderForm.dueTime} onChange={(event) => setWorkOrderForms((current) => ({ ...current, [decision.decisionId]: { ...workOrderForm, dueTime: event.target.value } }))} className="min-h-10 rounded-lg border border-slate-700 bg-slate-950 px-3 text-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-300">{["09:00", "12:00", "15:00", "17:00", "20:00"].map((time) => <option key={time} value={time}>{time}</option>)}</select></div></fieldset>
+                  <fieldset className="md:col-span-2"><legend className="mb-2 text-xs font-semibold">Hạng mục action đã đề xuất <span className="text-rose-300">(chọn ít nhất một)</span></legend>{!workOrderForm.owner ? <p className="rounded-lg border border-dashed border-slate-700 p-3 text-sm text-slate-400">Chọn Owner để hiện các action thuộc đúng kho đó.</p> : actionChoices.length ? <div className="space-y-2">{actionChoices.map((action) => <label key={action} className="flex cursor-pointer items-start gap-3 rounded-lg border border-slate-700 bg-slate-950/70 p-3 text-sm text-slate-200"><input type="checkbox" checked={workOrderForm.actionItems.includes(action)} onChange={(event) => setWorkOrderForms((current) => ({ ...current, [decision.decisionId]: { ...workOrderForm, actionItems: event.target.checked ? [...workOrderForm.actionItems, action] : workOrderForm.actionItems.filter((item) => item !== action) } }))} className="mt-0.5 h-4 w-4 accent-cyan-400" /><span>{action}</span></label>)}</div> : <p className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-3 text-sm text-amber-100">Kho này chưa có action đã đề xuất; chưa thể tạo work order an toàn.</p>}</fieldset>
                 </div>
-                <button type="button" onClick={() => void createWorkOrder(decision)} disabled={submitting === decision.decisionId} className="mt-3 inline-flex min-h-10 items-center justify-center rounded-lg bg-cyan-600 px-4 text-sm font-semibold text-white hover:bg-cyan-500 disabled:opacity-60">{submitting === decision.decisionId ? "Đang tạo…" : "Tạo work order"}</button>
+                <button type="button" onClick={() => void createWorkOrder(decision)} disabled={submitting === decision.decisionId || !ownerChoices.length || !workOrderForm.owner || !workOrderForm.dueDate || workOrderForm.actionItems.length === 0} className="mt-3 inline-flex min-h-10 items-center justify-center rounded-lg bg-cyan-600 px-4 text-sm font-semibold text-white hover:bg-cyan-500 disabled:opacity-60">{submitting === decision.decisionId ? "Đang tạo…" : "Tạo work order"}</button>
               </div>}
               {workOrder && <div className="mt-4 rounded-lg border border-cyan-500/25 bg-cyan-500/5 p-4 text-sm">
                 <div className="flex flex-wrap items-center justify-between gap-2"><h3 className="font-semibold text-cyan-100">Execution Work Order <span className="font-mono text-cyan-300">{workOrder.workOrderCode}</span></h3><span className="rounded-full border border-cyan-400/40 px-2 py-1 text-xs font-bold text-cyan-200">{workOrder.status}</span></div>
