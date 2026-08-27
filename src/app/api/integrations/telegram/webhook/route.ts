@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { timingSafeEqual } from "crypto";
 import { createAdminClient } from "@/connectors/supabase";
+import { parseWorkOrderCallbackData } from "@/integrations/telegram/work-order-actions";
 
 type TelegramUser = { id?: number; first_name?: string; last_name?: string; username?: string };
 type TelegramMessage = { message_id?: number; text?: string; chat?: { id?: number; type?: string; title?: string }; from?: TelegramUser; reply_to_message?: { message_id?: number } };
@@ -75,6 +76,20 @@ export async function POST(request: NextRequest) {
         ? "OpsPilot: tài khoản Telegram của bạn đang tạm dừng trong pilot. Hãy liên hệ Manager OpsPilot nếu cần hỗ trợ."
         : "OpsPilot đã nhận diện bạn. Manager sẽ gán kho và kích hoạt quyền nhận việc trên OpsPilot.";
     return NextResponse.json({ method: "sendMessage", chat_id: chat.id, reply_to_message_id: message.message_id, text: enrollmentReply });
+  }
+  if (update.callback_query?.id && member.status === "ACTIVE") {
+    const callback = parseWorkOrderCallbackData(update.callback_query.data);
+    if (callback) {
+      const { data: dispatch, error: dispatchError } = await client.from("telegram_work_order_dispatches").select("id, group_id, telegram_message_id, recipient_member_ids").eq("id", callback.dispatchId).eq("group_id", group.id).eq("status", "SENT").maybeSingle();
+      if (dispatchError) return NextResponse.json({ error: "TELEGRAM_DISPATCH_LOOKUP_FAILED", message: dispatchError.message }, { status: 503 });
+      const recipients = Array.isArray(dispatch?.recipient_member_ids) ? dispatch.recipient_member_ids.filter((value): value is string => typeof value === "string") : [];
+      if (dispatch && dispatch.telegram_message_id === message.message_id && recipients.includes(member.id)) {
+        const { error: signalError } = await client.from("telegram_work_order_signals").insert({ dispatch_id: dispatch.id, member_id: member.id, telegram_update_id: update.update_id, signal_type: callback.signal });
+        if (signalError && signalError.code !== "23505") return NextResponse.json({ error: "TELEGRAM_SIGNAL_WRITE_FAILED", message: signalError.message }, { status: 503 });
+        const acknowledgment = callback.signal === "ACKNOWLEDGED" ? "Đã ghi nhận bạn nhận việc." : callback.signal === "NEEDS_SUPPORT" ? "Đã ghi nhận cần hỗ trợ. Hãy Reply vào tin work order để nêu rõ vướng mắc." : "Đã ghi nhận cập nhật tiến độ. Hãy Reply vào tin work order để ghi nội dung tiến độ.";
+        return NextResponse.json({ method: "answerCallbackQuery", callback_query_id: update.callback_query.id, text: acknowledgment, show_alert: false });
+      }
+    }
   }
   if (eventType === "FREE_TEXT_FEEDBACK" && text && message.reply_to_message?.message_id && member.status === "ACTIVE") {
     const { data: dispatch, error: dispatchError } = await client.from("telegram_work_order_dispatches").select("id, recipient_member_ids").eq("group_id", group.id).eq("status", "SENT").eq("telegram_message_id", message.reply_to_message.message_id).maybeSingle();

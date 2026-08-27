@@ -2,6 +2,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import { createAdminClient } from "@/connectors/supabase";
 import { TelegramClient } from "@/integrations/telegram";
 import { formatTelegramWorkOrderMessage } from "@/integrations/telegram/work-order-message";
+import { workOrderInlineKeyboard } from "@/integrations/telegram/work-order-actions";
 import { ServiceFactory } from "@/services/ServiceFactory";
 import { readJsonBody, resolveActor } from "@/security/api-security";
 import { authorizeDecisionScope } from "@/security/scope-guard";
@@ -38,9 +39,13 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       ? await client.from("telegram_work_order_feedbacks").select("id, member_id, feedback_text, received_at, telegram_message_id, telegram_pilot_members(display_name, username)").eq("dispatch_id", dispatch.id).order("received_at", { ascending: true })
       : { data: [], error: null };
     if (feedbackError) throw feedbackError;
+    const { data: signals, error: signalError } = dispatch
+      ? await client.from("telegram_work_order_signals").select("id, signal_type, received_at, telegram_pilot_members(display_name, username)").eq("dispatch_id", dispatch.id).order("received_at", { ascending: true })
+      : { data: [], error: null };
+    if (signalError) throw signalError;
     const groupById = new Map((groups || []).map((group: PilotGroup) => [group.id, group]));
     const candidates = (members || []).filter((member: PilotMember) => warehouseNames(member).includes(workOrder.owner) && groupById.has(member.group_id)).map((member: PilotMember) => ({ memberId: member.id, groupId: member.group_id, groupTitle: groupById.get(member.group_id)?.title || "Telegram group", displayName: member.display_name, username: member.username, pilotRole: member.pilot_role }));
-    return NextResponse.json({ ok: true, data: { workOrder, candidates, dispatch: dispatch ? { ...dispatch, feedbacks: feedbacks || [] } : null } });
+    return NextResponse.json({ ok: true, data: { workOrder, candidates, dispatch: dispatch ? { ...dispatch, feedbacks: feedbacks || [], signals: signals || [] } : null } });
   } catch (error) { return failure(error); }
 }
 
@@ -75,7 +80,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     if (insertError) throw insertError;
     await client.from("telegram_work_order_dispatch_events").insert({ dispatch_id: dispatch.id, event_type: "DISPATCH_REQUESTED", actor, metadata: { groupId, recipientMemberIds: memberIds, workOrderCode: workOrder.workOrderCode } });
     try {
-      const sent = await new TelegramClient().sendToChat(String(group.telegram_chat_id), formatTelegramWorkOrderMessage(workOrder, members.map((member) => ({ displayName: member.display_name, username: member.username }))));
+      const sent = await new TelegramClient().sendToChat(String(group.telegram_chat_id), formatTelegramWorkOrderMessage(workOrder, members.map((member) => ({ displayName: member.display_name, username: member.username }))), { inlineKeyboard: workOrderInlineKeyboard(dispatch.id) });
       const { data: completed, error: completeError } = await client.from("telegram_work_order_dispatches").update({ status: "SENT", telegram_message_id: Number(sent.messageId), sent_at: new Date().toISOString(), failure_reason: null, updated_at: new Date().toISOString() }).eq("id", dispatch.id).select("*").single();
       if (completeError) throw completeError;
       await client.from("telegram_work_order_dispatch_events").insert({ dispatch_id: dispatch.id, event_type: "DISPATCH_SENT", actor, metadata: { telegramMessageId: sent.messageId } });
