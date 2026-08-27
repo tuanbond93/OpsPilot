@@ -82,4 +82,13 @@ describe("GHN live order tracking parser", () => {
     expect(result.deliveryStartedAt).toBe("2026-08-25T02:52:53.000Z");
     expect(result.deliveryStartedAtInferred).toBe(true);
   });
+
+  it("reads delivery action variants when the GHN status field is absent", () => {
+    const result = parseLiveOrderTracking("ACTION_ONLY_DELIVERY", [
+      { created_at: "2026-08-27T05:18:24.000Z", new_data: { current_warehouse_id: 21321001, action: "OUT_FOR_DELIVERY" } },
+      { created_at: "2026-08-27T05:21:04.000Z", new_data: { current_warehouse_id: 21321001, operation: "DELIVERY_SUCCESS" } },
+    ]);
+    expect(result.deliveryStartedAt).toBe("2026-08-27T05:18:24.000Z");
+    expect(result.endSuccessAt).toBe("2026-08-27T05:21:04.000Z");
+  });
 });

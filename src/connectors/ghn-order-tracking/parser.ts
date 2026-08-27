@@ -67,7 +67,7 @@ export function parseLiveOrderTracking(
     }
     const patchStatus = (text(patch.status) || text(patch.order_status) || text(patch.orderStatus) || text(patch.current_status))?.toLowerCase() || null;
     const deliveryAction = (patchAction || "").toUpperCase();
-    if (!deliveryStartedAt && (["delivering", "money_collect_delivering"].includes(patchStatus || "") || /DELIVER|OUT_FOR_DELIVERY|SHIPPER/.test(deliveryAction))) {
+    if (!deliveryStartedAt && (["delivering", "money_collect_delivering"].includes(patchStatus || "") || /OUT_FOR_DELIVERY|DELIVERING|SHIPPER_ASSIGN|ASSIGN_SHIPPER/.test(deliveryAction))) {
       deliveryStartedAt = at;
       deliveryStartedAtInferred = true;
     }

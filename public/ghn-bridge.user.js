@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OpsPilot GHN Tracking Bridge
 // @namespace    https://opspilot-tau-lyart.vercel.app/
-// @version      1.5.0
+// @version      1.6.0
 // @description  Tra cứu lộ trình GHN trực tiếp cho OpsPilot mà không gửi token lên server.
 // @author       OpsPilot
 // @match        https://tracuunoibo.ghn.vn/*
@@ -141,12 +141,12 @@
     if (!entries) throw new Error("GHN_INVALID_RESPONSE");
 
     const chronological = entries.filter((entry) => entry && Number.isFinite(Date.parse(entry.created_at))).sort((a, b) => Date.parse(a.created_at) - Date.parse(b.created_at));
-    let status = null, currentWarehouseId = null, nextWarehouseId = null, pickWarehouseId = null, deliverWarehouseId = null, lastAction = null, lastEventAt = null;
+    let status = null, currentWarehouseId = null, nextWarehouseId = null, pickWarehouseId = null, deliverWarehouseId = null, lastAction = null, lastEventAt = null, deliveryStartedAt = null, deliveryStartedAtInferred = false, endDeliveryAt = null, endSuccessAt = null;
     const journey = [];
     const ids = new Set();
     for (const entry of chronological) {
       const patch = entry.new_data || {};
-      const action = text(patch.action);
+      const action = text(patch.action) || text(patch.operation) || text(patch.event);
       const warehouseId = text(patch.current_warehouse_id);
       if (warehouseId && warehouseId !== currentWarehouseId) {
         journey.push({ warehouseId, arrivedAt: entry.created_at, arrivalAction: action || undefined });
@@ -157,7 +157,17 @@
         journey[journey.length - 1].departedAt = entry.created_at;
         journey[journey.length - 1].departureAction = action;
       }
-      status = text(patch.status) || status;
+      const nextStatus = (text(patch.status) || text(patch.order_status) || text(patch.orderStatus) || text(patch.current_status) || "").toLowerCase() || null;
+      const normalizedAction = (action || "").toUpperCase();
+      if (!deliveryStartedAt && (["delivering", "money_collect_delivering"].includes(nextStatus || "") || /OUT_FOR_DELIVERY|DELIVERING|SHIPPER_ASSIGN|ASSIGN_SHIPPER/.test(normalizedAction))) {
+        deliveryStartedAt = entry.created_at;
+        deliveryStartedAtInferred = true;
+      }
+      if (["delivered", "success"].includes(nextStatus || "") || /DELIVERED|DELIVERY_SUCCESS|SUCCESS/.test(normalizedAction)) {
+        endDeliveryAt ||= entry.created_at;
+        endSuccessAt ||= entry.created_at;
+      }
+      status = nextStatus || status;
       nextWarehouseId = text(patch.next_warehouse_id) || nextWarehouseId;
       pickWarehouseId = text(patch.pick_warehouse_id) || pickWarehouseId;
       deliverWarehouseId = text(patch.deliver_warehouse_id) || deliverWarehouseId;
@@ -188,6 +198,10 @@
       lastAction,
       lastEventAt,
       checkedAt: new Date().toISOString(),
+      deliveryStartedAt,
+      deliveryStartedAtInferred,
+      endDeliveryAt,
+      endSuccessAt,
       journey: journey.map((point, index) => ({ ...point, warehouseName: nameFor(point.warehouseId), current: index === journey.length - 1 && phase !== "IN_TRANSIT" && phase !== "COMPLETED" }))
     };
   }
