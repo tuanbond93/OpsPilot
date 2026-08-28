@@ -277,8 +277,8 @@ describe("Sprint 10.1 follow-up persistence batching", () => {
 
     expect(rows).toEqual([caseRow]);
     expect(query.upsert).toHaveBeenCalledWith(
-      [expect.objectContaining({ incident_id: "incident-1", updated_at: expect.any(String) })],
-      { onConflict: "incident_id" }
+      [expect.objectContaining({ incident_id: "incident-1", incident_key: "batch:1", updated_at: expect.any(String) })],
+      { onConflict: "incident_key" }
     );
     expect(query.select).toHaveBeenCalledWith(expect.stringContaining("incident_id"));
     expect(query.select).not.toHaveBeenCalledWith("*");

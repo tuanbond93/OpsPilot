@@ -12,6 +12,7 @@ export type DeliveryOutcome = "DELIVERED" | "SIMULATED" | "FAILED";
 export type ActionType =
   | "FIRST_PUSH"
   | "SECOND_PUSH"
+  | "THIRD_PUSH"
   | "ESCALATION"
   | "ROOTCAUSE_SUMMARY"
   | "DAILY_REPORT"

@@ -85,7 +85,7 @@ export class SupabaseFollowupRepository extends BaseRepository implements IFollo
 
     const query = this.client
       .from("followup_cases")
-      .upsert(payload, { onConflict: "incident_id" })
+      .upsert(payload, { onConflict: "incident_key" })
       .select()
       .single();
 
@@ -103,7 +103,7 @@ export class SupabaseFollowupRepository extends BaseRepository implements IFollo
 
     const query = this.client
       .from("followup_cases")
-      .upsert(payload, { onConflict: "incident_id" })
+      .upsert(payload, { onConflict: "incident_key" })
       .select(FOLLOWUP_CASE_COLUMNS);
 
     return this.executeMany<FollowupCaseRow>(query as unknown as Promise<{ data: FollowupCaseRow[] | null; error: unknown }>);

@@ -6,67 +6,39 @@ import type { LiveOrderTracking } from "@/connectors/ghn-order-tracking";
 import { handleApiAccess } from "@/app/_components/apiAccess";
 import { useOpsSession } from "@/app/_components/useOpsSession";
 
-type Proposal = { id: string; order_codes: string[]; trigger_description: string; responsible_owner: string; root_cause: string; standard_action: string; evidence: string; submitted_by: string; submitted_at: string; status: "SUBMITTED" | "APPROVED" | "REJECTED" | "PENDING_REVIEW"; reviews: Array<{ event_type: string; actor: string; note: string | null; occurred_at: string }> };
+type Proposal = { id: string; order_codes: string[]; trigger_description: string; responsible_owner: string; root_cause: string; standard_action: string; evidence: string; submitted_at: string; status: "SUBMITTED" | "APPROVED" | "REJECTED" | "PENDING_REVIEW"; reviews: Array<{ event_type: string; actor: string; note: string | null; occurred_at: string }> };
+type CauseCode = "STAFFING" | "CAPACITY" | "LINEHAUL" | "PROCESS" | "DATA_ERROR" | "OTHER";
 const field = "mt-1 min-h-11 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 text-sm text-slate-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-300";
+function statusText(status: Proposal["status"]) { return status === "APPROVED" ? "Đã duyệt · AI có thể tham chiếu" : status === "REJECTED" ? "Đã từ chối" : "Chờ Manager duyệt"; }
 
-function statusText(status: Proposal["status"]) {
-  if (status === "APPROVED") return "Đã duyệt · AI có thể tham chiếu";
-  if (status === "REJECTED") return "Đã từ chối";
-  return "Chờ Manager duyệt";
-}
-
-export function PlaybookGapReview({ incidentId, tracking }: { incidentId: string; tracking: LiveOrderTracking }) {
+export function PlaybookGapReview({ incidentId, tracking, mode = "gap" }: { incidentId: string; tracking: LiveOrderTracking; mode?: "gap" | "supplement" }) {
   const session = useOpsSession();
-  const [open, setOpen] = useState(false);
-  const [items, setItems] = useState<Proposal[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [notice, setNotice] = useState<string | null>(null);
+  const [open, setOpen] = useState(false); const [items, setItems] = useState<Proposal[]>([]); const [loading, setLoading] = useState(false); const [busy, setBusy] = useState(false); const [notice, setNotice] = useState<string | null>(null);
   const warehouses = useMemo(() => [...new Set([tracking.currentWarehouseName, ...tracking.journey.map((point) => point.warehouseName)].filter((value): value is string => Boolean(value?.trim())))], [tracking]);
   const ownItems = items.filter((item) => item.order_codes.includes(tracking.orderCode));
-
-  const load = useCallback(async () => {
-    setLoading(true);
-    try {
-      const response = await fetch(`/api/incidents/${encodeURIComponent(incidentId)}/playbook-gaps`, { cache: "no-store" });
-      const payload = await response.json();
-      handleApiAccess(response, payload, "Không thể tải các đề xuất playbook.");
-      setItems(payload.data || []);
-    } catch (error) { setNotice(error instanceof Error ? error.message : String(error)); }
-    finally { setLoading(false); }
-  }, [incidentId]);
+  const supplement = mode === "supplement";
+  const load = useCallback(async () => { setLoading(true); try { const response = await fetch(`/api/incidents/${encodeURIComponent(incidentId)}/playbook-gaps`, { cache: "no-store" }); const payload = await response.json(); handleApiAccess(response, payload, "Không thể tải các đề xuất playbook."); setItems(payload.data || []); } catch (error) { setNotice(error instanceof Error ? error.message : String(error)); } finally { setLoading(false); } }, [incidentId]);
   useEffect(() => { if (open) void load(); }, [load, open]);
-
   async function submit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const form = event.currentTarget;
-    const values = new FormData(form);
-    setBusy(true); setNotice(null);
+    event.preventDefault(); const form = event.currentTarget; const values = new FormData(form); const rootCause = String(values.get("rootCause") || ""); const evidence = String(values.get("evidence") || ""); setBusy(true); setNotice(null);
     try {
-      const response = await fetch(`/api/incidents/${encodeURIComponent(incidentId)}/playbook-gaps`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ actor: session.actor, orderCodes: [tracking.orderCode], triggerDescription: values.get("triggerDescription"), responsibleOwner: values.get("responsibleOwner"), rootCause: values.get("rootCause"), standardAction: values.get("standardAction"), evidence: values.get("evidence") }) });
-      const payload = await response.json();
-      handleApiAccess(response, payload, "Không thể lưu đề xuất playbook.");
-      form.reset(); setNotice("Đã gửi đề xuất. Manager cần duyệt trước khi AI được dùng làm guidance."); await load();
-    } catch (error) { setNotice(error instanceof Error ? error.message : String(error)); }
-    finally { setBusy(false); }
+      if (supplement && values.get("recordVerification") === "on") {
+        const verification = await fetch(`/api/incidents/${encodeURIComponent(incidentId)}/pilot-feedback`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ kind: "verification", actor: session.actor, actualCause: values.get("actualCause"), evidence, notes: `Nguyên nhân thực tế: ${rootCause}\nAction đề xuất: ${String(values.get("standardAction") || "")}` }) });
+        const payload = await verification.json(); handleApiAccess(verification, payload, "Không thể lưu nguyên nhân thực tế.");
+      }
+      const response = await fetch(`/api/incidents/${encodeURIComponent(incidentId)}/playbook-gaps`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ actor: session.actor, orderCodes: [tracking.orderCode], triggerDescription: values.get("triggerDescription"), responsibleOwner: values.get("responsibleOwner"), rootCause, standardAction: values.get("standardAction"), evidence }) });
+      const payload = await response.json(); handleApiAccess(response, payload, "Không thể lưu đề xuất playbook."); form.reset(); setNotice(supplement ? "Đã lưu nguyên nhân thực tế và gửi đề xuất guidance. Manager cần duyệt trước khi AI dùng cho lần sau." : "Đã gửi đề xuất. Manager cần duyệt trước khi AI được dùng làm guidance."); await load();
+    } catch (error) { setNotice(error instanceof Error ? error.message : String(error)); } finally { setBusy(false); }
   }
-  async function review(proposalId: string, decision: "APPROVED" | "REJECTED") {
-    setBusy(true); setNotice(null);
-    try {
-      const response = await fetch(`/api/incidents/${encodeURIComponent(incidentId)}/playbook-gaps/${encodeURIComponent(proposalId)}/review`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ actor: session.actor, decision }) });
-      const payload = await response.json(); handleApiAccess(response, payload, "Không thể duyệt đề xuất playbook.");
-      setNotice(decision === "APPROVED" ? "Đã duyệt. AI Planner sẽ nhận guidance này ở lần phân tích tiếp theo." : "Đã từ chối đề xuất."); await load();
-    } catch (error) { setNotice(error instanceof Error ? error.message : String(error)); }
-    finally { setBusy(false); }
-  }
-
-  return <div className="mt-3 rounded-lg border border-amber-400/30 bg-amber-400/5 p-3">
-    <button type="button" onClick={() => setOpen((value) => !value)} aria-expanded={open} className="flex min-h-11 w-full items-center justify-between gap-3 text-left font-semibold text-amber-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-amber-300"><span className="inline-flex items-center gap-2"><Sparkles size={17}/>Review & bổ sung Playbook</span><ChevronDown className={open ? "rotate-180 transition-transform" : "transition-transform"} size={17}/></button>
-    {!open ? <p className="mt-1 text-xs leading-5 text-amber-100/75">Owner nhập điều kiện, nguyên nhân, action chuẩn và bằng chứng. AI chỉ tham chiếu nội dung sau khi Manager duyệt.</p> : <div className="mt-3 space-y-4">
+  async function review(proposalId: string, decision: "APPROVED" | "REJECTED") { setBusy(true); setNotice(null); try { const response = await fetch(`/api/incidents/${encodeURIComponent(incidentId)}/playbook-gaps/${encodeURIComponent(proposalId)}/review`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ actor: session.actor, decision }) }); const payload = await response.json(); handleApiAccess(response, payload, "Không thể duyệt đề xuất playbook."); setNotice(decision === "APPROVED" ? "Đã duyệt. AI Planner sẽ nhận guidance này ở lần phân tích tiếp theo." : "Đã từ chối đề xuất."); await load(); } catch (error) { setNotice(error instanceof Error ? error.message : String(error)); } finally { setBusy(false); } }
+  const heading = supplement ? "Bổ sung / đính chính nguyên nhân" : "Review & bổ sung Playbook";
+  return <div className={`mt-3 rounded-lg border p-3 ${supplement ? "border-violet-400/35 bg-violet-400/5" : "border-amber-400/30 bg-amber-400/5"}`}>
+    <button type="button" onClick={() => setOpen((value) => !value)} aria-expanded={open} className={`flex min-h-11 w-full items-center justify-between gap-3 text-left font-semibold focus-visible:outline focus-visible:outline-2 ${supplement ? "text-violet-100 focus-visible:outline-violet-300" : "text-amber-100 focus-visible:outline-amber-300"}`}><span className="inline-flex items-center gap-2"><Sparkles aria-hidden="true" size={17}/>{heading}</span><ChevronDown aria-hidden="true" className={open ? "rotate-180 transition-transform" : "transition-transform"} size={17}/></button>
+    {!open ? <p className="mt-1 text-xs leading-5 text-slate-300">{supplement ? "Ghi nguyên nhân thực tế cho case này và gửi guidance có bằng chứng để Manager duyệt cho AI dùng lần sau." : "Owner nhập điều kiện, nguyên nhân, action chuẩn và bằng chứng. AI chỉ tham chiếu nội dung sau khi Manager duyệt."}</p> : <div className="mt-3 space-y-4">
       <div className="rounded-md border border-slate-700 bg-slate-950/70 p-3 text-sm"><p><strong className="text-amber-100">Đơn cần review:</strong> <span className="font-mono text-cyan-200">{tracking.orderCode}</span></p><p className="mt-1 text-slate-300">{tracking.currentWarehouseName || "Kho chưa xác định"} · {tracking.statusLabel || "Trạng thái chưa xác định"}</p><p className="mt-1 text-xs text-slate-500">Timeline: {tracking.journey.map((point) => point.warehouseName).join(" → ") || "Chưa có checkpoint"}</p></div>
       {ownItems.map((item) => <article key={item.id} className="rounded-md border border-slate-700 bg-slate-950/70 p-3 text-sm"><div className="flex flex-wrap items-center justify-between gap-2"><strong className={item.status === "APPROVED" ? "text-emerald-200" : item.status === "REJECTED" ? "text-rose-200" : "text-amber-200"}>{statusText(item.status)}</strong><span className="text-xs text-slate-500">{new Date(item.submitted_at).toLocaleString("vi-VN")}</span></div><p className="mt-2"><strong>Điều kiện:</strong> {item.trigger_description}</p><p className="mt-1"><strong>Owner:</strong> {item.responsible_owner}</p><p className="mt-1"><strong>Nguyên nhân:</strong> {item.root_cause}</p><p className="mt-1"><strong>Action chuẩn:</strong> {item.standard_action}</p>{item.status === "SUBMITTED" && session.can("MANAGE_FEEDBACK") && <div className="mt-3 flex gap-2"><button type="button" disabled={busy} onClick={() => void review(item.id, "APPROVED")} className="min-h-11 rounded-lg bg-emerald-600 px-3 font-semibold text-white disabled:opacity-50">Duyệt guidance cho AI</button><button type="button" disabled={busy} onClick={() => void review(item.id, "REJECTED")} className="min-h-11 rounded-lg border border-rose-400/40 px-3 font-semibold text-rose-100 disabled:opacity-50">Từ chối</button></div>}</article>)}
-      {session.can("REPORT_FEEDBACK") && <form onSubmit={(event) => void submit(event)} className="space-y-3 border-t border-amber-400/20 pt-4"><h4 className="font-semibold text-amber-100">Đề xuất hướng dẫn mới</h4><label className="block text-sm font-medium">Điều kiện nhận diện<textarea name="triggerDescription" required rows={2} defaultValue={`Khi đơn ở trạng thái ${tracking.statusLabel || "này"} tại ${tracking.currentWarehouseName || "kho này"} và có timeline như trên.`} className={field}/></label><label className="block text-sm font-medium">Owner chịu trách nhiệm<select name="responsibleOwner" required defaultValue={tracking.currentWarehouseName || ""} className={field}><option value="" disabled>Chọn owner</option>{warehouses.map((warehouse) => <option key={warehouse} value={warehouse}>{warehouse}</option>)}</select></label><label className="block text-sm font-medium">Nguyên nhân thực tế<textarea name="rootCause" required rows={2} placeholder="Chỉ nhập điều đã kiểm chứng, không suy đoán." className={field}/></label><label className="block text-sm font-medium">Action chuẩn<textarea name="standardAction" required rows={2} placeholder="Bước kiểm tra/escalate cụ thể; không tạo lệnh điều phối tự động." className={field}/></label><label className="block text-sm font-medium">Bằng chứng<textarea name="evidence" required rows={2} placeholder="Log, timestamp, ID chứng từ hoặc nguồn đối soát." className={field}/></label><button type="submit" disabled={busy || session.loading} className="inline-flex min-h-11 items-center gap-2 rounded-lg bg-amber-500 px-4 font-semibold text-slate-950 disabled:opacity-50">{busy && <LoaderCircle className="animate-spin" size={17}/>}Gửi Manager duyệt</button></form>}
-      {loading && <p className="text-sm text-slate-400">Đang tải review…</p>}{notice && <p role="status" className="rounded-md border border-cyan-400/30 bg-cyan-400/5 p-3 text-sm text-cyan-100"><CheckCircle2 className="mr-2 inline" size={16}/>{notice}</p>}
+      {session.can("REPORT_FEEDBACK") && <form onSubmit={(event) => void submit(event)} className="space-y-3 border-t border-amber-400/20 pt-4"><h4 className="font-semibold text-amber-100">{supplement ? "Nguyên nhân do người vận hành bổ sung" : "Đề xuất hướng dẫn mới"}</h4>{supplement && <><label className="flex min-h-11 items-center gap-3 rounded-lg border border-violet-400/30 bg-violet-400/5 px-3 text-sm text-violet-100"><input name="recordVerification" type="checkbox" defaultChecked className="h-4 w-4 accent-violet-400"/>Lưu đây là nguyên nhân thực tế của incident này</label><label className="block text-sm font-medium">Nhóm nguyên nhân thực tế<select name="actualCause" defaultValue={"OTHER" as CauseCode} className={field}><option value="STAFFING">Nhân sự</option><option value="CAPACITY">Công suất/diện tích</option><option value="LINEHAUL">Xe trung chuyển</option><option value="PROCESS">Quy trình</option><option value="DATA_ERROR">Dữ liệu sai</option><option value="OTHER">Khác</option></select></label></>}<label className="block text-sm font-medium">Điều kiện nhận diện<textarea name="triggerDescription" required rows={2} defaultValue={`Khi đơn ở trạng thái ${tracking.statusLabel || "này"} tại ${tracking.currentWarehouseName || "kho này"} và có timeline như trên.`} className={field}/></label><label className="block text-sm font-medium">Owner chịu trách nhiệm<select name="responsibleOwner" required defaultValue={tracking.currentWarehouseName || ""} className={field}><option value="" disabled>Chọn owner</option>{warehouses.map((warehouse) => <option key={warehouse} value={warehouse}>{warehouse}</option>)}</select></label><label className="block text-sm font-medium">Nguyên nhân thực tế<textarea name="rootCause" required rows={2} placeholder="Chỉ nhập điều đã kiểm chứng, không suy đoán." className={field}/></label><label className="block text-sm font-medium">Action chuẩn<textarea name="standardAction" required rows={2} placeholder="Bước kiểm tra/escalate cụ thể; không tạo lệnh điều phối tự động." className={field}/></label><label className="block text-sm font-medium">Bằng chứng<textarea name="evidence" required rows={2} placeholder="Log, timestamp, ID chứng từ hoặc nguồn đối soát." className={field}/></label><button type="submit" disabled={busy || session.loading} className="inline-flex min-h-11 items-center gap-2 rounded-lg bg-amber-500 px-4 font-semibold text-slate-950 disabled:opacity-50">{busy && <LoaderCircle aria-hidden="true" className="animate-spin" size={17}/>}Gửi Manager duyệt</button></form>}
+      {loading && <p className="text-sm text-slate-400">Đang tải review…</p>}{notice && <p role="status" className="rounded-md border border-cyan-400/30 bg-cyan-400/5 p-3 text-sm text-cyan-100"><CheckCircle2 aria-hidden="true" className="mr-2 inline" size={16}/>{notice}</p>}
     </div>}
   </div>;
 }

@@ -114,7 +114,7 @@ export function evaluateNextState(
         eventType: "PUSH_CONFIRMED",
         notes: `Second push notification delivery confirmed by ${ctx.confirmedBy || "system"}.`,
         actionConfirmedAt: nowIso,
-        nextActionAt: new Date(referenceTimeMs + config.escalationDelayHours * 3600 * 1000).toISOString(),
+        nextActionAt: new Date(referenceTimeMs + config.secondReminderDelayHours * 3600 * 1000).toISOString(),
         confirmedBy: ctx.confirmedBy || "system",
       };
     }
@@ -124,6 +124,28 @@ export function evaluateNextState(
       assessment: ctx.progressAssessment,
       eventType: "ASSESSMENT_CHECKED",
       notes: "Second push is pending delivery confirmation.",
+    };
+  }
+
+  if (currentState === "THIRD_PUSH_PENDING") {
+    if (ctx.isConfirmed) {
+      return {
+        oldState: "THIRD_PUSH_PENDING",
+        newState: "THIRD_PUSH_SENT",
+        assessment: ctx.progressAssessment,
+        eventType: "PUSH_CONFIRMED",
+        notes: `Third push notification delivery confirmed by ${ctx.confirmedBy || "system"}.`,
+        actionConfirmedAt: nowIso,
+        nextActionAt: new Date(referenceTimeMs + config.thirdReminderDelayHours * 3600 * 1000).toISOString(),
+        confirmedBy: ctx.confirmedBy || "system",
+      };
+    }
+    return {
+      oldState: "THIRD_PUSH_PENDING",
+      newState: "THIRD_PUSH_PENDING",
+      assessment: ctx.progressAssessment,
+      eventType: "ASSESSMENT_CHECKED",
+      notes: "Third push is pending delivery confirmation.",
     };
   }
 
@@ -160,7 +182,7 @@ export function evaluateNextState(
       };
     }
 
-    if (ctx.timeSinceLastActionHours >= config.firstReminderDelayHours) {
+    if (ctx.hasFreshSnapshotAfterLastAction !== false && ctx.timeSinceLastActionHours >= config.firstReminderDelayHours) {
       return {
         oldState: currentState,
         newState: "SECOND_PUSH_PENDING",
@@ -185,7 +207,7 @@ export function evaluateNextState(
       };
     }
 
-    if (ctx.timeSinceLastActionHours >= config.secondReminderDelayHours) {
+    if (ctx.hasFreshSnapshotAfterLastAction !== false && ctx.timeSinceLastActionHours >= config.secondReminderDelayHours) {
       return {
         oldState: currentState,
         newState: "SECOND_PUSH_PENDING",
@@ -198,7 +220,7 @@ export function evaluateNextState(
     }
   }
 
-  // Rule 7: SECOND_PUSH_SENT -> Escalation evaluation
+  // Rule 7: SECOND_PUSH_SENT -> third reminder evaluation
   if (currentState === "SECOND_PUSH_SENT") {
     if (ctx.progressAssessment === "strong_progress") {
       return {
@@ -210,20 +232,43 @@ export function evaluateNextState(
       };
     }
 
-    if (ctx.timeSinceLastActionHours >= config.escalationDelayHours) {
+    if (ctx.hasFreshSnapshotAfterLastAction !== false && ctx.timeSinceLastActionHours >= config.secondReminderDelayHours) {
+      return {
+        oldState: currentState,
+        newState: "THIRD_PUSH_PENDING",
+        assessment: ctx.progressAssessment,
+        eventType: "PUSH_REQUESTED",
+        notes: `No material improvement after ${config.secondReminderDelayHours}h and a new snapshot. Third push requested.`,
+        actionRequestedAt: nowIso,
+        nextActionAt: new Date(referenceTimeMs + config.thirdReminderDelayHours * 3600 * 1000).toISOString(),
+      };
+    }
+  }
+
+  // Rule 8: THIRD_PUSH_SENT -> manager escalation, only after a newer snapshot.
+  if (currentState === "THIRD_PUSH_SENT") {
+    if (ctx.progressAssessment === "strong_progress") {
+      return {
+        oldState: currentState,
+        newState: "FOLLOWING_UP",
+        assessment: ctx.progressAssessment,
+        eventType: "ASSESSMENT_CHECKED",
+        notes: `Strong progress achieved after third push (+${ctx.progressPercent}% reduction). Continuing follow-up.`,
+      };
+    }
+    if (ctx.hasFreshSnapshotAfterLastAction !== false && ctx.timeSinceLastActionHours >= config.thirdReminderDelayHours) {
       return {
         oldState: currentState,
         newState: "ESCALATION_PENDING",
         assessment: ctx.progressAssessment,
         eventType: "ESCALATION_REQUESTED",
-        notes: `No material improvement after ${config.escalationDelayHours}h. Escalation to Lead & Manager requested.`,
+        notes: `No material improvement after the third push and a new snapshot. Manager escalation requested.`,
         actionRequestedAt: nowIso,
-        nextActionAt: new Date(referenceTimeMs + config.escalationDelayHours * 3600 * 1000).toISOString(),
       };
     }
   }
 
-  // Rule 8: ESCALATED -> Remain escalated unless strong progress or resolved
+  // Rule 9: ESCALATED -> Remain escalated unless strong progress or resolved
   if (currentState === "ESCALATED") {
     if (ctx.progressAssessment === "strong_progress") {
       return {

@@ -80,11 +80,11 @@ export class FollowupService implements IFollowupService {
     const normalizedAction = String(action || "").toLowerCase().trim();
     const normalizedConfirmedBy = String(confirmedBy || "manual_operator").trim();
 
-    if (!["first_push", "second_push", "escalation"].includes(normalizedAction)) {
+    if (!["first_push", "second_push", "third_push", "escalation"].includes(normalizedAction)) {
       return {
         ok: false,
         error: "InvalidAction",
-        message: "Action must be one of 'first_push', 'second_push', or 'escalation'.",
+        message: "Action must be one of 'first_push', 'second_push', 'third_push', or 'escalation'.",
       };
     }
 
@@ -119,6 +119,14 @@ export class FollowupService implements IFollowupService {
         ok: false,
         error: "StateMismatch",
         message: `Cannot confirm 'second_push' when case state is '${state}'. Expected 'SECOND_PUSH_PENDING'.`,
+      };
+    }
+
+    if (normalizedAction === "third_push" && state !== "THIRD_PUSH_PENDING") {
+      return {
+        ok: false,
+        error: "StateMismatch",
+        message: `Cannot confirm 'third_push' when case state is '${state}'. Expected 'THIRD_PUSH_PENDING'.`,
       };
     }
 
@@ -206,10 +214,11 @@ export class FollowupService implements IFollowupService {
 
     if (action.action_type === "FIRST_PUSH" && state === "FIRST_PUSH_PENDING") isConfirmedAction = true;
     if (action.action_type === "SECOND_PUSH" && state === "SECOND_PUSH_PENDING") isConfirmedAction = true;
+    if (action.action_type === "THIRD_PUSH" && state === "THIRD_PUSH_PENDING") isConfirmedAction = true;
     if (action.action_type === "ESCALATION" && state === "ESCALATION_PENDING") isConfirmedAction = true;
 
     // Also support direct state evaluation if action payload confirms state
-    if (!isConfirmedAction && (state === "FIRST_PUSH_PENDING" || state === "SECOND_PUSH_PENDING" || state === "ESCALATION_PENDING")) {
+    if (!isConfirmedAction && (state === "FIRST_PUSH_PENDING" || state === "SECOND_PUSH_PENDING" || state === "THIRD_PUSH_PENDING" || state === "ESCALATION_PENDING")) {
       isConfirmedAction = true;
     }
 

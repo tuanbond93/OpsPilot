@@ -187,9 +187,9 @@ export class FollowupEngine {
 
       const currentState: FollowupState = existingCase ? existingCase.current_state : "NEW";
       let timeSinceLastActionHours = 0;
-      if (existingCase && (existingCase.last_action_requested_at || existingCase.last_checked_at)) {
+      if (existingCase && (existingCase.last_action_confirmed_at || existingCase.last_action_requested_at || existingCase.last_checked_at)) {
         const lastTs = new Date(
-          existingCase.last_action_requested_at || existingCase.last_checked_at
+          existingCase.last_action_confirmed_at || existingCase.last_action_requested_at || existingCase.last_checked_at
         ).getTime();
         timeSinceLastActionHours = Math.max(0, (referenceTimeMs - lastTs) / (1000 * 60 * 60));
       }
@@ -199,6 +199,10 @@ export class FollowupEngine {
         const resolvedTs = new Date(existingCase.resolved_at).getTime();
         timeSinceResolvedHours = Math.max(0, (referenceTimeMs - resolvedTs) / (1000 * 60 * 60));
       }
+
+      const lastActionAt = existingCase?.last_action_confirmed_at || existingCase?.last_action_requested_at;
+      const newestSnapshotAt = historyRows.reduce<number>((latest, row) => Math.max(latest, new Date(row.recorded_at).getTime() || 0), 0);
+      const hasFreshSnapshotAfterLastAction = !lastActionAt || newestSnapshotAt > new Date(lastActionAt).getTime();
 
       const transitionResult = evaluateNextState(
         currentState,
@@ -215,6 +219,7 @@ export class FollowupEngine {
           isIncidentActive: true,
           timeSinceLastActionHours,
           timeSinceResolvedHours,
+          hasFreshSnapshotAfterLastAction,
         },
         config,
         referenceTimeMs
@@ -262,6 +267,7 @@ export class FollowupEngine {
       if (this.actionQueue && transitionResult.actionRequestedAt !== undefined) {
         let actionType: ActionType = "FIRST_PUSH";
         if (transitionResult.newState === "SECOND_PUSH_PENDING") actionType = "SECOND_PUSH";
+        if (transitionResult.newState === "THIRD_PUSH_PENDING") actionType = "THIRD_PUSH";
         if (transitionResult.newState === "ESCALATION_PENDING") actionType = "ESCALATION";
 
         pending.action = {

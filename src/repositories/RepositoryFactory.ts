@@ -55,6 +55,9 @@ import { MockDecisionRepository } from "./mock/MockDecisionRepository";
 import type { IExecutionWorkOrderRepository } from "./interfaces/IExecutionWorkOrderRepository";
 import { SupabaseExecutionWorkOrderRepository } from "./supabase/SupabaseExecutionWorkOrderRepository";
 import { MockExecutionWorkOrderRepository } from "./mock/MockExecutionWorkOrderRepository";
+import type { ITriageAuditRepository } from "./interfaces/ITriageAuditRepository";
+import { SupabaseTriageAuditRepository } from "./supabase/SupabaseTriageAuditRepository";
+import { MockTriageAuditRepository } from "./mock/MockTriageAuditRepository";
 
 export class RepositoryFactory {
   private static incidentRepo: IIncidentRepository | null = null;
@@ -72,6 +75,7 @@ export class RepositoryFactory {
   private static syncLockRepo: ISyncLockRepository | null = null;
   private static decisionRepo: IDecisionRepository | null = null;
   private static executionWorkOrderRepo: IExecutionWorkOrderRepository | null = null;
+  private static triageAuditRepo: ITriageAuditRepository | null = null;
 
   static registerDecisionRepository(repo: IDecisionRepository): void {
     this.decisionRepo = repo;
@@ -129,6 +133,10 @@ export class RepositoryFactory {
 
   static registerOrderSnapshotRepository(repo: IOrderSnapshotRepository): void {
     this.orderSnapshotRepo = repo;
+  }
+
+  static registerTriageAuditRepository(repo: ITriageAuditRepository): void {
+    this.triageAuditRepo = repo;
   }
 
   // Resolvers
@@ -332,6 +340,15 @@ export class RepositoryFactory {
     return this.executionWorkOrderRepo;
   }
 
+  static getTriageAuditRepository(client?: SupabaseClient): ITriageAuditRepository {
+    if (client) return new SupabaseTriageAuditRepository(client);
+    if (this.triageAuditRepo) return this.triageAuditRepo;
+    this.triageAuditRepo = this.shouldProvideMock()
+      ? new MockTriageAuditRepository()
+      : new SupabaseTriageAuditRepository(createAdminClient());
+    return this.triageAuditRepo;
+  }
+
   static clear(): void {
     this.incidentRepo = null;
     this.aiJobRepo = null;
@@ -348,5 +365,6 @@ export class RepositoryFactory {
     this.syncLockRepo = null;
     this.decisionRepo = null;
     this.executionWorkOrderRepo = null;
+    this.triageAuditRepo = null;
   }
 }

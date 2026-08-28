@@ -7,6 +7,7 @@ import type { IExceptionRepository } from "@/repositories/interfaces/IExceptionR
 import type { IFollowupRepository } from "@/repositories/interfaces/IFollowupRepository";
 import type { IAiJobRepository } from "@/repositories/interfaces/IAiJobRepository";
 import type { ISyncLockRepository } from "@/repositories/interfaces/ISyncLockRepository";
+import type { ITriageAuditRepository } from "@/repositories/interfaces/ITriageAuditRepository";
 import type { PhaseTimingInfo, DetectedBottleneck } from "@/jobs/sync-rillnet";
 import type { SyncPhase, SyncRunRow } from "@/connectors/supabase/types";
 import { RillnetConnector } from "@/connectors/rillnet";
@@ -16,6 +17,15 @@ import { ActionQueue } from "@/engine/action-queue";
 import { refresh } from "@/projections/projection-engine";
 import { logRuntimeError, logRuntimeMessage } from "@/observability/runtimeDiagnostics";
 import { logger } from "@/observability/logger";
+import { getRoutePromotion, routeIncident, shouldEnqueueAiJob, type TriageResult } from "@/engine/rules/triage";
+import warehouseAssignments from "@/data/warehouse-assignments.generated.json";
+
+type WarehouseAssignment = { warehouseId: string; warehouseName: string; zone: string };
+const warehouseZoneById = new Map((warehouseAssignments.warehouses as WarehouseAssignment[]).map((warehouse) => [warehouse.warehouseId, warehouse.zone]));
+const warehouseZoneByName = new Map((warehouseAssignments.warehouses as WarehouseAssignment[]).map((warehouse) => [warehouse.warehouseName, warehouse.zone]));
+// Matches the current warehouse-assignment catalogue. Deployment may override this
+// with a comma-separated set through TRIAGE_PILOT_ZONES.
+const TRIAGE_PILOT_ZONES = (process.env.TRIAGE_PILOT_ZONES || "Miền Bắc 3").split(",").map((value) => value.trim()).filter(Boolean);
 export const ORDERED_SYNC_PHASES: SyncPhase[] = [
   "CREATED",
   "FETCHING_SNAPSHOT",
@@ -61,7 +71,8 @@ export class SyncService implements ISyncService {
     private followupRepo: IFollowupRepository | null = null,
     private aiJobRepo: IAiJobRepository | null = null,
     private actionQueue: ActionQueue | null = null,
-    private syncLockRepo: ISyncLockRepository | null = null
+    private syncLockRepo: ISyncLockRepository | null = null,
+    private triageAuditRepo: ITriageAuditRepository | null = null
   ) {}
 
   async runSync(_options?: SyncOptions): Promise<SyncSummary> {
@@ -756,10 +767,61 @@ export class SyncService implements ISyncService {
           logPhaseStart("enqueueAiJobs");
           let successfulEnqueue = 0;
 
+          const followupStateByIncidentId = new Map(followupResults.map((item) => [item.incidentId, item.newState]));
+          const triageByIncidentId = new Map<string, TriageResult>();
+          for (const inc of incidents) {
+            const dbId = keyToIdMap.get(inc.incidentKey) || inc.incidentId;
+            const zoneName = warehouseZoneById.get(inc.warehouseId) || warehouseZoneByName.get(inc.warehouseName) || null;
+            triageByIncidentId.set(dbId, routeIncident({
+              ...inc,
+              incidentId: dbId,
+              followupState: followupStateByIncidentId.get(dbId) || "NEW",
+              actionRequired: true,
+              hasConflictingActions: false,
+              zoneName,
+              pilotZoneNames: TRIAGE_PILOT_ZONES,
+            }));
+          }
+
+          // Read the prior audit before writing this sync so a promotion out of
+          // AUTO_HANDLE is visible across runs without changing Follow-up's state machine.
+          const priorTriageByIncidentId = this.triageAuditRepo
+            ? new Map((await this.triageAuditRepo.getLatestByIncidentIds([...triageByIncidentId.keys()]))
+              .map((triage) => [triage.incidentId, triage]))
+            : new Map();
+
+          if (this.triageAuditRepo && syncRunId && !syncRunId.startsWith("local-sync")) {
+            await this.triageAuditRepo.recordBatch([...triageByIncidentId.entries()].map(([incidentId, triage]) => ({
+              incidentId,
+              syncRunId,
+              route: triage.route,
+              reasonCode: triage.reasonCode,
+              severity: triage.severity,
+              decisionComplexity: triage.decisionComplexity,
+              triageReason: triage.triageReason,
+              routingVersion: triage.routingVersion,
+              evidence: (() => {
+                const promotion = triage.pilotScope
+                  ? getRoutePromotion(priorTriageByIncidentId.get(incidentId)?.route, triage)
+                  : null;
+                return {
+                ...triage.evidence,
+                aiQueuePolicy: triage.pilotScope ? "PILOT_TRIAGE_GATED" : "OUT_OF_PILOT_LEGACY_QUEUE",
+                aiJobEligible: shouldEnqueueAiJob(triage),
+                routePromotedFrom: promotion?.from || null,
+                routePromotedTo: promotion?.to || null,
+                routePromotionReason: promotion?.reason || null,
+                routePromotedAt: promotion ? startedAt : null,
+              };
+              })(),
+            })));
+          }
+
           if (this.aiJobRepo && incidents.length > 0) {
             for (const inc of incidents) {
               const dbId = keyToIdMap.get(inc.incidentKey) || inc.incidentId;
-              if (dbId) {
+              const triage = triageByIncidentId.get(dbId);
+              if (dbId && triage && shouldEnqueueAiJob(triage)) {
                 const priority = inc.priorityScore >= 75 ? "urgent" : inc.priorityScore >= 50 ? "high" : "medium";
                 try {
                   await this.aiJobRepo.enqueueJob(dbId, priority);

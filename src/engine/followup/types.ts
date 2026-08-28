@@ -33,6 +33,8 @@ export interface TransitionContext {
   isIncidentActive: boolean;
   timeSinceLastActionHours: number;
   timeSinceResolvedHours: number;
+  /** A next reminder is never issued from the same snapshot that triggered the prior one. */
+  hasFreshSnapshotAfterLastAction?: boolean;
   isConfirmed?: boolean;
   confirmedBy?: string;
 }

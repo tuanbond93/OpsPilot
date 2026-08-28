@@ -5,12 +5,14 @@ import { IAiJobRepository } from "../../repositories/interfaces/IAiJobRepository
 import { ISyncRunRepository } from "../../repositories/interfaces/ISyncRunRepository";
 import { HealthRegistry } from "../../integrations/health";
 import { StartupValidator } from "../../integrations/startup-validator";
+import { ITriageAuditRepository } from "../../repositories/interfaces/ITriageAuditRepository";
 
 export class DashboardService implements IDashboardService {
   constructor(
     private dashboardRepo: IDashboardRepository,
     private aiJobRepo: IAiJobRepository,
-    private syncRepo: ISyncRunRepository
+    private syncRepo: ISyncRunRepository,
+    private triageAuditRepo: ITriageAuditRepository
   ) {}
 
   async getDashboard(context: DashboardContext): Promise<any> {
@@ -74,6 +76,11 @@ export class DashboardService implements IDashboardService {
       }
     }
 
+    const latestTriages = await this.triageAuditRepo.getLatestByIncidentIds(
+      filteredIncidents.map((incident: any) => incident.incident_id).filter(Boolean)
+    );
+    const latestTriageByIncident = new Map(latestTriages.map((triage) => [triage.incidentId, triage]));
+
     const liveIncidentsList = filteredIncidents.map((i: any) => {
       let riskMap: any = { score: 50, level: "medium" };
       if (i.risk) {
@@ -93,6 +100,9 @@ export class DashboardService implements IDashboardService {
         }
       }
       
+      const triage = latestTriageByIncident.get(i.incident_id);
+      const triageEvidence = triage?.evidence || {};
+      const pilotScope = triageEvidence.pilotScope === true;
       return {
         incidentId: i.incident_id,
         incidentKey: i.incident_key || `INC-${i.incident_id.slice(0,8)}`,
@@ -123,6 +133,12 @@ export class DashboardService implements IDashboardService {
         followupState: i.followup_state || "NEW",
         plannerStatus: i.planner_status || "NONE",
         aiStatus: latestAiJobByIncident.get(i.incident_id)?.status || "NONE",
+        triage: triage ? {
+          route: triage.route,
+          pilotScope,
+          aiQueuePolicy: typeof triageEvidence.aiQueuePolicy === "string" ? triageEvidence.aiQueuePolicy : null,
+          triageReason: triage.triageReason,
+        } : null,
         firstDetectedAt: i.first_detected_at || nowIso,
         lastDetectedAt: i.last_detected_at || nowIso,
       };

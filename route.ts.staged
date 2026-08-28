@@ -7,29 +7,16 @@ import { workOrderInlineKeyboard } from "@/integrations/telegram/work-order-acti
 import { ServiceFactory } from "@/services/ServiceFactory";
 import { readJsonBody, resolveActor } from "@/security/api-security";
 import { authorizeDecisionScope } from "@/security/scope-guard";
-import warehouseAssignments from "@/data/warehouse-assignments.generated.json";
 import { NotificationGateway, type DeliveryRequest } from "@/notifications/gateway";
 import { FEATURE_FLAGS } from "@/config/feature-flags";
 
-type PilotMember = { id: string; group_id: string; display_name: string; username: string | null; warehouse_name: string | null; warehouse_names: unknown; zone_names: unknown; pilot_role: string; status: string };
+type PilotMember = { id: string; group_id: string; display_name: string; username: string | null; warehouse_name: string | null; warehouse_names: unknown; pilot_role: string; status: string };
 type PilotGroup = { id: string; telegram_chat_id: string; title: string };
-type WarehouseAssignment = { warehouseName: string; zone: string };
-const zoneByWarehouseName = new Map((warehouseAssignments.warehouses as WarehouseAssignment[]).map((warehouse) => [warehouse.warehouseName, warehouse.zone]));
 
 function warehouseNames(member: PilotMember) {
   return Array.isArray(member.warehouse_names)
     ? member.warehouse_names.filter((value): value is string => typeof value === "string")
     : member.warehouse_name ? [member.warehouse_name] : [];
-}
-
-function zoneNames(member: PilotMember) {
-  return Array.isArray(member.zone_names)
-    ? member.zone_names.filter((value): value is string => typeof value === "string")
-    : [];
-}
-
-function canReceiveWorkOrder(member: PilotMember, owner: string) {
-  return warehouseNames(member).includes(owner) || zoneNames(member).includes(zoneByWarehouseName.get(owner) || "");
 }
 
 function failure(error: unknown) {
@@ -60,7 +47,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       : { data: [], error: null };
     if (signalError) throw signalError;
     const groupById = new Map((groups || []).map((group: PilotGroup) => [group.id, group]));
-    const candidates = (members || []).filter((member: PilotMember) => canReceiveWorkOrder(member, workOrder.owner) && groupById.has(member.group_id)).map((member: PilotMember) => ({ memberId: member.id, groupId: member.group_id, groupTitle: groupById.get(member.group_id)?.title || "Telegram group", displayName: member.display_name, username: member.username, pilotRole: member.pilot_role }));
+    const candidates = (members || []).filter((member: PilotMember) => warehouseNames(member).includes(workOrder.owner) && groupById.has(member.group_id)).map((member: PilotMember) => ({ memberId: member.id, groupId: member.group_id, groupTitle: groupById.get(member.group_id)?.title || "Telegram group", displayName: member.display_name, username: member.username, pilotRole: member.pilot_role }));
     return NextResponse.json({ ok: true, data: { workOrder, candidates, dispatch: dispatch ? { ...dispatch, feedbacks: feedbacks || [], signals: signals || [] } : null } });
   } catch (error) { return failure(error); }
 }
@@ -81,7 +68,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     const { data: selected, error: selectedError } = await client.from("telegram_pilot_members").select("*").in("id", memberIds).eq("status", "ACTIVE");
     if (selectedError) throw selectedError;
     const members = (selected || []) as PilotMember[];
-    if (members.length !== memberIds.length || members.some((member) => !canReceiveWorkOrder(member, workOrder.owner))) return NextResponse.json({ error: "TELEGRAM_RECIPIENT_NOT_ELIGIBLE", message: "Người nhận phải đang kích hoạt và được map với đúng kho hoặc vùng của work order." }, { status: 400 });
+    if (members.length !== memberIds.length || members.some((member) => !warehouseNames(member).includes(workOrder.owner))) return NextResponse.json({ error: "TELEGRAM_RECIPIENT_NOT_ELIGIBLE", message: "Người nhận phải đang kích hoạt và được map với đúng kho owner của work order." }, { status: 400 });
     const groupId = members[0].group_id;
     if (members.some((member) => member.group_id !== groupId)) return NextResponse.json({ error: "TELEGRAM_ONE_GROUP_REQUIRED", message: "TG-02 chỉ gửi một work order vào một group; hãy chọn nhân sự trong cùng group." }, { status: 400 });
     const { data: group, error: groupError } = await client.from("telegram_pilot_groups").select("id, telegram_chat_id, title").eq("id", groupId).maybeSingle();
@@ -98,7 +85,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     if (insertError) throw insertError;
     await client.from("telegram_work_order_dispatch_events").insert({ dispatch_id: dispatch.id, event_type: "DISPATCH_REQUESTED", actor, metadata: { groupId, recipientMemberIds: memberIds, workOrderCode: workOrder.workOrderCode } });
     try {
-      let sent: { messageId: string | number; response?: any };
+            let sent: { messageId: string | number; response?: any };
       if (FEATURE_FLAGS.notificationGateway) {
         const gateway = new NotificationGateway();
         const deliveryRequest: DeliveryRequest = {

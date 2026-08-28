@@ -174,9 +174,9 @@ describe("Sprint 4.3 Hardened: Follow-up Engine & Action Governance Tests", () =
     expect(confirmedRes.eventType).toBe("PUSH_CONFIRMED");
   });
 
-  // 8. Escalation requires confirmation
-  it("8. Escalation requires confirmation", () => {
-    const pendingEscalation = evaluateNextState("SECOND_PUSH_SENT", {
+  // 8. The second reminder is followed by a third reminder, not an immediate escalation.
+  it("8. Second push without progress requests a third push only after a fresh snapshot", () => {
+    const pendingThirdPush = evaluateNextState("SECOND_PUSH_SENT", {
       incidentId: dummyIncident.incidentId,
       incidentKey: dummyIncident.incidentKey,
       currentCount: 100,
@@ -189,8 +189,46 @@ describe("Sprint 4.3 Hardened: Follow-up Engine & Action Governance Tests", () =
       isIncidentActive: true,
       timeSinceLastActionHours: 2.5,
       timeSinceResolvedHours: 0,
+      hasFreshSnapshotAfterLastAction: true,
     });
 
+    expect(pendingThirdPush.newState).toBe("THIRD_PUSH_PENDING");
+
+    const staleSnapshot = evaluateNextState("SECOND_PUSH_SENT", {
+      incidentId: dummyIncident.incidentId,
+      incidentKey: dummyIncident.incidentKey,
+      currentCount: 100,
+      baselineCount: 100,
+      previousCount: 100,
+      countChangePercent: 0,
+      progressPercent: 0,
+      progressAssessment: "no_progress",
+      incidentDurationHours: 6,
+      isIncidentActive: true,
+      timeSinceLastActionHours: 2.5,
+      timeSinceResolvedHours: 0,
+      hasFreshSnapshotAfterLastAction: false,
+    });
+    expect(staleSnapshot.newState).toBe("SECOND_PUSH_SENT");
+  });
+
+  // 9. Escalation requires a confirmed third push and a fresh snapshot.
+  it("9. Escalation requires confirmation after the third push", () => {
+    const pendingEscalation = evaluateNextState("THIRD_PUSH_SENT", {
+      incidentId: dummyIncident.incidentId,
+      incidentKey: dummyIncident.incidentKey,
+      currentCount: 100,
+      baselineCount: 100,
+      previousCount: 100,
+      countChangePercent: 0,
+      progressPercent: 0,
+      progressAssessment: "no_progress",
+      incidentDurationHours: 8,
+      isIncidentActive: true,
+      timeSinceLastActionHours: 2.5,
+      timeSinceResolvedHours: 0,
+      hasFreshSnapshotAfterLastAction: true,
+    });
     expect(pendingEscalation.newState).toBe("ESCALATION_PENDING");
 
     const confirmedEscalation = evaluateNextState("ESCALATION_PENDING", {
@@ -214,8 +252,8 @@ describe("Sprint 4.3 Hardened: Follow-up Engine & Action Governance Tests", () =
     expect(confirmedEscalation.eventType).toBe("ESCALATION_CONFIRMED");
   });
 
-  // 9. Migration 003 contains no unconditional duplicate CREATE TYPE or CREATE TABLE
-  it("9. Migration 003 contains no unconditional duplicate CREATE TYPE or CREATE TABLE", () => {
+  // 10. Migration 003 contains no unconditional duplicate CREATE TYPE or CREATE TABLE
+  it("10. Migration 003 contains no unconditional duplicate CREATE TYPE or CREATE TABLE", () => {
     const migrationSql = fs.readFileSync("src/database/migrations/003_followup_engine_hardening.sql", "utf-8");
     expect(migrationSql).not.toContain("CREATE TABLE followup_cases"); // Uses ALTER TABLE
     expect(migrationSql).not.toContain("CREATE TYPE followup_state_enum AS ENUM"); // Uses ALTER TYPE ADD VALUE IF NOT EXISTS
@@ -223,22 +261,22 @@ describe("Sprint 4.3 Hardened: Follow-up Engine & Action Governance Tests", () =
     expect(migrationSql).toContain("ADD COLUMN IF NOT EXISTS");
   });
 
-  // 10. Sync job performs 1 batch query for history without N+1 loop
-  it("10. Sync job performs 1 batch query for history without N+1 loop", () => {
+  // 11. Sync job performs 1 batch query for history without N+1 loop
+  it("11. Sync job performs 1 batch query for history without N+1 loop", () => {
     const syncServiceCode = fs.readFileSync("src/services/impl/SyncService.ts", "utf-8");
     expect(syncServiceCode).toContain("getHistoriesByIncidentIds");
     expect(syncServiceCode).not.toContain("await incidentHistoryRepo.getIncidentHistory(");
   });
 
-  // 11. Large surge baseline=1, current=200 yields exact -19900% progress without clamping
-  it("11. Large surge baseline=1, current=200 yields exact -19900% progress without clamping", () => {
+  // 12. Large surge baseline=1, current=200 yields exact -19900% progress without clamping
+  it("12. Large surge baseline=1, current=200 yields exact -19900% progress without clamping", () => {
     const { progressPercent, assessment } = evaluateProgressAssessment(200, 1, 2);
     expect(progressPercent).toBe(-19900);
     expect(assessment).toBe("worsening");
   });
 
-  // 12. Massive surge baseline=1, current=10000 yields exact -999900% progress without clamping
-  it("12. Massive surge baseline=1, current=10000 yields exact -999900% progress without clamping", () => {
+  // 13. Massive surge baseline=1, current=10000 yields exact -999900% progress without clamping
+  it("13. Massive surge baseline=1, current=10000 yields exact -999900% progress without clamping", () => {
     const { progressPercent, assessment } = evaluateProgressAssessment(10000, 1, 2);
     expect(progressPercent).toBe(-999900);
     expect(assessment).toBe("worsening");

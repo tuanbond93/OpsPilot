@@ -43,6 +43,12 @@ interface IncidentItem {
   followupState: string;
   plannerStatus: string;
   aiStatus: string;
+  triage?: {
+    route: string;
+    pilotScope: boolean;
+    aiQueuePolicy: string | null;
+    triageReason: string;
+  } | null;
   firstDetectedAt: string;
   lastDetectedAt: string;
 }
@@ -211,6 +217,33 @@ function priorityPresentation(score: number) {
   return { label: "Theo dõi", tone: "border-sky-500/40 bg-sky-500/10 text-sky-200" };
 }
 
+function triagePresentation(incident: IncidentItem) {
+  const triage = incident.triage;
+  if (!triage) return null;
+  if (triage.pilotScope && triage.route === "AUTO_HANDLE") {
+    return {
+      label: "Pilot MB3 · Theo rule",
+      title: "Miền Bắc 3: theo dõi bằng rule xác định, không gọi AI. Con người vẫn thực hiện hành động vận hành.",
+      tone: "border-cyan-500/40 bg-cyan-500/10 text-cyan-200",
+    };
+  }
+  if (triage.pilotScope) {
+    return {
+      label: "Pilot MB3 · Cần AI/người",
+      title: "Miền Bắc 3: case không đủ điều kiện tự xử lý, cần đánh giá tiếp.",
+      tone: "border-violet-500/40 bg-violet-500/10 text-violet-200",
+    };
+  }
+  if (triage.aiQueuePolicy === "OUT_OF_PILOT_LEGACY_QUEUE") {
+    return {
+      label: "Ngoài pilot · AI cũ",
+      title: "Ngoài Miền Bắc 3: giữ nguyên luồng xếp hàng AI cũ.",
+      tone: "border-slate-600 bg-slate-800/70 text-slate-300",
+    };
+  }
+  return null;
+}
+
 const PRIORITY_REASON_WEIGHTS: Record<string, number> = {
   "Kho tồn": 1.5,
   "Kho chưa lấy": 1.3,
@@ -253,6 +286,7 @@ export default function ExecutiveDashboardPage() {
   const [sortBy, setSortBy] = useState<"priority" | "age" | "newest">("priority");
 
   const [syncing, setSyncing] = useState(false);
+  const [dispatchingTelegramFollowups, setDispatchingTelegramFollowups] = useState(false);
   const [syncMessage, setSyncMessage] = useState<string | null>(null);
   const [syncElapsedSeconds, setSyncElapsedSeconds] = useState(0);
   const [syncPhase, setSyncPhase] = useState("CREATED");
@@ -368,6 +402,32 @@ export default function ExecutiveDashboardPage() {
     }
   }
 
+  async function dispatchTelegramFollowupsNow() {
+    if (!session.can("MANAGE_SYSTEM")) { setSyncMessage("Chỉ ADMIN được chạy nhắc việc Telegram pilot."); return; }
+    setSyncMessage(null);
+    setDispatchingTelegramFollowups(true);
+    try {
+      const response = await fetch("/api/cron/telegram-followup-pilot", { method: "POST" });
+      const result = await response.json();
+      handleApiAccess(response, result, "Không thể chạy nhắc việc Telegram pilot.");
+      if (!result.ok) throw new Error(result.message || result.error || "Gửi Telegram pilot thất bại");
+      const reasonCounts: Record<string, number> = {};
+      if (Array.isArray(result.details)) {
+        for (const item of result.details as Array<{ status?: string; reason?: string }>) {
+          if (item.status === "SENT" || !item.reason) continue;
+          reasonCounts[item.reason] = (reasonCounts[item.reason] || 0) + 1;
+        }
+      }
+      const reasons = Object.entries(reasonCounts).map(([reason, count]) => `${reason} (${count})`);
+      setSyncMessage(`Đã quét ${result.scanned || 0} case Miền Bắc 3: gửi ${result.sent || 0} tin cho ${result.coveredCases || 0} case, còn chờ lượt sau ${result.deferred || 0}, bỏ qua ${result.skipped || 0}, lỗi ${result.failed || 0}.${reasons.length ? ` Lý do: ${reasons.join("; ")}.` : ""}`);
+      await fetchDashboardData();
+    } catch (dispatchError: unknown) {
+      setSyncMessage(`Không thể gửi Telegram pilot: ${dispatchError instanceof Error ? dispatchError.message : String(dispatchError)}`);
+    } finally {
+      setDispatchingTelegramFollowups(false);
+    }
+  }
+
   if (loading && !data) {
     return (
       <main id="main-content" tabIndex={-1} className="min-h-dvh bg-slate-950 text-slate-100 p-6 max-w-7xl mx-auto space-y-6 animate-pulse motion-reduce:animate-none">
@@ -480,6 +540,7 @@ export default function ExecutiveDashboardPage() {
           </button>
           <button type="button" onClick={() => void handleFreshSync()} disabled={syncing || !session.can("MANAGE_SYSTEM")} title={!session.can("MANAGE_SYSTEM") ? "Chỉ ADMIN được đồng bộ thủ công" : "Kiểm tra nguồn Rillnet mới; nếu không đổi, giữ nguyên snapshot và hoàn tất nhanh"} aria-describedby={syncing ? "sync-progress" : undefined} className="inline-flex min-h-11 items-center gap-2 whitespace-nowrap rounded-xl bg-blue-600 px-4 text-xs font-semibold text-white transition hover:bg-blue-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-300 disabled:cursor-not-allowed disabled:opacity-50"><span aria-hidden="true" className={syncing ? "animate-spin motion-reduce:animate-none" : ""}>↻</span>{syncing ? `Đang đồng bộ ${String(Math.floor(syncElapsedSeconds/60)).padStart(2,"0")}:${String(syncElapsedSeconds%60).padStart(2,"0")}` : "Đồng bộ dữ liệu mới"}</button>
           <button type="button" onClick={() => void handleFreshSync(true)} disabled={syncing || !session.can("MANAGE_SYSTEM")} title={!session.can("MANAGE_SYSTEM") ? "Chỉ ADMIN được tái tạo toàn bộ" : "Chỉ dùng sau khi thay đổi rule/schema: tái tạo bằng chứng dù nguồn Rillnet không đổi"} className="inline-flex min-h-11 items-center whitespace-nowrap rounded-xl border border-slate-700 px-3 text-xs font-semibold text-slate-300 transition hover:border-slate-500 hover:text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-slate-300 disabled:cursor-not-allowed disabled:opacity-50">Tái tạo toàn bộ</button>
+          <button type="button" onClick={() => void dispatchTelegramFollowupsNow()} disabled={dispatchingTelegramFollowups || !session.can("MANAGE_SYSTEM")} title={!session.can("MANAGE_SYSTEM") ? "Chỉ ADMIN được chạy nhắc việc Telegram pilot" : "Chạy ngay các follow-up đủ điều kiện của pilot Miền Bắc 3; không gửi trùng"} className="inline-flex min-h-11 items-center whitespace-nowrap rounded-xl border border-cyan-500/50 px-3 text-xs font-semibold text-cyan-100 transition hover:bg-cyan-500/10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cyan-300 disabled:cursor-not-allowed disabled:opacity-50">{dispatchingTelegramFollowups ? "Đang gửi Telegram…" : "Gửi Telegram pilot"}</button>
         </div>
       </header>
 
@@ -674,7 +735,13 @@ export default function ExecutiveDashboardPage() {
                   </td>
                   <td className="py-3 px-2 font-mono font-bold">{inc.affectedOrderCount > 0 ? `${inc.affectedOrderCount} đơn` : "Chưa có dữ liệu"}</td>
                   <td className="py-3 px-2 font-mono">{inc.maximumAgeHours !== null && inc.maximumAgeHours !== undefined ? `${inc.maximumAgeHours} giờ` : "Chưa có dữ liệu"}</td>
-                  <td className="py-3 px-2 font-mono text-purple-400">{inc.followupState === "FIRST_PUSH_PENDING" ? "CHỜ NHẮC LẦN 1" : inc.followupState === "RESOLVED" ? "ĐÃ XỬ LÝ" : inc.followupState === "NEW" ? "MỚI" : inc.followupState}</td>
+                  <td className="py-3 px-2 font-mono text-purple-400">
+                    <span>{inc.followupState === "FIRST_PUSH_PENDING" ? "CHỜ NHẮC LẦN 1" : inc.followupState === "RESOLVED" ? "ĐÃ XỬ LÝ" : inc.followupState === "NEW" ? "MỚI" : inc.followupState}</span>
+                    {(() => {
+                      const triage = triagePresentation(inc);
+                      return triage ? <span role="status" aria-atomic="true" title={triage.title} className={`mt-1 inline-flex whitespace-nowrap rounded-full border px-2 py-0.5 font-sans text-[10px] font-bold ${triage.tone}`}>{triage.label}</span> : null;
+                    })()}
+                  </td>
                   <td className="py-3 px-2 font-mono">
                     <span className={inc.plannerStatus === "APPROVED" ? "text-emerald-400" : inc.plannerStatus === "DRAFT" ? "text-amber-400" : "text-slate-400"}>
                       {inc.plannerStatus === "DRAFT" ? "BẢN NHÁP" : inc.plannerStatus === "APPROVED" ? "ĐÃ PHÊ DUYỆT" : inc.plannerStatus === "NONE" ? "CHƯA CÓ" : inc.plannerStatus}

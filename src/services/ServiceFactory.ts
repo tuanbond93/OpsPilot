@@ -96,6 +96,7 @@ export class ServiceFactory {
     const aiJobRepo = RepositoryFactory.getAiJobRepository(client);
     const actionQueue = new ActionQueue(client);
     const syncLockRepo = RepositoryFactory.getSyncLockRepository(client);
+    const triageAuditRepo = RepositoryFactory.getTriageAuditRepository(client);
 
     return new SyncService(
       syncRunRepo,
@@ -106,7 +107,8 @@ export class ServiceFactory {
       followupRepo,
       aiJobRepo,
       actionQueue,
-      syncLockRepo
+      syncLockRepo,
+      triageAuditRepo
     );
   }
   public static getPlannerService(client?: SupabaseClient): IPlannerService {
@@ -171,7 +173,8 @@ export class ServiceFactory {
     return new DashboardService(
       RepositoryFactory.getDashboardRepository(client),
       RepositoryFactory.getAiJobRepository(client),
-      RepositoryFactory.getSyncRunRepository(client)
+      RepositoryFactory.getSyncRunRepository(client),
+      RepositoryFactory.getTriageAuditRepository(client)
     );
   }
   public static getProjectionService(client?: SupabaseClient): IProjectionService {

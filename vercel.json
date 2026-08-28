@@ -1,16 +1,16 @@
 {
   "crons": [
     {
-      "path": "/api/debug/sync",
+      "path": "/api/cron/followup-cycle",
       "schedule": "0 2 * * *"
     },
     {
       "path": "/api/cron/process-ai-jobs",
-      "schedule": "0 3 * * *"
+      "schedule": "10 2 * * *"
     },
     {
       "path": "/api/cron/decision-followups",
-      "schedule": "15 3 * * *"
+      "schedule": "20 2 * * *"
     }
   ]
 }

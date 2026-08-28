@@ -2,9 +2,19 @@ import { NextRequest, NextResponse } from "next/server";
 import { timingSafeEqual } from "crypto";
 import { createAdminClient } from "@/connectors/supabase";
 import { parseWorkOrderCallbackData } from "@/integrations/telegram/work-order-actions";
+import { parseFollowupCallbackData } from "@/integrations/telegram/followup-actions";
 
 type TelegramUser = { id?: number; first_name?: string; last_name?: string; username?: string };
-type TelegramMessage = { message_id?: number; text?: string; chat?: { id?: number; type?: string; title?: string }; from?: TelegramUser; reply_to_message?: { message_id?: number } };
+type TelegramMessage = {
+  message_id?: number;
+  message_thread_id?: number;
+  text?: string;
+  chat?: { id?: number; type?: string; title?: string };
+  from?: TelegramUser;
+  reply_to_message?: { message_id?: number };
+  forum_topic_created?: { name?: string };
+  forum_topic_edited?: { name?: string };
+};
 type TelegramUpdate = { update_id?: number; message?: TelegramMessage; callback_query?: { id?: string; data?: string; message?: TelegramMessage; from?: TelegramUser } };
 
 export const dynamic = "force-dynamic";
@@ -49,19 +59,94 @@ export async function POST(request: NextRequest) {
 
   const { data: group, error: groupError } = await client.from("telegram_pilot_groups").upsert({ telegram_chat_id: chat.id, title: String(chat.title || "Telegram pilot group").slice(0, 240) }, { onConflict: "telegram_chat_id" }).select("*").single();
   if (groupError) return NextResponse.json({ error: "TELEGRAM_GROUP_UPSERT_FAILED", message: groupError.message }, { status: 503 });
+  // Telegram emits updates from this virtual actor when an admin posts
+  // anonymously. It is not an employee and must never create a roster row.
+  // Staff should send /join using their own Telegram account.
+  if (sender.username === "GroupAnonymousBot" || sender.id === 1087968824) {
+    return NextResponse.json({ ok: true, ignored: "ANONYMOUS_GROUP_ACTOR" });
+  }
   const { data: existingMember, error: memberLookupError } = await client.from("telegram_pilot_members").select("*").eq("group_id", group.id).eq("telegram_user_id", sender.id).maybeSingle();
   if (memberLookupError) return NextResponse.json({ error: "TELEGRAM_MEMBER_LOOKUP_FAILED", message: memberLookupError.message }, { status: 503 });
   const memberPatch = { display_name: displayName(sender), username: sender.username?.slice(0, 120) || null, last_seen_at: new Date().toISOString() };
-  const { data: member, error: memberError } = existingMember
+  const { data: savedMember, error: memberError } = existingMember
     ? await client.from("telegram_pilot_members").update(memberPatch).eq("id", existingMember.id).select("*").single()
     : await client.from("telegram_pilot_members").insert({ group_id: group.id, telegram_user_id: sender.id, ...memberPatch }).select("*").single();
   if (memberError) return NextResponse.json({ error: "TELEGRAM_MEMBER_UPSERT_FAILED", message: memberError.message }, { status: 503 });
+  let member = savedMember;
+
+  // Converting a Telegram group into a forum changes its chat id (typically to
+  // -100...). A real user's first /join in the forum therefore looks like a
+  // new member. Safely inherit the prior roster only for the same user, same
+  // group title and legacy-to-forum id transition; keep the old row suspended
+  // as audit history instead of deleting it.
+  if (member.status === "PENDING" && String(chat.id).startsWith("-100")) {
+    const { data: priorMembers, error: priorMemberError } = await client
+      .from("telegram_pilot_members")
+      .select("id, group_id, warehouse_name, warehouse_names, zone_names, pilot_role")
+      .eq("telegram_user_id", sender.id)
+      .eq("status", "ACTIVE")
+      .neq("group_id", group.id);
+    if (priorMemberError) return NextResponse.json({ error: "TELEGRAM_LEGACY_MEMBER_READ_FAILED", message: priorMemberError.message }, { status: 503 });
+    const candidateGroupIds = (priorMembers || []).map((candidate) => candidate.group_id);
+    if (candidateGroupIds.length) {
+      const { data: priorGroups, error: priorGroupError } = await client
+        .from("telegram_pilot_groups")
+        .select("id, telegram_chat_id, title")
+        .in("id", candidateGroupIds);
+      if (priorGroupError) return NextResponse.json({ error: "TELEGRAM_LEGACY_GROUP_READ_FAILED", message: priorGroupError.message }, { status: 503 });
+      const sameTitle = (priorGroups || []).find((priorGroup) =>
+        String(priorGroup.title || "").trim() === String(group.title || "").trim()
+        && !String(priorGroup.telegram_chat_id).startsWith("-100"),
+      );
+      const legacyMember = sameTitle ? (priorMembers || []).find((candidate) => candidate.group_id === sameTitle.id) : null;
+      if (legacyMember) {
+        const { data: migratedMember, error: migrationError } = await client
+          .from("telegram_pilot_members")
+          .update({
+            warehouse_name: legacyMember.warehouse_name,
+            warehouse_names: legacyMember.warehouse_names,
+            zone_names: legacyMember.zone_names,
+            pilot_role: legacyMember.pilot_role,
+            status: "ACTIVE",
+            mapped_at: new Date().toISOString(),
+            mapped_by: "telegram_forum_group_upgrade",
+          })
+          .eq("id", member.id)
+          .select("*")
+          .single();
+        if (migrationError) return NextResponse.json({ error: "TELEGRAM_FORUM_MIGRATION_FAILED", message: migrationError.message }, { status: 503 });
+        const now = new Date().toISOString();
+        const [{ error: suspendMemberError }, { error: activateGroupError }, { error: suspendGroupError }] = await Promise.all([
+          client.from("telegram_pilot_members").update({ status: "SUSPENDED", mapped_at: now, mapped_by: "telegram_forum_group_upgrade" }).eq("id", legacyMember.id),
+          client.from("telegram_pilot_groups").update({ status: "ACTIVE", updated_at: now }).eq("id", group.id),
+          client.from("telegram_pilot_groups").update({ status: "SUSPENDED", updated_at: now }).eq("id", legacyMember.group_id),
+        ]);
+        if (suspendMemberError || activateGroupError || suspendGroupError) {
+          return NextResponse.json({ error: "TELEGRAM_FORUM_MIGRATION_FINALIZE_FAILED", message: (suspendMemberError || activateGroupError || suspendGroupError)?.message }, { status: 503 });
+        }
+        member = migratedMember;
+      }
+    }
+  }
 
   const text = String(message.text || "").trim();
   const isJoin = /^\/join(?:@[\w_]+)?(?:\s|$)/i.test(text);
+  const threadId = Number.isSafeInteger(message.message_thread_id) && Number(message.message_thread_id) > 0 ? Number(message.message_thread_id) : null;
+  const joinTopicLabel = isJoin ? text.replace(/^\/join(?:@[\w_]+)?\s*/i, "").trim().slice(0, 120) : "";
+  let topic: { id: string; topic_title: string; message_thread_id: number } | null = null;
+  if (threadId) {
+    const { data: existingTopic, error: topicLookupError } = await client.from("telegram_pilot_topics").select("id, topic_title, message_thread_id").eq("group_id", group.id).eq("message_thread_id", threadId).maybeSingle();
+    if (topicLookupError) return NextResponse.json({ error: "TELEGRAM_TOPIC_LOOKUP_FAILED", message: topicLookupError.message }, { status: 503 });
+    const observedTitle = String(message.forum_topic_created?.name || message.forum_topic_edited?.name || joinTopicLabel || existingTopic?.topic_title || ("Topic #" + threadId)).slice(0, 240);
+    const { data: savedTopic, error: topicError } = existingTopic
+      ? await client.from("telegram_pilot_topics").update({ topic_title: observedTitle, last_seen_at: new Date().toISOString() }).eq("id", existingTopic.id).select("id, topic_title, message_thread_id").single()
+      : await client.from("telegram_pilot_topics").insert({ group_id: group.id, message_thread_id: threadId, topic_title: observedTitle }).select("id, topic_title, message_thread_id").single();
+    if (topicError) return NextResponse.json({ error: "TELEGRAM_TOPIC_UPSERT_FAILED", message: topicError.message }, { status: 503 });
+    topic = savedTopic;
+  }
   const eventType = isJoin ? "JOIN_REQUEST" : update.callback_query ? "CALLBACK_RECEIVED" : message.reply_to_message?.message_id ? "FREE_TEXT_FEEDBACK" : "UNSUPPORTED_UPDATE";
   try {
-    await recordEvent(client, { telegram_update_id: update.update_id, group_id: group.id, member_id: member.id, event_type: eventType, telegram_message_id: message.message_id || null, reply_to_message_id: message.reply_to_message?.message_id || null, message_text: eventType === "FREE_TEXT_FEEDBACK" ? text.slice(0, 4000) : null, metadata: { callbackData: update.callback_query?.data?.slice(0, 128) || null, chatType: chat.type } });
+    await recordEvent(client, { telegram_update_id: update.update_id, group_id: group.id, member_id: member.id, event_type: eventType, telegram_message_id: message.message_id || null, reply_to_message_id: message.reply_to_message?.message_id || null, message_text: eventType === "FREE_TEXT_FEEDBACK" ? text.slice(0, 4000) : null, metadata: { callbackData: update.callback_query?.data?.slice(0, 128) || null, chatType: chat.type, messageThreadId: threadId, topicId: topic?.id || null } });
   } catch (error) {
     return NextResponse.json({ error: "TELEGRAM_AUDIT_WRITE_FAILED", message: error instanceof Error ? error.message : String(error) }, { status: 503 });
   }
@@ -75,7 +160,8 @@ export async function POST(request: NextRequest) {
       : member.status === "SUSPENDED"
         ? "OpsPilot: tài khoản Telegram của bạn đang tạm dừng trong pilot. Hãy liên hệ Manager OpsPilot nếu cần hỗ trợ."
         : "OpsPilot đã nhận diện bạn. Manager sẽ gán kho và kích hoạt quyền nhận việc trên OpsPilot.";
-    return NextResponse.json({ method: "sendMessage", chat_id: chat.id, reply_to_message_id: message.message_id, text: enrollmentReply });
+    const topicReply = topic ? " Topic “" + topic.topic_title + "” đã đồng bộ; vào Telegram Pilot để gán tỉnh hoặc Escalation." : "";
+    return NextResponse.json({ method: "sendMessage", chat_id: chat.id, reply_to_message_id: message.message_id, ...(threadId ? { message_thread_id: threadId } : {}), text: enrollmentReply + topicReply });
   }
   if (update.callback_query?.id && member.status === "ACTIVE") {
     const callback = parseWorkOrderCallbackData(update.callback_query.data);
@@ -90,6 +176,20 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({ method: "answerCallbackQuery", callback_query_id: update.callback_query.id, text: acknowledgment, show_alert: false });
       }
     }
+    const followupCallback = parseFollowupCallbackData(update.callback_query.data);
+    if (followupCallback) {
+      const { data: representative, error: reminderError } = await client.from("telegram_followup_reminders").select("id, group_id, telegram_message_id, recipient_member_ids").eq("id", followupCallback.reminderId).eq("group_id", group.id).eq("status", "SENT").maybeSingle();
+      if (reminderError) return NextResponse.json({ error: "TELEGRAM_FOLLOWUP_LOOKUP_FAILED", message: reminderError.message }, { status: 503 });
+      const recipients = Array.isArray(representative?.recipient_member_ids) ? representative.recipient_member_ids.filter((value): value is string => typeof value === "string") : [];
+      if (representative && representative.telegram_message_id === message.message_id && recipients.includes(member.id)) {
+        const { data: related, error: relatedError } = await client.from("telegram_followup_reminders").select("id").eq("group_id", group.id).eq("status", "SENT").eq("telegram_message_id", message.message_id);
+        if (relatedError) return NextResponse.json({ error: "TELEGRAM_FOLLOWUP_LOOKUP_FAILED", message: relatedError.message }, { status: 503 });
+        const { error: eventError } = await client.from("telegram_followup_reminder_events").insert((related || []).map((reminder) => ({ reminder_id: reminder.id, event_type: "SIGNAL_RECEIVED", actor: `telegram:${member.id}`, metadata: { signal: followupCallback.signal, telegramUpdateId: update.update_id, telegramUserId: member.telegram_user_id, telegramMessageId: message.message_id } })));
+        if (eventError) return NextResponse.json({ error: "TELEGRAM_FOLLOWUP_SIGNAL_WRITE_FAILED", message: eventError.message }, { status: 503 });
+        const acknowledgment = followupCallback.signal === "ACKNOWLEDGED" ? "Đã ghi nhận nhận việc. Hãy Reply để giải trình." : followupCallback.signal === "NEEDS_SUPPORT" ? "Đã ghi nhận cần hỗ trợ. Hãy Reply nêu rõ vướng mắc." : "Đã ghi nhận cập nhật tiến độ. Hãy Reply nêu nội dung mới.";
+        return NextResponse.json({ method: "answerCallbackQuery", callback_query_id: update.callback_query.id, text: acknowledgment, show_alert: false });
+      }
+    }
   }
   if (eventType === "FREE_TEXT_FEEDBACK" && text && message.reply_to_message?.message_id && member.status === "ACTIVE") {
     const { data: dispatch, error: dispatchError } = await client.from("telegram_work_order_dispatches").select("id, recipient_member_ids").eq("group_id", group.id).eq("status", "SENT").eq("telegram_message_id", message.reply_to_message.message_id).maybeSingle();
@@ -99,6 +199,14 @@ export async function POST(request: NextRequest) {
       const { error: feedbackError } = await client.from("telegram_work_order_feedbacks").insert({ dispatch_id: dispatch.id, member_id: member.id, telegram_update_id: update.update_id, telegram_message_id: message.message_id, feedback_text: text.slice(0, 4000) });
       if (feedbackError && feedbackError.code !== "23505") return NextResponse.json({ error: "TELEGRAM_FEEDBACK_WRITE_FAILED", message: feedbackError.message }, { status: 503 });
       return NextResponse.json({ method: "sendMessage", chat_id: chat.id, reply_to_message_id: message.message_id, text: "OpsPilot đã ghi nhận phản hồi. Manager sẽ xem và xác nhận trạng thái work order trên OpsPilot." });
+    }
+    const { data: reminders, error: reminderError } = await client.from("telegram_followup_reminders").select("id, recipient_member_ids").eq("group_id", group.id).eq("status", "SENT").eq("telegram_message_id", message.reply_to_message.message_id);
+    if (reminderError) return NextResponse.json({ error: "TELEGRAM_FOLLOWUP_LOOKUP_FAILED", message: reminderError.message }, { status: 503 });
+    const related = (reminders || []).filter((reminder) => Array.isArray(reminder.recipient_member_ids) && reminder.recipient_member_ids.includes(member.id));
+    if (related.length) {
+      const { error: feedbackError } = await client.from("telegram_followup_reminder_events").insert(related.map((reminder) => ({ reminder_id: reminder.id, event_type: "FEEDBACK_RECEIVED", actor: `telegram:${member.id}`, metadata: { feedbackText: text.slice(0, 4000), telegramUpdateId: update.update_id, telegramUserId: member.telegram_user_id, telegramMessageId: message.message_id } })));
+      if (feedbackError) return NextResponse.json({ error: "TELEGRAM_FOLLOWUP_FEEDBACK_WRITE_FAILED", message: feedbackError.message }, { status: 503 });
+      return NextResponse.json({ method: "sendMessage", chat_id: chat.id, reply_to_message_id: message.message_id, text: `OpsPilot đã ghi nhận giải trình cho ${related.length} case. Hệ thống sẽ đối soát snapshot mới trước khi nhắc tiếp.` });
     }
   }
   return NextResponse.json({ ok: true, eventType });
