@@ -7,6 +7,8 @@ import { workOrderInlineKeyboard } from "@/integrations/telegram/work-order-acti
 import { ServiceFactory } from "@/services/ServiceFactory";
 import { readJsonBody, resolveActor } from "@/security/api-security";
 import { authorizeDecisionScope } from "@/security/scope-guard";
+import { NotificationGateway, type DeliveryRequest } from "@/notifications/gateway";
+import { FEATURE_FLAGS } from "@/config/feature-flags";
 
 type PilotMember = { id: string; group_id: string; display_name: string; username: string | null; warehouse_name: string | null; warehouse_names: unknown; pilot_role: string; status: string };
 type PilotGroup = { id: string; telegram_chat_id: string; title: string };
@@ -83,7 +85,27 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     if (insertError) throw insertError;
     await client.from("telegram_work_order_dispatch_events").insert({ dispatch_id: dispatch.id, event_type: "DISPATCH_REQUESTED", actor, metadata: { groupId, recipientMemberIds: memberIds, workOrderCode: workOrder.workOrderCode } });
     try {
-      const sent = await new TelegramClient().sendToChat(String(group.telegram_chat_id), formatTelegramWorkOrderMessage(workOrder, members.map((member) => ({ displayName: member.display_name, username: member.username })), workOrderEvidence(decisionResult.data as import("@/domain/decision").Decision, workOrder)), { inlineKeyboard: workOrderInlineKeyboard(dispatch.id) });
+            let sent: { messageId: string | number; response?: any };
+      if (FEATURE_FLAGS.notificationGateway) {
+        const gateway = new NotificationGateway();
+        const deliveryRequest: DeliveryRequest = {
+          eventType: "WORK_ORDER_DISPATCH",
+          message: formatTelegramWorkOrderMessage(workOrder, members.map((member) => ({ displayName: member.display_name, username: member.username })), workOrderEvidence(decisionResult.data as import("@/domain/decision").Decision, workOrder)),
+          audience: {
+            chatId: String(group.telegram_chat_id),
+            recipientMemberIds: memberIds,
+          },
+          options: {
+            inlineKeyboard: workOrderInlineKeyboard(dispatch.id),
+            idempotencyKey: `telegram-dispatch:${workOrder.workOrderId}:${groupId}`,
+            actor,
+          },
+        };
+        const gatewayResult = await gateway.send(deliveryRequest, client);
+        sent = { messageId: gatewayResult.primary.telegramMessageId || `gw-${Date.now()}` };
+      } else {
+        sent = await new TelegramClient().sendToChat(String(group.telegram_chat_id), formatTelegramWorkOrderMessage(workOrder, members.map((member) => ({ displayName: member.display_name, username: member.username })), workOrderEvidence(decisionResult.data as import("@/domain/decision").Decision, workOrder)), { inlineKeyboard: workOrderInlineKeyboard(dispatch.id) });
+      }
       const { data: completed, error: completeError } = await client.from("telegram_work_order_dispatches").update({ status: "SENT", telegram_message_id: Number(sent.messageId), sent_at: new Date().toISOString(), failure_reason: null, updated_at: new Date().toISOString() }).eq("id", dispatch.id).select("*").single();
       if (completeError) throw completeError;
       await client.from("telegram_work_order_dispatch_events").insert({ dispatch_id: dispatch.id, event_type: "DISPATCH_SENT", actor, metadata: { telegramMessageId: sent.messageId } });
