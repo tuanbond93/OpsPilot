@@ -14,6 +14,6 @@ export class MockTriageAuditRepository implements ITriageAuditRepository {
     const ids = new Set(incidentIds);
     return this.records
       .filter((item) => ids.has(item.incidentId))
-      .map((item) => ({ ...item, createdAt: new Date(0).toISOString() }));
+      .map((item) => ({ ...item, id: `mock-triage:${item.incidentId}:${item.syncRunId}`, createdAt: new Date(0).toISOString() }));
   }
 }

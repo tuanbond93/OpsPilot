@@ -1,6 +1,10 @@
 import type { ComponentHealth, HealthCheckable } from "../health";
 import { SecretProvider } from "../secrets";
 
+type InlineKeyboardButton =
+  | { text: string; callbackData: string; copyText?: never }
+  | { text: string; copyText: string; callbackData?: never };
+
 export class TelegramClient implements HealthCheckable {
   readonly name = "Telegram";
   private lastSuccessAt: string | null = null;
@@ -51,7 +55,7 @@ export class TelegramClient implements HealthCheckable {
   async sendToChat(
     chatId: string,
     text: string,
-    options: { inlineKeyboard?: Array<Array<{ text: string; callbackData: string }>>; parseMode?: "HTML" | "MarkdownV2"; messageThreadId?: number | null } = {}
+    options: { inlineKeyboard?: InlineKeyboardButton[][]; parseMode?: "HTML" | "MarkdownV2"; messageThreadId?: number | null } = {}
   ): Promise<{ messageId: string; response: any }> {
     if (!this.botToken) throw new Error("Telegram bot token is not configured.");
     if (!chatId.trim()) throw new Error("Telegram pilot group is not configured.");
@@ -72,7 +76,9 @@ export class TelegramClient implements HealthCheckable {
             disable_web_page_preview: true,
             ...(options.parseMode ? { parse_mode: options.parseMode } : {}),
             ...(Number.isSafeInteger(options.messageThreadId) && Number(options.messageThreadId) > 0 ? { message_thread_id: options.messageThreadId } : {}),
-            ...(options.inlineKeyboard ? { reply_markup: { inline_keyboard: options.inlineKeyboard.map((row) => row.map((button) => ({ text: button.text, callback_data: button.callbackData }))) } } : {}),
+            ...(options.inlineKeyboard ? { reply_markup: { inline_keyboard: options.inlineKeyboard.map((row) => row.map((button) => button.copyText
+              ? { text: button.text, copy_text: { text: button.copyText } }
+              : { text: button.text, callback_data: button.callbackData })) } } : {}),
           }),
           signal: controller.signal,
         });
@@ -122,10 +128,10 @@ export class TelegramClient implements HealthCheckable {
    * Health Check Implementation
    */
   async health(): Promise<ComponentHealth> {
-    if (!this.botToken || !this.chatId) {
+    if (!this.botToken) {
       return {
         status: "UNKNOWN",
-        healthReason: "Telegram bot is not configured (missing botToken or chatId)",
+        healthReason: "Telegram bot is not configured (missing botToken)",
         lastSuccessAt: this.lastSuccessAt,
         lastFailureAt: this.lastFailureAt,
         freshnessSeconds: null,
@@ -147,7 +153,9 @@ export class TelegramClient implements HealthCheckable {
         this.lastSuccessAt = new Date().toISOString();
         return {
           status: "GREEN",
-          healthReason: `Telegram bot is online (Latency: ${latencyMs}ms)`,
+          healthReason: this.chatId
+            ? `Telegram bot is online (Latency: ${latencyMs}ms)`
+            : `Telegram bot is online for mapped pilot groups; default chat is not configured (Latency: ${latencyMs}ms)`,
           lastSuccessAt: this.lastSuccessAt,
           lastFailureAt: this.lastFailureAt,
           freshnessSeconds: 0,

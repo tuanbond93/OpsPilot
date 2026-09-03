@@ -293,7 +293,7 @@ export default function DecisionInboxPage() {
         <header className="flex flex-col gap-3 border-b border-slate-800 pb-5 sm:flex-row sm:items-end sm:justify-between">
           <div><p className="text-xs font-semibold uppercase tracking-[0.2em] text-indigo-300">Decision Core</p>
             <h1 className="mt-1 text-2xl font-bold sm:text-3xl">Hộp quyết định</h1>
-            <p className="mt-1 text-sm text-slate-400">Tạo quyết định quan sát từ incident; phê duyệt không tự thực thi hành động vận hành.</p></div>
+            <p className="mt-1 text-sm text-slate-400">Nơi chốt hành động, người chịu trách nhiệm và kết quả cần theo dõi.</p><p className="mt-2 text-sm font-semibold text-cyan-200">Việc cần làm: mở quyết định chờ xử lý, kiểm tra bằng chứng rồi giao việc hoặc ghi nhận outcome.</p></div>
           <button type="button" onClick={() => void load()} disabled={loading}
             className="inline-flex min-h-11 items-center justify-center gap-2 rounded-lg border border-slate-700 px-4 text-sm font-semibold hover:bg-slate-900 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-400 disabled:opacity-60">
             <RefreshCw aria-hidden="true" size={16} className={loading ? "animate-spin" : ""} /> Làm mới
@@ -384,7 +384,7 @@ export default function DecisionInboxPage() {
                   </div>)}
                 </dl> : <p className="mt-2 text-slate-400">Chưa có facts định lượng trong snapshot này.</p>}
                 {followupState && <p className="mt-3 text-slate-300"><strong>Trạng thái follow-up:</strong> {translateStatus(followupState)}</p>}
-                {analyzedCount !== null && groupedCodes.length > 0 && <p className="mt-3 rounded-md border border-cyan-500/20 bg-cyan-500/5 p-3 text-xs leading-5 text-slate-300"><strong className="text-cyan-100">Cách đọc phạm vi:</strong> đã tra cứu {analyzedCount} đơn; các hạng mục bên dưới hiện có mã đối soát cho {groupedCodes.length} đơn. {ungroupedCount && ungroupedCount > 0 ? `${ungroupedCount} đơn còn lại không có mã theo hạng mục trong snapshot này; mở sự cố để tra cứu lại trước khi kết luận.` : "Một đơn có thể xuất hiện ở nhiều hạng mục theo từng chặng."}</p>}
+                {analyzedCount !== null && groupedCodes.length > 0 && <p className="mt-3 rounded-md border border-cyan-500/20 bg-cyan-500/5 p-3 text-xs leading-5 text-slate-300"><strong className="text-cyan-100">Bằng chứng hiện có:</strong> {groupedCodes.length}/{analyzedCount} đơn đã có mã đối soát theo hạng mục. {ungroupedCount && ungroupedCount > 0 ? `Còn ${ungroupedCount} đơn cần tra cứu lại trước khi ra quyết định.` : "Đã đủ mã để tiếp tục review."}</p>}
                 {groups.length === 0 && sampleOrderCodes.length > 0 && <div className="mt-3"><p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Mã đơn mẫu để đối soát</p><div className="mt-2 flex flex-wrap gap-2">{sampleOrderCodes.map((code) => <span key={code} className="rounded border border-cyan-400/30 bg-cyan-400/5 px-2 py-1 font-mono text-xs text-cyan-100">{code}</span>)}</div></div>}
                 {investigationAction && <aside className="mt-3 rounded-md border border-amber-400/30 bg-amber-400/5 p-3 text-amber-100"><strong>Điều còn thiếu trước khi quyết định:</strong> {repairOperationalText(investigationAction)}</aside>}
               </section>

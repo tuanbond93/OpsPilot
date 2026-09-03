@@ -24,6 +24,15 @@ import type { ActionQueueMetrics, IActionQueue } from "../action-queue/IActionQu
 import { logRuntimeError, logRuntimeMessage, serializedPayloadBytes } from "@/observability/runtimeDiagnostics";
 import { logger } from "@/observability/logger";
 
+function formatRillnetStatusSignature(signature: string | null | undefined): string {
+  try {
+    const pairs = JSON.parse(signature || "[]") as Array<[string, number]>;
+    return pairs.map(([status, count]) => `${status}: ${count}`).join(", ") || "không xác định";
+  } catch {
+    return "không xác định";
+  }
+}
+
 export interface ProcessedFollowupItem {
   incidentId: string;
   incidentKey: string;
@@ -202,9 +211,37 @@ export class FollowupEngine {
 
       const lastActionAt = existingCase?.last_action_confirmed_at || existingCase?.last_action_requested_at;
       const newestSnapshotAt = historyRows.reduce<number>((latest, row) => Math.max(latest, new Date(row.recorded_at).getTime() || 0), 0);
+      const newestHistoryRow = historyRows.reduce<IncidentHistoryRow | null>((latest, row) => !latest || new Date(row.recorded_at).getTime() > new Date(latest.recorded_at).getTime() ? row : latest, null);
       const hasFreshSnapshotAfterLastAction = !lastActionAt || newestSnapshotAt > new Date(lastActionAt).getTime();
 
-      const transitionResult = evaluateNextState(
+      const currentRillnetStatusSignature = incident.rillnetStatusSignature || "";
+      const actionSignature = existingCase?.last_action_rillnet_status_signature || null;
+      const shouldInitializeActionSignature = Boolean(
+        existingCase?.last_action_confirmed_at &&
+        !actionSignature &&
+        currentRillnetStatusSignature
+      );
+      const shouldPauseForRillnetChange = Boolean(
+        existingCase &&
+        actionSignature &&
+        currentRillnetStatusSignature &&
+        actionSignature !== currentRillnetStatusSignature &&
+        currentState !== "RILLNET_CHANGE_PAUSED" &&
+        currentState !== "RESOLVED" &&
+        currentState !== "CLOSED"
+      );
+      const rillnetChangeSummary = shouldPauseForRillnetChange
+        ? `Rillnet status changed after the last reminder (${formatRillnetStatusSignature(actionSignature)} → ${formatRillnetStatusSignature(currentRillnetStatusSignature)}). Automated reminders paused pending manager review.`
+        : null;
+      const transitionResult: ReturnType<typeof evaluateNextState> = shouldPauseForRillnetChange
+        ? {
+            oldState: currentState,
+            newState: "RILLNET_CHANGE_PAUSED" as FollowupState,
+            assessment,
+            eventType: "RILLNET_STATUS_CHANGED" as const,
+            notes: rillnetChangeSummary || "Rillnet changed status after the last reminder.",
+          }
+        : evaluateNextState(
         currentState,
         {
           incidentId: incident.incidentId,
@@ -222,8 +259,8 @@ export class FollowupEngine {
           hasFreshSnapshotAfterLastAction,
         },
         config,
-        referenceTimeMs
-      );
+          referenceTimeMs
+        );
 
       const processParams: ProcessTransitionParams = {
         incidentId: incident.incidentId,
@@ -235,6 +272,13 @@ export class FollowupEngine {
         assessment,
         transitionResult,
         referenceTimeMs,
+        currentRillnetStatusSignature,
+        lastActionRillnetStatusSignature: shouldInitializeActionSignature ? currentRillnetStatusSignature : undefined,
+        rillnetChangeSummary,
+        rillnetReviewBeforeSignature: shouldPauseForRillnetChange ? actionSignature || undefined : undefined,
+        rillnetReviewAfterSignature: shouldPauseForRillnetChange ? currentRillnetStatusSignature : undefined,
+        rillnetReviewSnapshotId: shouldPauseForRillnetChange ? newestHistoryRow?.sync_run_id : undefined,
+        rillnetReviewOrderCodes: shouldPauseForRillnetChange ? incident.sampleOrderCodes : undefined,
       };
 
       const payload = FollowupMessageBuilder.buildPayload({

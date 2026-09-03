@@ -90,6 +90,12 @@ export interface PlannerResult {
 
   limitations: string[];
 
+  /** Structured audit projection. Older persisted runs may not contain it. */
+  evidenceList?: Array<{ code: string; statement: string }>;
+
+  /** Structured limitations used to build blocked options. */
+  missingData?: string[];
+
   rejections?: RecommendationRejectionDetail[];
 
   metadata: {
@@ -97,6 +103,15 @@ export interface PlannerResult {
     model: string;
     promptVersion: string;
     generatedAt: string;
+    operationalEvidence?: {
+      warehouseId: string;
+      ghnHubId: string;
+      sourceFetchedAt: string | null;
+    };
   };
+
+  /** Persisted Root Cause provenance consumed by the Level C decision gate. */
+  rootCauseSummary?: string;
+  rootCause?: Record<string, unknown>;
 }
 

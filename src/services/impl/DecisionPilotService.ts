@@ -8,6 +8,9 @@ import { DecisionDomainError } from "@/domain/decision";
 import { makeFinalDecision } from "@/domain/final-decision";
 import type { PlannerResult } from "@/agents/action-planner/schema";
 import { critiqueFinalDecision } from "@/domain/decision-critic";
+import type { ITriageAuditRepository } from "@/repositories/interfaces/ITriageAuditRepository";
+import { decisionSourceSnapshot, sourceFingerprint } from "@/services/decision-telegram-shadow";
+import type { DecisionTelegramRequestService } from "@/services/decision-telegram-shadow";
 
 function riskFromScore(score: number): "LOW" | "MEDIUM" | "HIGH" | "CRITICAL" {
   if (score >= 85) return "CRITICAL";
@@ -22,7 +25,9 @@ export class DecisionPilotService implements IDecisionPilotService {
     private readonly historyRepo: IIncidentHistoryRepository,
     private readonly followupRepo: IFollowupRepository,
     private readonly plannerRepo: IPlannerRepository,
-    private readonly decisionService: IDecisionService
+    private readonly decisionService: IDecisionService,
+    private readonly triageAuditRepo?: ITriageAuditRepository,
+    private readonly telegramRequestService?: DecisionTelegramRequestService
   ) {}
 
   async createShadowFromIncident(input: CreateShadowFromIncidentInput) {
@@ -30,6 +35,8 @@ export class DecisionPilotService implements IDecisionPilotService {
       if (!input.incidentId?.trim()) throw new DecisionDomainError("VALIDATION_ERROR", "incidentId is required.");
       const incident = await this.incidentRepo.getIncidentById(input.incidentId);
       if (!incident) throw new DecisionDomainError("NOT_FOUND", `Incident '${input.incidentId}' not found.`);
+      const triage = this.triageAuditRepo ? (await this.triageAuditRepo.getLatestByIncidentIds([incident.id]))[0] : null;
+      if (this.triageAuditRepo && (!triage || triage.route !== "AI_DECISION_REQUIRED")) throw new DecisionDomainError("TRIAGE_ROUTE_REQUIRED", "Only the newest persisted AI_DECISION_REQUIRED triage may enter the decision shadow lane.");
       const existingDecisions = await this.decisionService.list(200);
       if (!existingDecisions.ok) throw new DecisionDomainError("DECISION_LOOKUP_FAILED", existingDecisions.message || "Unable to check existing decisions for this incident.");
       const listedDecisions = Array.isArray(existingDecisions.data)
@@ -46,7 +53,10 @@ export class DecisionPilotService implements IDecisionPilotService {
       const followupById = await this.followupRepo.getCaseById(incident.id);
       const followup = followupById || (await this.followupRepo.getCasesByIncidentKeys([incident.incident_key]))[0] || null;
       const planner = await this.plannerRepo.getLatestPlannerRunByIncidentId(incident.id);
+      if (!planner?.id || !planner?.result) throw new DecisionDomainError("PERSISTED_PLANNER_REQUIRED", "A persisted planner result is required; the decision lane never fabricates options.");
       const plannerResult = (planner?.result || {}) as Partial<PlannerResult>;
+      const rootCause = String((plannerResult as Record<string, unknown>).rootCauseSummary || (plannerResult as Record<string, unknown>).rootCause || "").trim();
+      if (!rootCause) throw new DecisionDomainError("PERSISTED_ROOT_CAUSE_REQUIRED", "A persisted root-cause result is required; the decision lane never invents one.");
       const latest = [...history].sort(
         (a, b) => new Date(b.recorded_at || 0).getTime() - new Date(a.recorded_at || 0).getTime()
       )[0];
@@ -60,30 +70,33 @@ export class DecisionPilotService implements IDecisionPilotService {
       });
       const critic = critiqueFinalDecision({ finalDecision });
       const criticAbstained = critic.verdict === "HUMAN_INVESTIGATION_REQUIRED";
+      if (finalDecision.disposition !== "DECIDE" || critic.verdict !== "PASS") throw new DecisionDomainError("DECISION_CRITIC_GATE_BLOCKED", critic.reviewSummary);
       const confidenceScore = Number(plannerResult.confidence?.score ?? incident.priority_score ?? 0);
       const boundedConfidence = Number.isFinite(confidenceScore) ? Math.min(Math.max(confidenceScore, 0), 100) : 0;
-      const sourceFingerprint = [incident.id, incident.updated_at || incident.last_detected_at, planner?.id || "no-planner"].join(":");
+      const fingerprint = sourceFingerprint(decisionSourceSnapshot({ incident, triage, planner: { id: planner.id, result: plannerResult }, history: latest || null }));
 
-      return await this.decisionService.create({
+      const created = await this.decisionService.create({
         sourceLinks: {
           sourceType: "INCIDENT_PILOT",
           sourceId: incident.id,
           incidentId: incident.id,
+          triageRoute: triage?.route || "AI_DECISION_REQUIRED",
+          criticVerdict: critic.verdict,
           followupCaseId: followup?.id || undefined,
           plannerRunId: planner?.id || undefined,
         },
-        sourceFingerprint,
-        idempotencyKey: input.idempotencyKey?.trim() || `shadow:${sourceFingerprint}`,
+        sourceFingerprint: fingerprint,
+        idempotencyKey: input.idempotencyKey?.trim() || `shadow:${fingerprint}`,
         problem: `${incident.reason_name} tại ${incident.warehouse_name || incident.warehouse_id}`,
-        rootCause: String((plannerResult as Record<string, unknown>).rootCauseSummary || (plannerResult as Record<string, unknown>).rootCause || `Chưa đủ dữ liệu để xác định nguyên nhân gốc của ${incident.reason_name}.`),
+        rootCause,
         recommendedAction: criticAbstained
           ? critic.humanInvestigation?.action || "Human investigation is required before an operational decision can be made."
           : finalDecision.selectedOption?.action || "Human investigation is required before an operational decision can be made.",
         alternatives: criticAbstained ? [] : finalDecision.alternatives.slice(0, 3).map((item) => item.action),
         evidence: {
-          sourceIdentifiers: { incidentId: incident.id, incidentKey: incident.incident_key, warehouseId: incident.warehouse_id },
+          sourceIdentifiers: { incidentId: incident.id, incidentKey: incident.incident_key, warehouseId: incident.warehouse_id, warehouseName: incident.warehouse_name || incident.warehouse_id },
           signalContext: { reasonCode: incident.reason_code, reasonName: incident.reason_name, status: incident.status },
-          rootCauseContext: { plannerRunId: planner?.id || null, summary: (plannerResult as Record<string, unknown>).rootCauseSummary || (plannerResult as Record<string, unknown>).rootCause || null },
+          rootCauseContext: { plannerRunId: planner?.id || null, summary: rootCause },
           actionContext: {
             plannerRunId: planner?.id || null,
             disposition: criticAbstained ? "HUMAN_INVESTIGATION_REQUIRED" : finalDecision.disposition,
@@ -115,6 +128,10 @@ export class DecisionPilotService implements IDecisionPilotService {
         decisionDeadline: input.decisionDeadline || null,
         actor: input.actor,
       });
+      if (created.ok && this.telegramRequestService) {
+        await this.telegramRequestService.createAndDispatch(created.data as import("@/domain/decision").Decision, triage?.id || null, input.actor);
+      }
+      return created;
     } catch (error) {
       if (error instanceof DecisionDomainError) return { ok: false, error: error.code, message: error.message };
       return { ok: false, error: "DECISION_PILOT_FAILED", message: error instanceof Error ? error.message : String(error) };

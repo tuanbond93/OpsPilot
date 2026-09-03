@@ -122,6 +122,35 @@ export class SupabaseAiJobRepository extends BaseRepository implements IAiJobRep
     return null;
   }
 
+  async claimPendingJobForIncident(
+    workerId: string,
+    incidentId: string,
+    lockTimeoutMs: number = 300000
+  ): Promise<AiAnalysisJobRow | null> {
+    const nowIso = new Date().toISOString();
+    const staleLockThreshold = new Date(Date.now() - lockTimeoutMs).toISOString();
+    const { data: candidates, error: findError } = await this.client
+      .from("ai_analysis_jobs")
+      .select("*")
+      .eq("incident_id", incidentId)
+      .or(`status.eq.PENDING,and(status.eq.PROCESSING,locked_at.lt.${staleLockThreshold})`)
+      .lte("scheduled_at", nowIso)
+      .order("scheduled_at", { ascending: true })
+      .limit(1);
+    if (findError) throw findError;
+    const candidate = candidates?.[0];
+    if (!candidate) return null;
+    const { data: claimed, error: updateError } = await this.client
+      .from("ai_analysis_jobs")
+      .update({ status: "PROCESSING", worker_id: workerId, locked_at: nowIso, started_at: candidate.started_at || nowIso, updated_at: nowIso })
+      .eq("id", candidate.id)
+      .eq("status", candidate.status)
+      .select()
+      .maybeSingle();
+    if (updateError) throw updateError;
+    return claimed;
+  }
+
   async markJobCompleted(jobId: string): Promise<AiAnalysisJobRow | null> {
     const nowIso = new Date().toISOString();
 

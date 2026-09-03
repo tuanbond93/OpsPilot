@@ -6,10 +6,11 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint",
+    "lint": "node scripts/run-eslint.mjs",
     "test": "vitest run",
     "test:ui-runtime": "node scratch/ui-runtime-smoke.mjs",
     "evaluate": "npx tsx src/evaluation/cli.ts",
+    "security:secrets": "git ls-files -z | node scripts/scan-secrets.mjs",
     "security:audit": "npm audit --omit=dev --audit-level=high",
     "security:audit:all": "npm audit --audit-level=high"
   },

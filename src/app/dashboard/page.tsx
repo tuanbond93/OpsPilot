@@ -1,11 +1,12 @@
 "use client";
 
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import Link from "next/link";
-import { Minus, TrendingDown, TrendingUp, CircleHelp } from "lucide-react";
-import { incidentRuleExplanation, incidentSignalLabel, repairOperationalText, translateStatus } from "@/app/_components/operationalText";
+import { Minus, TrendingDown, TrendingUp, CircleHelp, ChevronDown, RefreshCw, Settings2, ArrowRight, UserRound } from "lucide-react";
+import { incidentRuleExplanation, incidentSignalLabel, repairOperationalText, statusGuidance, translateStatus } from "@/app/_components/operationalText";
 import { handleApiAccess } from "@/app/_components/apiAccess";
 import { useOpsSession } from "@/app/_components/useOpsSession";
+import { OperatorStartHere } from "@/app/dashboard/OperatorStartHere";
 
 interface KPIs {
   activeIncidents: number;
@@ -18,6 +19,7 @@ interface KPIs {
   aiJobsRunning: number;
   notificationsPending: number;
   notificationsFailed: number;
+  telegramPushSentToday: number;
   followupsWaiting: number;
   plannerDraftsWaitingReview: number;
 }
@@ -132,6 +134,8 @@ interface SystemHealth {
   aiProvider: HealthIndicator;
   cronWorker: HealthIndicator;
   lastSync: string | null;
+  lastSuccessfulSync?: string | null;
+  latestSyncStatus?: string | null;
   lastAiWorker: string | null;
   lastNotificationDispatch: string | null;
 }
@@ -251,6 +255,32 @@ const PRIORITY_REASON_WEIGHTS: Record<string, number> = {
   "Kho chưa luân chuyển": 1,
 };
 
+const VIETNAM_UTC_OFFSET_MS = 7 * 60 * 60 * 1000;
+const SCHEDULED_SYNC_HOURS_VIETNAM = [8, 10, 12, 14, 16, 18];
+
+function formatVietnamDateTime(value: string | null) {
+  if (!value || !Number.isFinite(Date.parse(value))) return "Chưa có dữ liệu";
+  return new Intl.DateTimeFormat("vi-VN", { timeZone: "Asia/Ho_Chi_Minh", day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit", hour12: false }).format(new Date(value));
+}
+
+function syncScheduleCheck(lastSync: string | null, now = new Date()) {
+  // Vietnam has no daylight-saving changes. Build the configured local cron
+  // slots as UTC instants, then compare them with the persisted sync_runs time.
+  const vietnamNow = new Date(now.getTime() + VIETNAM_UTC_OFFSET_MS);
+  const slots: Date[] = [];
+  for (const dayOffset of [-1, 0, 1]) {
+    const localDay = new Date(Date.UTC(vietnamNow.getUTCFullYear(), vietnamNow.getUTCMonth(), vietnamNow.getUTCDate() + dayOffset));
+    for (const hour of SCHEDULED_SYNC_HOURS_VIETNAM) slots.push(new Date(Date.UTC(localDay.getUTCFullYear(), localDay.getUTCMonth(), localDay.getUTCDate(), hour - 7)));
+  }
+  slots.sort((left, right) => left.getTime() - right.getTime());
+  const previous = [...slots].reverse().find((slot) => slot.getTime() <= now.getTime()) || null;
+  const next = slots.find((slot) => slot.getTime() > now.getTime()) || null;
+  const onSchedule = Boolean(lastSync && previous && Date.parse(lastSync) >= previous.getTime());
+  return { previous: previous?.toISOString() || null, next: next?.toISOString() || null, onSchedule };
+}
+
+const PREFERRED_OPERATION_ZONE = "Miền Bắc 3";
+
 function priorityEvidence(reason: string, orderCount: number, maximumAgeHours: number | null) {
   const countFactor = Math.min(orderCount * 2, 100);
   const ageFactor = Math.min((maximumAgeHours ?? 0) * 0.5, 50);
@@ -290,6 +320,7 @@ export default function ExecutiveDashboardPage() {
   const [syncMessage, setSyncMessage] = useState<string | null>(null);
   const [syncElapsedSeconds, setSyncElapsedSeconds] = useState(0);
   const [syncPhase, setSyncPhase] = useState("CREATED");
+  const preferredZoneInitialized = useRef(false);
 
   const selectedScope = selectedWarehouse
     ? selectedWarehouse
@@ -308,12 +339,38 @@ export default function ExecutiveDashboardPage() {
     .filter((warehouse) => !selectedZone || warehouse.zone === selectedZone)
     .flatMap((warehouse) => warehouse.picIds)), [accountScope, selectedZone]);
 
+  const warehouseZoneById = useMemo(
+    () => new Map((accountScope?.warehouses || []).map((warehouse) => [warehouse.warehouseId, warehouse.zone])),
+    [accountScope]
+  );
+
   useEffect(() => {
     fetch("/api/account/scope", { cache: "no-store" })
       .then(async (response) => response.ok ? response.json() : Promise.reject(new Error("Không thể tải phạm vi tài khoản")))
-      .then((scope: AccountScope) => setAccountScope(scope))
+      .then((scope: AccountScope) => {
+        setAccountScope(scope);
+        if (!preferredZoneInitialized.current) {
+          preferredZoneInitialized.current = true;
+          try {
+            const saved = JSON.parse(window.localStorage.getItem("opspilot-dashboard-scope") || "{}");
+            const savedZone = typeof saved.zone === "string" && scope.zones.includes(saved.zone) ? saved.zone : "";
+            const savedPic = typeof saved.pic === "string" && scope.pics.some((pic) => pic.employeeId === saved.pic) ? saved.pic : "";
+            const savedWarehouse = typeof saved.warehouse === "string" && scope.warehouses.some((warehouse) => warehouse.warehouseId === saved.warehouse) ? saved.warehouse : "";
+            setSelectedZone(savedZone || (scope.zones.includes(PREFERRED_OPERATION_ZONE) ? PREFERRED_OPERATION_ZONE : ""));
+            setSelectedPic(savedPic);
+            setSelectedWarehouse(savedWarehouse);
+          } catch {
+            if (scope.zones.includes(PREFERRED_OPERATION_ZONE)) setSelectedZone(PREFERRED_OPERATION_ZONE);
+          }
+        }
+      })
       .catch(() => setAccountScope(null));
   }, []);
+
+  useEffect(() => {
+    if (!preferredZoneInitialized.current) return;
+    window.localStorage.setItem("opspilot-dashboard-scope", JSON.stringify({ zone: selectedZone, pic: selectedPic, warehouse: selectedWarehouse }));
+  }, [selectedPic, selectedWarehouse, selectedZone]);
 
   const fetchDashboardData = useCallback(async () => {
     try {
@@ -331,26 +388,22 @@ export default function ExecutiveDashboardPage() {
       if (json.source === "degraded_fallback") {
         setCopilotReviews({ pending: 0, total: 0, unavailable: true });
       } else {
-        const reviewChecks = await Promise.all(
-          (json.incidents?.items || []).slice(0, 20).map(async (incident: IncidentItem) => {
-            try {
-              const response = await fetch(
-                `/api/copilot/incident/${encodeURIComponent(incident.incidentId)}`,
-                { cache: "no-store" }
-              );
-              if (!response.ok) return null;
-              const result = await response.json();
-              return result.activeReview?.status || "PENDING";
-            } catch {
-              return null;
-            }
-          })
+        // The review queue already contains only incidents with a Copilot run.
+        // Fetch it once instead of probing every dashboard incident and turning
+        // the normal "analysis not created yet" state into a burst of 404s.
+        const reviewResponse = await fetch("/api/copilot/reviews?limit=100", { cache: "no-store" });
+        const reviewResult = await reviewResponse.json();
+        handleApiAccess(reviewResponse, reviewResult, "Không thể tải hàng đợi đánh giá Copilot.");
+        const visibleIncidentIds = new Set(
+          (json.incidents?.items || []).map((incident: IncidentItem) => incident.incidentId)
         );
-        const availableReviews = reviewChecks.filter((status): status is string => status !== null);
+        const availableReviews = (reviewResult.items || [])
+          .filter((item: { incidentId: string }) => visibleIncidentIds.has(item.incidentId))
+          .map((item: { status?: string }) => item.status || "PENDING");
         setCopilotReviews({
-          pending: availableReviews.filter((status) => status === "PENDING").length,
+          pending: availableReviews.filter((status: string) => status === "PENDING").length,
           total: availableReviews.length,
-          unavailable: false,
+          unavailable: !reviewResult.ok,
         });
       }
     } catch (err: unknown) {
@@ -446,6 +499,7 @@ export default function ExecutiveDashboardPage() {
   const incidentsPayload = data?.incidents;
   const incidents = incidentsPayload?.items || [];
   const health = data?.health;
+  const syncSchedule = syncScheduleCheck(health?.lastSuccessfulSync || null);
   const timings = data?.diagnostics?.timings;
 
   const reasonsList = Array.from(new Set(incidents.map((i) => i.reasonName)));
@@ -463,11 +517,24 @@ export default function ExecutiveDashboardPage() {
   });
 
   filteredIncidents.sort((a, b) => {
+    const aPreferred = warehouseZoneById.get(a.warehouseId) === PREFERRED_OPERATION_ZONE;
+    const bPreferred = warehouseZoneById.get(b.warehouseId) === PREFERRED_OPERATION_ZONE;
+    if (aPreferred !== bPreferred) return aPreferred ? -1 : 1;
     if (sortBy === "priority") return b.priorityScore - a.priorityScore;
     if (sortBy === "age") return b.maximumAgeHours - a.maximumAgeHours;
     if (sortBy === "newest") return new Date(b.firstDetectedAt).getTime() - new Date(a.firstDetectedAt).getTime();
     return 0;
   });
+
+  const topIncident = filteredIncidents[0] || null;
+  const roleName = ({ OPERATOR: "Người vận hành", REVIEWER: "Người duyệt", MANAGER: "Quản lý", ADMIN: "Quản trị viên" } as const)[session.role];
+  const primaryTask = session.role === "REVIEWER" && copilotReviews.pending > 0
+    ? { eyebrow: "Ưu tiên của người duyệt", title: `${copilotReviews.pending} bản tổng hợp đang chờ bạn`, detail: "Đối chiếu bằng chứng còn mới trước khi duyệt hoặc từ chối.", href: "/reviews", cta: "Mở hàng đợi cần duyệt", tone: "border-amber-500/40 from-amber-500/15" }
+    : (session.role === "MANAGER" || session.role === "ADMIN") && (kpis?.plannerDraftsWaitingReview || 0) > 0
+      ? { eyebrow: "Ưu tiên của quản lý", title: `${kpis?.plannerDraftsWaitingReview || 0} đề xuất cần quyết định`, detail: "Kiểm tra mức ảnh hưởng, bằng chứng và người chịu trách nhiệm trước khi phê duyệt.", href: "/planner", cta: "Mở đề xuất cần quyết định", tone: "border-violet-500/40 from-violet-500/15" }
+      : topIncident
+        ? { eyebrow: "Việc nên làm ngay", title: `${topIncident.warehouseName} · ${incidentSignalLabel(topIncident.reasonName)}`, detail: `${topIncident.affectedOrderCount} đơn ảnh hưởng · đơn lâu nhất ${topIncident.maximumAgeHours ?? "—"} giờ · mức ${priorityPresentation(topIncident.priorityScore).label.toLowerCase()}.`, href: `/incidents/${encodeURIComponent(topIncident.incidentId)}`, cta: "Mở sự cố và kiểm tra", tone: "border-rose-500/40 from-rose-500/15" }
+        : { eyebrow: "Không có việc khẩn cấp", title: "Phạm vi hiện tại chưa có sự cố cần xử lý", detail: "Bạn có thể xem kết quả đang theo dõi hoặc đổi phạm vi kho.", href: "/followups", cta: "Xem kết quả đang theo dõi", tone: "border-emerald-500/40 from-emerald-500/15" };
 
   return (
     <main id="main-content" tabIndex={-1} className="min-h-dvh bg-slate-950 text-slate-100 p-6 max-w-7xl mx-auto space-y-8">
@@ -477,10 +544,8 @@ export default function ExecutiveDashboardPage() {
           <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-blue-500/10 border border-blue-500/20 text-blue-400 text-xs font-semibold uppercase tracking-wider mb-2">
             OpsPilot · Điều hành vận hành
           </div>
-          <h1 className="text-3xl font-extrabold text-slate-100">Trung tâm điều hành vận hành</h1>
-          <p className="text-sm text-slate-400">
-            Ưu tiên sự cố, khuyến nghị AI, phê duyệt của con người và kết quả sau hành động.
-          </p>
+          <div className="flex flex-wrap items-center gap-2"><h1 className="text-3xl font-extrabold text-slate-100">Trung tâm điều hành vận hành</h1><span className="inline-flex items-center gap-1.5 rounded-full border border-slate-700 bg-slate-900 px-2.5 py-1 text-xs font-semibold text-slate-300"><UserRound aria-hidden="true" size={14}/>{roleName}</span></div>
+          <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-300">Đây là nơi bạn nhìn nhanh tình hình trong phạm vi phụ trách và bắt đầu xử lý việc quan trọng nhất.</p>
         </div>
 
         {/* Scope, Controls Governance & Health Indicators */}
@@ -522,7 +587,7 @@ export default function ExecutiveDashboardPage() {
             </label>
           </div>
 
-          <div className="flex items-center gap-2 bg-slate-900 border border-slate-800 px-3 py-1.5 rounded-xl text-xs">
+          <div className="flex min-h-11 items-center gap-2 bg-slate-900 border border-slate-800 px-3 py-1.5 rounded-xl text-xs">
                 <span className="text-slate-400 font-semibold">Tình trạng hệ thống:</span>
             <div className="flex items-center gap-1.5 font-mono">
               <span title={`Database: ${health?.database?.healthReason}`} className={`w-2.5 h-2.5 rounded-full ${health?.database?.status === "green" ? "bg-emerald-400" : "bg-rose-500"}`}></span>
@@ -534,15 +599,38 @@ export default function ExecutiveDashboardPage() {
 
           <button
             onClick={fetchDashboardData}
-            className="px-4 py-2 bg-slate-900 hover:bg-slate-800 border border-slate-800 text-slate-200 text-xs font-semibold rounded-xl transition flex items-center gap-1.5"
+            className="inline-flex min-h-11 items-center gap-2 rounded-xl border border-slate-800 bg-slate-900 px-4 text-xs font-semibold text-slate-200 transition hover:bg-slate-800 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-300"
           >
-            🔄 Làm mới ({timings?.totalMs || 0}ms)
+            <RefreshCw aria-hidden="true" size={16}/> Làm mới
           </button>
-          <button type="button" onClick={() => void handleFreshSync()} disabled={syncing || !session.can("MANAGE_SYSTEM")} title={!session.can("MANAGE_SYSTEM") ? "Chỉ ADMIN được đồng bộ thủ công" : "Kiểm tra nguồn Rillnet mới; nếu không đổi, giữ nguyên snapshot và hoàn tất nhanh"} aria-describedby={syncing ? "sync-progress" : undefined} className="inline-flex min-h-11 items-center gap-2 whitespace-nowrap rounded-xl bg-blue-600 px-4 text-xs font-semibold text-white transition hover:bg-blue-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-300 disabled:cursor-not-allowed disabled:opacity-50"><span aria-hidden="true" className={syncing ? "animate-spin motion-reduce:animate-none" : ""}>↻</span>{syncing ? `Đang đồng bộ ${String(Math.floor(syncElapsedSeconds/60)).padStart(2,"0")}:${String(syncElapsedSeconds%60).padStart(2,"0")}` : "Đồng bộ dữ liệu mới"}</button>
-          <button type="button" onClick={() => void handleFreshSync(true)} disabled={syncing || !session.can("MANAGE_SYSTEM")} title={!session.can("MANAGE_SYSTEM") ? "Chỉ ADMIN được tái tạo toàn bộ" : "Chỉ dùng sau khi thay đổi rule/schema: tái tạo bằng chứng dù nguồn Rillnet không đổi"} className="inline-flex min-h-11 items-center whitespace-nowrap rounded-xl border border-slate-700 px-3 text-xs font-semibold text-slate-300 transition hover:border-slate-500 hover:text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-slate-300 disabled:cursor-not-allowed disabled:opacity-50">Tái tạo toàn bộ</button>
-          <button type="button" onClick={() => void dispatchTelegramFollowupsNow()} disabled={dispatchingTelegramFollowups || !session.can("MANAGE_SYSTEM")} title={!session.can("MANAGE_SYSTEM") ? "Chỉ ADMIN được chạy nhắc việc Telegram pilot" : "Chạy ngay các follow-up đủ điều kiện của pilot Miền Bắc 3; không gửi trùng"} className="inline-flex min-h-11 items-center whitespace-nowrap rounded-xl border border-cyan-500/50 px-3 text-xs font-semibold text-cyan-100 transition hover:bg-cyan-500/10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cyan-300 disabled:cursor-not-allowed disabled:opacity-50">{dispatchingTelegramFollowups ? "Đang gửi Telegram…" : "Gửi Telegram pilot"}</button>
+          {session.can("MANAGE_SYSTEM") && <details className="group w-full rounded-xl border border-slate-800 bg-slate-900 sm:w-auto">
+            <summary className="flex min-h-11 cursor-pointer list-none items-center gap-2 px-4 text-xs font-semibold text-slate-300 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-300">
+              <Settings2 aria-hidden="true" size={16}/><span>Công cụ quản trị dữ liệu</span><ChevronDown aria-hidden="true" size={15} className="ml-auto transition-transform group-open:rotate-180"/>
+            </summary>
+            <div className="grid gap-2 border-t border-slate-800 p-3 sm:min-w-72">
+              <p className="text-xs leading-5 text-slate-400">Chỉ dùng khi cần cập nhật hoặc khôi phục dữ liệu hệ thống.</p>
+              <button type="button" onClick={() => void handleFreshSync()} disabled={syncing} aria-describedby={syncing ? "sync-progress" : undefined} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl bg-blue-600 px-4 text-xs font-semibold text-white transition hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-50"><RefreshCw aria-hidden="true" size={16} className={syncing ? "animate-spin motion-reduce:animate-none" : ""}/>{syncing ? `Đang đồng bộ ${String(Math.floor(syncElapsedSeconds/60)).padStart(2,"0")}:${String(syncElapsedSeconds%60).padStart(2,"0")}` : "Đồng bộ dữ liệu mới"}</button>
+              <button type="button" onClick={() => void handleFreshSync(true)} disabled={syncing} className="inline-flex min-h-11 items-center justify-center rounded-xl border border-slate-700 px-3 text-xs font-semibold text-slate-300 hover:border-slate-500 hover:text-white disabled:cursor-not-allowed disabled:opacity-50">Tái tạo toàn bộ dữ liệu</button>
+              <button type="button" onClick={() => void dispatchTelegramFollowupsNow()} disabled={dispatchingTelegramFollowups} className="inline-flex min-h-11 items-center justify-center rounded-xl border border-cyan-500/50 px-3 text-xs font-semibold text-cyan-100 hover:bg-cyan-500/10 disabled:cursor-not-allowed disabled:opacity-50">{dispatchingTelegramFollowups ? "Đang gửi Telegram…" : "Gửi nhắc việc Telegram"}</button>
+            </div>
+          </details>}
         </div>
       </header>
+
+      <section aria-labelledby="sync-schedule-title" className={`rounded-xl border p-4 text-sm ${syncSchedule.onSchedule ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-100" : "border-amber-500/40 bg-amber-500/10 text-amber-100"}`}>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h2 id="sync-schedule-title" className="font-bold">Đồng bộ dữ liệu nguồn</h2>
+            <p className="mt-1 text-xs leading-5 text-slate-300">Lịch cấu hình: 08:00, 10:00, 12:00, 14:00, 16:00 và 18:00 hằng ngày (giờ Việt Nam). Trạng thái được đối chiếu với lần chạy ghi trong <code>sync_runs</code>.</p>
+          </div>
+          <span className={`rounded-full border px-2.5 py-1 text-xs font-bold ${syncSchedule.onSchedule ? "border-emerald-400/40 text-emerald-200" : "border-amber-400/40 text-amber-200"}`}>{syncSchedule.onSchedule ? "Có snapshot mới từ mốc lịch gần nhất" : "Chưa có snapshot mới từ mốc lịch gần nhất"}</span>
+        </div>
+        <dl className="mt-3 grid gap-2 text-xs sm:grid-cols-3">
+          <div className="rounded-lg bg-slate-950/50 p-2.5"><dt className="text-slate-400">Đồng bộ thành công gần nhất</dt><dd className="mt-1 font-semibold text-slate-100">{formatVietnamDateTime(health?.lastSuccessfulSync || null)}</dd><p className="mt-1 text-[11px] text-slate-400">Lần chạy gần nhất: {formatVietnamDateTime(health?.lastSync || null)} · {health?.latestSyncStatus || "chưa rõ"}</p></div>
+          <div className="rounded-lg bg-slate-950/50 p-2.5"><dt className="text-slate-400">Mốc lịch vừa qua</dt><dd className="mt-1 font-semibold text-slate-100">{formatVietnamDateTime(syncSchedule.previous)}</dd></div>
+          <div className="rounded-lg bg-slate-950/50 p-2.5"><dt className="text-slate-400">Mốc dự kiến kế tiếp</dt><dd className="mt-1 font-semibold text-slate-100">{formatVietnamDateTime(syncSchedule.next)}</dd></div>
+        </dl>
+      </section>
 
       {syncing && <div id="sync-progress" role="status" aria-live="polite" className="rounded-xl border border-blue-500/30 bg-blue-500/10 p-4 text-sm text-blue-100"><div className="flex flex-wrap items-center justify-between gap-2"><strong>{syncPhaseLabels[syncPhase] || "Đang đồng bộ dữ liệu"}</strong><span className="font-mono text-blue-200">{String(Math.floor(syncElapsedSeconds/60)).padStart(2,"0")}:{String(syncElapsedSeconds%60).padStart(2,"0")}</span></div><div className="mt-3 h-1.5 overflow-hidden rounded-full bg-slate-800" aria-hidden="true"><div className="h-full w-1/3 animate-pulse rounded-full bg-blue-400 motion-reduce:animate-none" /></div><p className="mt-2 text-blue-200/80">Snapshot gần nhất vẫn đang được hiển thị; bạn có thể tiếp tục sử dụng các màn hình khác.</p></div>}{syncMessage && <div role="status" className={`rounded-xl border p-3 text-sm ${syncMessage.startsWith("Không thể") ? "border-rose-500/30 bg-rose-500/10 text-rose-200" : "border-emerald-500/30 bg-emerald-500/10 text-emerald-200"}`}>{syncMessage}</div>}
 
@@ -561,6 +649,19 @@ export default function ExecutiveDashboardPage() {
           </p>
         </div>
       )}
+
+      <OperatorStartHere
+        incidents={data?.source === "degraded_fallback" ? 0 : (kpis?.activeIncidents || 0)}
+        reviews={copilotReviews.unavailable ? 0 : copilotReviews.pending}
+        followups={data?.source === "degraded_fallback" ? 0 : (kpis?.followupsWaiting || 0)}
+      />
+
+      <section aria-labelledby="primary-task-heading" className={`rounded-2xl border bg-gradient-to-br ${primaryTask.tone} to-slate-950 p-5 shadow-xl sm:p-6`}>
+        <div className="flex flex-col gap-5 lg:flex-row lg:items-center lg:justify-between">
+          <div className="max-w-3xl"><p className="text-xs font-bold uppercase tracking-[.14em] text-cyan-200">{primaryTask.eyebrow}</p><h2 id="primary-task-heading" className="mt-2 text-xl font-bold text-white sm:text-2xl">{primaryTask.title}</h2><p className="mt-2 text-sm leading-6 text-slate-300">{primaryTask.detail}</p></div>
+          <Link href={primaryTask.href} className="inline-flex min-h-12 shrink-0 items-center justify-center gap-2 rounded-xl bg-[#00a19a] px-5 text-sm font-bold text-black transition-colors hover:bg-[#17c8bf] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-200">{primaryTask.cta}<ArrowRight aria-hidden="true" size={18}/></Link>
+        </div>
+      </section>
 
       {/* Decision-first attention queue */}
       <section aria-labelledby="attention-heading" className="space-y-3">
@@ -632,8 +733,13 @@ export default function ExecutiveDashboardPage() {
           </div>
 
           <div className="p-4 bg-slate-900 border border-emerald-500/30 rounded-2xl space-y-1">
-            <span className="text-emerald-400 font-semibold">Đã xử lý hôm nay</span>
+            <span className="text-emerald-400 font-semibold">Case hoàn tất hôm nay</span>
             <span className="text-2xl font-extrabold text-emerald-400 block font-mono">{kpis?.incidentsResolvedToday || 0}</span>
+          </div>
+
+          <div className="p-4 bg-slate-900 border border-cyan-500/30 rounded-2xl space-y-1">
+            <span className="text-cyan-400 font-semibold">Push case thành công hôm nay</span>
+            <span className="text-2xl font-extrabold text-cyan-400 block font-mono">{kpis?.telegramPushSentToday || 0}</span>
           </div>
 
           <div className="p-4 bg-slate-900 border border-purple-500/30 rounded-2xl space-y-1">
@@ -644,7 +750,7 @@ export default function ExecutiveDashboardPage() {
           </div>
 
           <div className="p-4 bg-slate-900 border border-rose-500/30 rounded-2xl space-y-1">
-            <span className="text-rose-400 font-semibold">Thông báo thất bại</span>
+            <span className="text-rose-400 font-semibold">Push case thất bại hôm nay</span>
             <span className="text-2xl font-extrabold text-rose-400 block font-mono">{kpis?.notificationsFailed || 0}</span>
           </div>
 
@@ -736,7 +842,7 @@ export default function ExecutiveDashboardPage() {
                   <td className="py-3 px-2 font-mono font-bold">{inc.affectedOrderCount > 0 ? `${inc.affectedOrderCount} đơn` : "Chưa có dữ liệu"}</td>
                   <td className="py-3 px-2 font-mono">{inc.maximumAgeHours !== null && inc.maximumAgeHours !== undefined ? `${inc.maximumAgeHours} giờ` : "Chưa có dữ liệu"}</td>
                   <td className="py-3 px-2 font-mono text-purple-400">
-                    <span>{inc.followupState === "FIRST_PUSH_PENDING" ? "CHỜ NHẮC LẦN 1" : inc.followupState === "RESOLVED" ? "ĐÃ XỬ LÝ" : inc.followupState === "NEW" ? "MỚI" : inc.followupState}</span>
+                    <span title={`${statusGuidance(inc.followupState).owner}: ${statusGuidance(inc.followupState).next}`}>{translateStatus(inc.followupState)}</span>
                     {(() => {
                       const triage = triagePresentation(inc);
                       return triage ? <span role="status" aria-atomic="true" title={triage.title} className={`mt-1 inline-flex whitespace-nowrap rounded-full border px-2 py-0.5 font-sans text-[10px] font-bold ${triage.tone}`}>{triage.label}</span> : null;
@@ -744,12 +850,12 @@ export default function ExecutiveDashboardPage() {
                   </td>
                   <td className="py-3 px-2 font-mono">
                     <span className={inc.plannerStatus === "APPROVED" ? "text-emerald-400" : inc.plannerStatus === "DRAFT" ? "text-amber-400" : "text-slate-400"}>
-                      {inc.plannerStatus === "DRAFT" ? "BẢN NHÁP" : inc.plannerStatus === "APPROVED" ? "ĐÃ PHÊ DUYỆT" : inc.plannerStatus === "NONE" ? "CHƯA CÓ" : inc.plannerStatus}
+                      {translateStatus(inc.plannerStatus)}
                     </span>
                   </td>
                   <td className="py-3 px-2 font-mono">
                     <span className={inc.aiStatus === "COMPLETED" ? "text-emerald-400" : inc.aiStatus === "PROCESSING" || inc.aiStatus === "PENDING" ? "text-amber-400" : "text-slate-400"}>
-                      {inc.aiStatus === "COMPLETED" ? "ĐÃ HOÀN TẤT" : inc.aiStatus === "PENDING" ? "ĐANG CHỜ" : inc.aiStatus === "PROCESSING" ? "ĐANG XỬ LÝ" : "CHƯA CÓ"}
+                      {translateStatus(inc.aiStatus || "NONE")}
                     </span>
                   </td>
                   <td className="py-3 px-2 text-right"><Link href={`/incidents/${encodeURIComponent(inc.incidentId)}`} aria-label={`Mở hồ sơ ${inc.incidentKey}`} className="inline-flex min-h-11 items-center rounded-lg px-3 font-semibold text-blue-300 hover:bg-blue-500/10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-400">Chi tiết →</Link></td>

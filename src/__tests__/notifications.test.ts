@@ -14,6 +14,7 @@ import {
   NotificationBuilder,
 } from "../notifications";
 import fs from "fs";
+import * as supabaseConnector from "../connectors/supabase";
 
 describe("Sprint 5 Hardened: Notification Platform & Action Governance Tests", () => {
   beforeEach(() => {
@@ -24,7 +25,7 @@ describe("Sprint 5 Hardened: Notification Platform & Action Governance Tests", (
   });
 
   it("Architecture Validation: delegates to NotificationService via ServiceFactory", async () => {
-    
+    vi.spyOn(supabaseConnector, "createAdminClient").mockReturnValue({} as any);
     const { runNotificationDispatcherJob } = await import("@/jobs/dispatch-notifications");
     // We mock ServiceFactory.getNotificationService to return a NoOp / dummy
     const getNotificationServiceSpy = vi.spyOn(ServiceFactory, 'getNotificationService').mockReturnValue({
@@ -36,9 +37,6 @@ describe("Sprint 5 Hardened: Notification Platform & Action Governance Tests", (
         retriedCount: 0
       })
     } as any);
-    
-    // We also need to mock createAdminClient if it's imported, but since we mocked getNotificationService, 
-    // it will just use whatever client and return our mocked service, avoiding any network calls inside dispatchPending.
     
     // Run the job
     const result = await runNotificationDispatcherJob("test-worker");

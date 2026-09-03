@@ -52,8 +52,8 @@ export function cacheBridgeTracking(incidentId: string, tracking: ApiData) {
 
 export function bridgeErrorMessage(code: string) {
   if (code === "BRIDGE_UNAVAILABLE") return "Chưa cài hoặc chưa bật OpsPilot GHN Tracking Bridge trong Tampermonkey.";
-  if (code === "GHN_SESSION_NOT_FOUND") return "Chưa bắt được phiên GHN. Hãy mở hoặc tải lại trang Tra cứu nội bộ GHN rồi thử lại.";
-  if (code === "GHN_SESSION_EXPIRED") return "Phiên GHN đã hết hạn. Hãy đăng nhập lại trang Tra cứu nội bộ GHN.";
+  if (code === "GHN_SESSION_NOT_FOUND") return "Chưa bắt được phiên Tra cứu nội bộ GHN. Hãy mở GHN, đăng nhập và tra cứu một mã đơn để Bridge nhận phiên mới.";
+  if (code === "GHN_SESSION_EXPIRED") return "Phiên Tra cứu nội bộ GHN đã hết hạn. Hãy đăng nhập lại, tra cứu một mã đơn rồi quay về thử lại.";
   if (code === "BRIDGE_TIMEOUT" || code === "GHN_TIMEOUT") return "GHN phản hồi quá lâu. Vui lòng thử lại.";
   if (code === "GHN_UPSTREAM_ERROR") return "API Tra cứu nội bộ GHN đang từ chối hoặc không trả được dữ liệu cho phiên hiện tại.";
   if (code === "GHN_RATE_LIMITED") return "GHN đang giới hạn tần suất tra cứu. Hệ thống đã tự chờ và thử lại nhưng vẫn chưa được chấp nhận.";

@@ -88,12 +88,10 @@ export class SupabaseIncidentHistoryRepository implements IIncidentHistoryReposi
 
     if (this.client) {
       try {
-        const { data, error } = await this.client
-          .from("incident_history")
-          .select("*")
-          .in("incident_id", incidentIds)
-          .order("incident_id", { ascending: true })
-          .order("recorded_at", { ascending: false });
+        const { data, error } = await this.client.rpc("get_recent_incident_histories", {
+          p_incident_ids: incidentIds,
+          p_limit_per_incident: 5,
+        });
 
         if (!error && data) {
           for (const row of data as IncidentHistoryRow[]) {

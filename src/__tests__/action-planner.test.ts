@@ -260,4 +260,39 @@ describe("Sprint 6 Phase 2 Final Hardened: Action Planner Tests", () => {
 
     expect(hash1).toBe(hash2);
   });
+
+  it("10. Persists structured operational evidence provenance for audit", async () => {
+    const agent = new ActionPlannerAgent(mockRepo);
+    const result = await agent.analyzeIncident({
+      incident: mockIncident,
+      historyRows: mockHistoryRows,
+      referenceTimeMs: Date.parse("2026-08-29T03:10:00Z"),
+      operationalEvidence: {
+        warehouseId: "21160000",
+        ghnHubId: "21160000",
+        staffing: {
+          hubId: "21160000", scheduleDate: "2026-08-29", scheduledForDayCount: 5,
+          currentlyScheduledWorkforceCount: 4, onLeaveCount: 1, activeDriverCount: 2,
+          scheduledActiveDriverCount: 2, unscheduledActiveDriverCount: 0,
+          sourceFetchedAt: "2026-08-29T03:00:00Z",
+        },
+        workload: {
+          hubId: "21160000", activeTripCount: 2, activeDriverCount: 2,
+          assignedDeliveryCount: 81, successfulDeliveryCount: 1, pendingDeliveryCount: 80,
+          returnCount: 0, cancelledCount: 0, latestSourceUpdatedAt: "2026-08-29T03:00:00Z",
+          sourceFetchedAt: "2026-08-29T03:00:00Z",
+        },
+      },
+    });
+
+    expect(result.result.evidenceList?.map((item) => item.code)).toEqual(
+      expect.arrayContaining(["SCHEDULED_WORKFORCE", "ACTIVE_DRIVER_COUNT", "ACTIVE_DELIVERY_WORKLOAD"])
+    );
+    expect(result.result.missingData).toEqual(["NO_VEHICLE_GPS_DATA", "NO_ROUTE_CAPACITY_DATA"]);
+    expect(result.result.metadata.operationalEvidence).toEqual({
+      warehouseId: "21160000",
+      ghnHubId: "21160000",
+      sourceFetchedAt: "2026-08-29T03:00:00Z",
+    });
+  });
 });

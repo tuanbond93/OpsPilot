@@ -1,7 +1,12 @@
-import { afterEach, describe, expect, it } from "vitest";
-import { consumeRateLimit, normalizeOpsRole, resetRateLimitsForTests, resolveActor, roleCan, roleFromMetadata, validateMutationRequest } from "../security/api-security";
+import { NextRequest } from "next/server";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { authorizeApiRequest, consumeRateLimit, normalizeOpsRole, resetRateLimitsForTests, resolveActor, roleCan, roleFromMetadata, validateMutationRequest } from "../security/api-security";
 
-afterEach(() => { delete process.env.AUTH_ENFORCEMENT_ENABLED; resetRateLimitsForTests(); });
+afterEach(() => {
+  vi.unstubAllEnvs();
+  delete process.env.AUTH_ENFORCEMENT_ENABLED;
+  resetRateLimitsForTests();
+});
 
 describe("API security policy", () => {
   it("defaults unknown roles to least privilege", () => {
@@ -39,5 +44,30 @@ describe("API security policy", () => {
     expect(validateMutationRequest(oversized).error).toBe("PAYLOAD_TOO_LARGE");
     const crossOrigin = { url: "https://ops.example/api", headers: new Headers({ origin: "https://evil.example" }) };
     expect(validateMutationRequest(crossOrigin).error).toBe("ORIGIN_NOT_ALLOWED");
+  });
+
+  it("fails closed in production when auth enforcement is not enabled", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+    delete process.env.AUTH_ENFORCEMENT_ENABLED;
+    const request = new NextRequest("https://ops.example/api/cron/followup-cycle");
+
+    const result = await authorizeApiRequest(request, "MANAGE_SYSTEM");
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.response.status).toBe(503);
+      await expect(result.response.json()).resolves.toEqual({ error: "AUTH_ENFORCEMENT_REQUIRED" });
+    }
+  });
+
+  it("keeps explicit local test mode available when auth enforcement is disabled", async () => {
+    vi.stubEnv("NODE_ENV", "test");
+    delete process.env.AUTH_ENFORCEMENT_ENABLED;
+    const request = new NextRequest("http://localhost/api/test");
+
+    await expect(authorizeApiRequest(request, "MANAGE_SYSTEM")).resolves.toEqual({
+      ok: true,
+      identity: null,
+    });
   });
 });

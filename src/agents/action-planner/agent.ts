@@ -8,6 +8,7 @@ import type { RootCauseResult } from "../root-cause/schema";
 import type { ApprovedPlaybookGuidance } from "@/services/playbook-guidance";
 import { generate } from "../../ai/provider";
 import { buildPlannerContext, type PlannerContext } from "./context-builder";
+import type { PlannerOperationalEvidence } from "./evidence-builder";
 import { calculateConfidence } from "./confidence-calculator";
 import { calculateNextReview } from "./next-review-calculator";
 import { getBlockedOptions, getAllowedTargetRoles } from "./allowed-actions";
@@ -36,6 +37,7 @@ export interface PlannerAgentParams {
   followupEvents?: FollowupEventRow[];
   actionHistory?: NotificationActionRow[];
   activeExceptions?: OrderExceptionRow[];
+  operationalEvidence?: PlannerOperationalEvidence | null;
   approvedPlaybookGuidance?: ApprovedPlaybookGuidance[];
   options?: ActionPlannerAgentOptions;
   referenceTimeMs?: number;
@@ -50,6 +52,30 @@ export interface PlannerAgentResponse {
 
 export class ActionPlannerAgent {
   constructor(private repository?: IPlannerRepository | null) {}
+
+  private withAuditProvenance(result: PlannerResult, ctx: PlannerContext): PlannerResult {
+    const operationalEvidence = ctx.operationalEvidence
+      ? {
+          warehouseId: ctx.operationalEvidence.warehouseId,
+          ghnHubId: ctx.operationalEvidence.ghnHubId,
+          sourceFetchedAt:
+            ctx.operationalEvidence.staffing?.sourceFetchedAt ||
+            ctx.operationalEvidence.workload?.sourceFetchedAt ||
+            ctx.operationalEvidence.throughput?.sourceFetchedAt ||
+            null,
+        }
+      : undefined;
+
+    return {
+      ...result,
+      evidenceList: ctx.evidenceList.map((item) => ({ ...item })),
+      missingData: [...ctx.missingData],
+      metadata: {
+        ...result.metadata,
+        operationalEvidence,
+      },
+    };
+  }
 
   async analyzeIncident(params: PlannerAgentParams): Promise<PlannerAgentResponse> {
     const refTimeMs = params.referenceTimeMs || Date.now();
@@ -77,7 +103,8 @@ export class ActionPlannerAgent {
       "v1",
       1,
       1,
-      1
+      1,
+      params.operationalEvidence
     );
     // Approved guidance changes the planner context and therefore invalidates a prior cached draft.
     // It remains contextual evidence only; deterministic matcher behaviour is unchanged.
@@ -100,8 +127,18 @@ export class ActionPlannerAgent {
         if (!forceRegenerate) {
           // If status is DRAFT, APPROVED, or REJECTED, return cached run
           if (["DRAFT", "APPROVED", "REJECTED"].includes(existingRun.status)) {
+            const enrichedResult = this.withAuditProvenance(
+              existingRun.result as unknown as PlannerResult,
+              ctx
+            );
+            // Backfill structured audit fields on legacy cached runs so the
+            // database can be inspected without searching arbitrary JSON text.
+            await this.repository.updatePlannerRunResult(
+              existingRun.id,
+              enrichedResult as unknown as Record<string, unknown>
+            );
             return {
-              result: existingRun.result as unknown as PlannerResult,
+              result: enrichedResult,
               context: ctx,
               cached: true,
               runId: existingRun.id,
@@ -221,10 +258,18 @@ export class ActionPlannerAgent {
       usedModel = "none";
     }
 
+    // Keep the API response and persisted JSON identical and audit-friendly.
+    result = this.withAuditProvenance(result, ctx);
+
     // 6. Persist Draft Run if Repository is provided
     let runId: string | undefined;
     if (this.repository) {
       try {
+        const persistedResult: PlannerResult = {
+          ...result,
+          rootCauseSummary: params.rootCauseResult?.summary || undefined,
+          rootCause: params.rootCauseResult ? (params.rootCauseResult as unknown as Record<string, unknown>) : undefined,
+        };
         const createdRun = await this.repository.createPlannerRun({
           incident_id: params.incident.id,
           followup_case_id: params.followupCase?.id || null,
@@ -233,10 +278,14 @@ export class ActionPlannerAgent {
           prompt_version: serializePromptVersion(ctx.promptVersion),
           provider: usedProvider,
           model: usedModel,
-          result: result as unknown as Record<string, unknown>,
+          result: persistedResult as unknown as Record<string, unknown>,
         });
 
         runId = createdRun.id;
+        // A context-identical DRAFT may already exist. Refreshing only its
+        // generated evidence is safe and ensures the persisted planner record
+        // carries the Root Cause provenance required by Level C.
+        await this.repository.updatePlannerRunResult(createdRun.id, persistedResult as unknown as Record<string, unknown>);
 
         await this.repository.insertReviewEvent({
           planner_run_id: createdRun.id,
@@ -447,7 +496,12 @@ export class ActionPlannerAgent {
       priority: ctx.metrics.riskLevel === "critical" ? "high" : "medium",
       targetRole: fallbackRole,
       rationale: "Dựa trên đánh giá rủi ro xác định và xu hướng biến động đơn đọng.",
-      evidenceCodes: ctx.allowedEvidenceCodes.slice(0, 2),
+      evidenceCodes: [
+        "SCHEDULED_WORKFORCE",
+        "ACTIVE_DRIVER_COUNT",
+        "ACTIVE_DELIVERY_WORKLOAD",
+        ...ctx.allowedEvidenceCodes,
+      ].filter((code, index, all) => all.indexOf(code) === index && ctx.allowedEvidenceCodes.includes(code)).slice(0, 3),
       riskImpact: {
         severity: ctx.metrics.riskLevel,
         potentialConsequence: "Đơn hàng có nguy cơ trễ hạn cam kết SLA nếu không có biện pháp hỗ trợ.",

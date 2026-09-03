@@ -7,7 +7,9 @@ import { authorizeLinkedIncidentScope } from "@/security/scope-guard";
 import warehouseAssignments from "@/data/warehouse-assignments.generated.json";
 import { ServiceFactory } from "@/services/ServiceFactory";
 import { NotificationGateway, type DeliveryRequest } from "@/notifications/gateway";
-import { FEATURE_FLAGS } from "@/config/feature-flags";
+import { FEATURE_FLAGS, isPrivateRoutingEnabled } from "@/config/feature-flags";
+import { getProvinceCode } from "@/config/pilot-provinces";
+import { resolveAuthorizedRecipients, resolveProvince } from "@/notifications/gateway/scope-resolver";
 
 type PilotMember = { id: string; group_id: string; display_name: string; username: string | null; warehouse_name: string | null; warehouse_names: unknown; zone_names: unknown };
 type Group = { id: string; telegram_chat_id: string; title: string };
@@ -45,7 +47,16 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     ]);
     if (membersError || groupsError || historyError) throw membersError || groupsError || historyError;
     const groupById = new Map((groups || []).map((group: Group) => [group.id, group]));
-    const recipients = ((members || []) as PilotMember[]).filter((member) => isEligible(member, warehouseName) && groupById.has(member.group_id));
+    const province = resolveProvince({ warehouse: warehouseName });
+    const privateRouting = isPrivateRoutingEnabled(getProvinceCode(province));
+    const scopeRecipients = privateRouting
+      ? await resolveAuthorizedRecipients(client, { warehouse: warehouseName })
+      : null;
+    if (scopeRecipients?.quarantine) return NextResponse.json({ error: "TELEGRAM_SCOPE_QUARANTINE", message: scopeRecipients.quarantineReason || "Không thể xác định phạm vi nhận Telegram." }, { status: 409 });
+    const scopedMemberIds = new Set(scopeRecipients?.employees.map((member) => member.memberId) || []);
+    const recipients = ((members || []) as PilotMember[]).filter((member) =>
+      groupById.has(member.group_id) && (privateRouting ? scopedMemberIds.has(member.id) : isEligible(member, warehouseName)),
+    );
     const groupIds = [...new Set(recipients.map((member) => member.group_id))];
     if (!recipients.length) return NextResponse.json({ error: "TELEGRAM_RECIPIENT_NOT_MAPPED", message: "Chưa có nhân sự Telegram đang kích hoạt được map với kho hoặc vùng của case này." }, { status: 409 });
     if (groupIds.length !== 1) return NextResponse.json({ error: "TELEGRAM_ONE_GROUP_REQUIRED", message: "Case này có người nhận ở nhiều group. Hãy để một group pilot trước khi gửi thử." }, { status: 409 });

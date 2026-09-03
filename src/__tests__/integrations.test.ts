@@ -119,6 +119,17 @@ describe("Sprint 8.1 — Production Integration Layer Tests", () => {
     expect(callCount).toBe(2);
   });
 
+  it("4b. TelegramClient is healthy with a bot token when pilot chats are mapped dynamically", async () => {
+    vi.stubEnv("TELEGRAM_BOT_TOKEN", "mock-token");
+    vi.stubEnv("TELEGRAM_CHAT_ID", "");
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true }));
+
+    const health = await new TelegramClient().health();
+
+    expect(health.status).toBe("GREEN");
+    expect(health.healthReason).toContain("mapped pilot groups");
+  });
+
   it("5. RillnetClient handles network retries and timeout", async () => {
     vi.stubEnv("RILLNET_TIMEOUT_MS", "10");
     vi.stubEnv("RILLNET_MAX_RETRIES", "2");

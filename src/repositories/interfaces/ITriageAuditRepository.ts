@@ -13,6 +13,7 @@ export type TriageAuditInsert = {
 };
 
 export type TriageAuditRecord = TriageAuditInsert & {
+  id: string;
   createdAt: string;
 };
 

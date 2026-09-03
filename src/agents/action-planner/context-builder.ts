@@ -8,7 +8,7 @@ import type {
 } from "@/connectors/supabase";
 import type { NotificationActionRow } from "../../engine/action-queue";
 import type { RootCauseResult } from "../root-cause/schema";
-import { buildPlannerEvidence, type EvidenceItem } from "./evidence-builder";
+import { buildPlannerEvidence, type EvidenceItem, type PlannerOperationalEvidence } from "./evidence-builder";
 import {
   getAllowedRecommendationTypes,
   getAllowedTargetRoles,
@@ -50,6 +50,7 @@ export interface PlannerContext {
   plannerPolicyVersion: number;
   rolePolicyVersion: number;
   actionPolicyVersion: number;
+  operationalEvidence?: PlannerOperationalEvidence | null;
 }
 
 /**
@@ -83,7 +84,8 @@ export function computeCanonicalContextHash(
   plannerPolicyVersion: string = 'v1',
   rolePolicyVersion: string = 'v1',
   actionPolicyVersion: string = 'v1',
-  rootCausePromptVersion: string = 'v1'
+  rootCausePromptVersion: string = 'v1',
+  operationalEvidence?: PlannerOperationalEvidence | null
 ): string {
   const latestHistory = historyRows[0];
   let previousCount = latestHistory ? latestHistory.affected_order_count : 0;
@@ -158,6 +160,35 @@ export function computeCanonicalContextHash(
     plannerPolicyVersion,
     rolePolicyVersion,
     actionPolicyVersion,
+    operationalEvidence: operationalEvidence ? {
+      warehouseId: operationalEvidence.warehouseId,
+      ghnHubId: operationalEvidence.ghnHubId,
+      staffing: operationalEvidence.staffing ? {
+        hubId: operationalEvidence.staffing.hubId,
+        scheduleDate: operationalEvidence.staffing.scheduleDate,
+        currentlyScheduledWorkforceCount: operationalEvidence.staffing.currentlyScheduledWorkforceCount,
+        onLeaveCount: operationalEvidence.staffing.onLeaveCount,
+        activeDriverCount: operationalEvidence.staffing.activeDriverCount,
+        scheduledActiveDriverCount: operationalEvidence.staffing.scheduledActiveDriverCount,
+        sourceFetchedAt: operationalEvidence.staffing.sourceFetchedAt,
+      } : null,
+      workload: operationalEvidence.workload ? {
+        hubId: operationalEvidence.workload.hubId,
+        activeTripCount: operationalEvidence.workload.activeTripCount,
+        assignedDeliveryCount: operationalEvidence.workload.assignedDeliveryCount,
+        successfulDeliveryCount: operationalEvidence.workload.successfulDeliveryCount,
+        pendingDeliveryCount: operationalEvidence.workload.pendingDeliveryCount,
+        sourceFetchedAt: operationalEvidence.workload.sourceFetchedAt,
+      } : null,
+      throughput: operationalEvidence.throughput ? {
+        hubId: operationalEvidence.throughput.hubId,
+        sufficientHubSample: operationalEvidence.throughput.sufficientHubSample,
+        hubP50DeliveriesPerHour: operationalEvidence.throughput.hubP50DeliveriesPerHour,
+        hubP75DeliveriesPerHour: operationalEvidence.throughput.hubP75DeliveriesPerHour,
+        paceRatio: operationalEvidence.throughput.paceRatio,
+        sourceFetchedAt: operationalEvidence.throughput.sourceFetchedAt,
+      } : null,
+    } : null,
   };
 
   const canonicalJson = stringifyCanonical(canonicalPayload);
@@ -176,7 +207,8 @@ export function buildPlannerContext(
   promptVersion: string = 'v1',
   plannerPolicyVersion: number = 1,
   rolePolicyVersion: number = 1,
-  actionPolicyVersion: number = 1
+  actionPolicyVersion: number = 1,
+  operationalEvidence?: PlannerOperationalEvidence | null
 ): PlannerContext {
   const firstDetectedMs = new Date(incident.first_detected_at).getTime();
   const lastDetectedMs = new Date(incident.last_detected_at).getTime();
@@ -217,7 +249,9 @@ export function buildPlannerContext(
     historyRows,
     rootCauseResult,
     followupCase,
-    activeExceptions
+    activeExceptions,
+    operationalEvidence,
+    referenceTimeMs
   );
 
   const followupState = followupCase ? followupCase.current_state : null;
@@ -252,7 +286,9 @@ export function buildPlannerContext(
     promptVersion,
     plannerPolicyVersion.toString(),
     rolePolicyVersion.toString(),
-    actionPolicyVersion.toString()
+    actionPolicyVersion.toString(),
+    'v1',
+    operationalEvidence
   );
 
   return {
@@ -283,5 +319,6 @@ export function buildPlannerContext(
     plannerPolicyVersion,
     rolePolicyVersion,
     actionPolicyVersion,
+    operationalEvidence,
   };
 }

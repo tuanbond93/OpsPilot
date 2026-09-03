@@ -58,6 +58,9 @@ import { MockExecutionWorkOrderRepository } from "./mock/MockExecutionWorkOrderR
 import type { ITriageAuditRepository } from "./interfaces/ITriageAuditRepository";
 import { SupabaseTriageAuditRepository } from "./supabase/SupabaseTriageAuditRepository";
 import { MockTriageAuditRepository } from "./mock/MockTriageAuditRepository";
+import type { IPlaybookDirectiveRepository } from "./interfaces/IPlaybookDirectiveRepository";
+import { SupabasePlaybookDirectiveRepository } from "./supabase/SupabasePlaybookDirectiveRepository";
+import { MockPlaybookDirectiveRepository } from "./mock/MockPlaybookDirectiveRepository";
 
 export class RepositoryFactory {
   private static incidentRepo: IIncidentRepository | null = null;
@@ -76,6 +79,7 @@ export class RepositoryFactory {
   private static decisionRepo: IDecisionRepository | null = null;
   private static executionWorkOrderRepo: IExecutionWorkOrderRepository | null = null;
   private static triageAuditRepo: ITriageAuditRepository | null = null;
+  private static playbookDirectiveRepo: IPlaybookDirectiveRepository | null = null;
 
   static registerDecisionRepository(repo: IDecisionRepository): void {
     this.decisionRepo = repo;
@@ -137,6 +141,9 @@ export class RepositoryFactory {
 
   static registerTriageAuditRepository(repo: ITriageAuditRepository): void {
     this.triageAuditRepo = repo;
+  }
+  static registerPlaybookDirectiveRepository(repo: IPlaybookDirectiveRepository): void {
+    this.playbookDirectiveRepo = repo;
   }
 
   // Resolvers
@@ -349,6 +356,15 @@ export class RepositoryFactory {
     return this.triageAuditRepo;
   }
 
+  static getPlaybookDirectiveRepository(client?: SupabaseClient): IPlaybookDirectiveRepository {
+    if (client) return new SupabasePlaybookDirectiveRepository(client);
+    if (this.playbookDirectiveRepo) return this.playbookDirectiveRepo;
+    this.playbookDirectiveRepo = this.shouldProvideMock()
+      ? new MockPlaybookDirectiveRepository()
+      : new SupabasePlaybookDirectiveRepository(createAdminClient());
+    return this.playbookDirectiveRepo;
+  }
+
   static clear(): void {
     this.incidentRepo = null;
     this.aiJobRepo = null;
@@ -366,5 +382,6 @@ export class RepositoryFactory {
     this.decisionRepo = null;
     this.executionWorkOrderRepo = null;
     this.triageAuditRepo = null;
+    this.playbookDirectiveRepo = null;
   }
 }

@@ -10,6 +10,8 @@ describe("IncidentRepository Refactor Tests", () => {
     RepositoryFactory.clear();
     vi.stubEnv("ALLOW_IN_MEMORY_FALLBACK", "true");
     vi.stubEnv("NODE_ENV", "test");
+    vi.stubEnv("NEXT_PUBLIC_SUPABASE_URL", "https://example.supabase.co");
+    vi.stubEnv("SUPABASE_SERVICE_ROLE_KEY", "test-service-role-key");
   });
 
   it("RepositoryFactory resolves MockIncidentRepository in test/fallback context", () => {

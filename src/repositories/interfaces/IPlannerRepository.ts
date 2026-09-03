@@ -15,6 +15,7 @@ export interface IPlannerRepository {
     reviewedBy?: string,
     reviewedAt?: string
   ): Promise<PlannerRunRow | null>;
+  updatePlannerRunResult(id: string, result: Record<string, unknown>): Promise<PlannerRunRow | null>;
   getAllPlannerRuns(incidentId?: string, limit?: number): Promise<PlannerRunRow[]>;
   getLatestPlannerRunByIncidentId(incidentId: string): Promise<PlannerRunRow | null>;
   insertReviewEvent(event: Partial<PlannerReviewEventRow>): Promise<PlannerReviewEventRow>;

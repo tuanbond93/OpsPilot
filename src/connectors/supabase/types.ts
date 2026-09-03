@@ -117,6 +117,7 @@ export type FollowupState =
   | "THIRD_PUSH_SENT"
   | "ESCALATION_PENDING"
   | "ESCALATED"
+  | "RILLNET_CHANGE_PAUSED"
   | "RESOLVED"
   | "CLOSED";
 
@@ -136,7 +137,9 @@ export type FollowupEventType =
   | "ESCALATION_CONFIRMED"
   | "INCIDENT_RESOLVED"
   | "CASE_CLOSED"
-  | "CASE_REOPENED";
+  | "CASE_REOPENED"
+  | "RILLNET_STATUS_CHANGED"
+  | "FOLLOWUP_RESUMED";
 
 export interface FollowupCaseRow {
   id: string;
@@ -154,6 +157,15 @@ export interface FollowupCaseRow {
   latest_affected_order_count: number;
   current_progress_percent: number;
   current_assessment: ProgressAssessment;
+  current_rillnet_status_signature?: string;
+  last_action_rillnet_status_signature?: string | null;
+  rillnet_change_summary?: string | null;
+  rillnet_changed_at?: string | null;
+  rillnet_review_before_signature?: string | null;
+  rillnet_review_after_signature?: string | null;
+  rillnet_review_detected_at?: string | null;
+  rillnet_review_snapshot_id?: string | null;
+  rillnet_review_order_codes?: string[] | null;
   created_at?: string;
   updated_at?: string;
 }

@@ -89,6 +89,23 @@ export class MockAiJobRepository implements IAiJobRepository {
     return candidate;
   }
 
+  async claimPendingJobForIncident(workerId: string, incidentId: string, lockTimeoutMs: number = 300000): Promise<AiAnalysisJobRow | null> {
+    const nowIso = new Date().toISOString();
+    const staleLockThreshold = new Date(Date.now() - lockTimeoutMs).toISOString();
+    const candidate = this.inMemoryJobs.find((job) =>
+      job.incident_id === incidentId &&
+      (job.status === "PENDING" || (job.status === "PROCESSING" && job.locked_at && job.locked_at < staleLockThreshold)) &&
+      job.scheduled_at <= nowIso
+    );
+    if (!candidate) return null;
+    candidate.status = "PROCESSING";
+    candidate.worker_id = workerId;
+    candidate.locked_at = nowIso;
+    candidate.started_at = candidate.started_at || nowIso;
+    candidate.updated_at = nowIso;
+    return candidate;
+  }
+
   async markJobCompleted(jobId: string): Promise<AiAnalysisJobRow | null> {
     const nowIso = new Date().toISOString();
     const job = this.inMemoryJobs.find((j) => j.id === jobId);

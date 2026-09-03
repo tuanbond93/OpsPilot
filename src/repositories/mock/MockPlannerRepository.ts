@@ -106,6 +106,13 @@ export class MockPlannerRepository implements IPlannerRepository {
     return run;
   }
 
+  async updatePlannerRunResult(id: string, result: Record<string, unknown>): Promise<PlannerRunRow | null> {
+    const run = this.inMemoryRuns.find((item) => item.id === id);
+    if (!run) return null;
+    run.result = result;
+    return run;
+  }
+
   async getAllPlannerRuns(incidentId?: string, limit: number = 50): Promise<PlannerRunRow[]> {
     let filtered = [...this.inMemoryRuns];
     if (incidentId) {

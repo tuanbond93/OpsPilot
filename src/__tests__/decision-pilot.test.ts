@@ -10,7 +10,7 @@ function repos() {
   const incidentRepo = { getIncidentById: async () => incident } as any;
   const historyRepo = { getIncidentHistory: async () => history } as any;
   const followupRepo = { getCaseById: async () => ({ id: "followup-1", incident_id: "incident-1", current_state: "FOLLOWING_UP" }) } as any;
-  const plannerRepo = { getLatestPlannerRunByIncidentId: async () => ({ id: "planner-1", result: { confidence: { score: 88 }, recommendations: [
+  const plannerRepo = { getLatestPlannerRunByIncidentId: async () => ({ id: "planner-1", result: { rootCauseSummary: "Persisted operational root cause", confidence: { score: 88 }, recommendations: [
     { id: "review-staffing", type: "REVIEW_ASSIGNMENT", title: "Review staffing", description: "Review staffing", priority: "high", targetRole: "WAREHOUSE_MANAGER", rationale: "Backlog is high", evidenceCodes: ["ORD-1"], riskImpact: { severity: "high", potentialConsequence: "SLA breach" }, prerequisiteData: [], manualApprovalRequired: true },
     { id: "monitor", type: "CONTINUE_MONITORING", title: "Continue monitoring", description: "Continue monitoring", priority: "low", targetRole: "OPERATIONS_LEAD", rationale: "Keep observing", evidenceCodes: [], riskImpact: { severity: "low", potentialConsequence: "Delayed response" }, prerequisiteData: [], manualApprovalRequired: true },
   ], investigations: [], limitations: [] } }) } as any;
@@ -47,6 +47,19 @@ describe("Decision pilot adapter", () => {
     expect(await repository.list()).toHaveLength(1);
   });
 
+  it("hands only a gated SHADOW decision to the separate Telegram request port", async () => {
+    const repository = new MockDecisionRepository();
+    const { incidentRepo, historyRepo, followupRepo, plannerRepo } = repos();
+    const requests: any[] = [];
+    const requestService = { createAndDispatch: async (decision: any, triageAuditId: any, actor: string) => { requests.push({ decision, triageAuditId, actor }); } } as any;
+    const service = new DecisionPilotService(incidentRepo, historyRepo, followupRepo, plannerRepo, new DecisionService(repository), undefined, requestService);
+    const result = await service.createShadowFromIncident({ incidentId: "incident-1", actor: "pilot" });
+    expect(result.ok).toBe(true);
+    expect(requests).toHaveLength(1);
+    expect(requests[0].decision.mode).toBe("SHADOW");
+    expect(requests[0].decision.sourceLinks.criticVerdict).toBe("PASS");
+  });
+
   it("resolves follow-up context by incident key and snapshots the newest history row", async () => {
     const repository = new MockDecisionRepository();
     const { incidentRepo, plannerRepo } = repos();
@@ -68,21 +81,16 @@ describe("Decision pilot adapter", () => {
     expect((result.data as any).evidence.operationalFacts.capturedAt).toEqual(expect.any(String));
   });
 
-  it("fails safe to human investigation when the critic rejects a selected option", async () => {
+  it("does not create a decision when the critic rejects a selected option", async () => {
     const repository = new MockDecisionRepository();
     const { incidentRepo, historyRepo, followupRepo } = repos();
-    const plannerRepo = { getLatestPlannerRunByIncidentId: async () => ({ id: "planner-unsafe", result: { confidence: { score: 30 }, recommendations: [
+    const plannerRepo = { getLatestPlannerRunByIncidentId: async () => ({ id: "planner-unsafe", result: { rootCauseSummary: "Persisted root cause", confidence: { score: 30 }, recommendations: [
       { id: "unsafe", type: "PREPARE_ESCALATION", title: "Escalate", description: "Escalate now", priority: "high", targetRole: "WAREHOUSE_MANAGER", rationale: "Potential delay", evidenceCodes: [], riskImpact: { severity: "critical", potentialConsequence: "SLA breach" }, prerequisiteData: ["Confirm staffing"], manualApprovalRequired: true },
     ], investigations: [], limitations: ["Evidence unavailable"] } }) } as any;
     const service = new DecisionPilotService(incidentRepo, historyRepo, followupRepo, plannerRepo, new DecisionService(repository));
     const result = await service.createShadowFromIncident({ incidentId: "incident-1", actor: "pilot" });
-    expect(result.ok).toBe(true);
-    expect((result.data as any).recommendedAction).toMatch(/Verify the missing evidence/i);
-    expect((result.data as any).alternatives).toEqual([]);
-    expect((result.data as any).evidence.actionContext.disposition).toBe("HUMAN_INVESTIGATION_REQUIRED");
-    expect((result.data as any).evidence.actionContext.selectedOptionId).toBeNull();
-    expect((result.data as any).evidence.actionContext.decisionCritic.reasonCodes).toEqual([
-      "EVIDENCE_MISSING", "CONFIDENCE_BELOW_THRESHOLD", "HIGH_RISK_PREREQUISITE_UNRESOLVED",
-    ]);
+    expect(result.ok).toBe(false);
+    expect(result.error).toBe("DECISION_CRITIC_GATE_BLOCKED");
+    expect(await repository.list()).toHaveLength(0);
   });
 });

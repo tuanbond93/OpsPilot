@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
-import { Activity, Bell, BellRing, BookOpen, CheckSquare2, ChevronDown, Gauge, ListChecks, Menu, Scale, Settings, ShieldCheck, Truck, UserRound, UsersRound, X } from "lucide-react";
+import { Activity, Bell, BellRing, CheckSquare2, ChevronDown, Gauge, ListChecks, Menu, Scale, Settings, ShieldCheck, Truck, UserRound, UsersRound, X } from "lucide-react";
 import { useOpsSession } from "@/app/_components/useOpsSession";
 
 const items = [
@@ -15,7 +15,6 @@ const items = [
   { href: "/b2b-consolidation", label: "Ghép chuyến B2B", icon: Truck, mobile: false },
   { href: "/notifications", label: "Thông báo", icon: Bell, mobile: false },
   { href: "/pilot-quality", label: "Chất lượng Pilot", icon: ShieldCheck, mobile: false },
-  { href: "/guide", label: "Hướng dẫn", icon: BookOpen, mobile: false },
   { href: "/account", label: "Tài khoản", icon: UserRound, mobile: false },
   { href: "/admin/users", label: "Quản trị", icon: Settings, mobile: false, adminOnly: true },
   { href: "/admin/telegram-pilot", label: "Telegram Pilot", icon: UsersRound, mobile: false, adminOnly: true },
@@ -48,7 +47,7 @@ export function OperationsNav() {
   const visibleItems = items.filter((item) => !("adminOnly" in item && item.adminOnly) || role === "ADMIN");
   const primary = visibleItems.filter((item) => item.mobile);
   const desktopPrimary = visibleItems.filter((item) => ["/dashboard", "/incidents", "/reviews", "/decisions", "/followups"].includes(item.href));
-  const desktopTools = visibleItems.filter((item) => ["/b2b-consolidation", "/pilot-quality", "/guide", "/admin/users", "/admin/telegram-pilot", "/telegram-work-orders"].includes(item.href));
+  const desktopTools = visibleItems.filter((item) => ["/b2b-consolidation", "/pilot-quality", "/admin/users", "/admin/telegram-pilot", "/telegram-work-orders"].includes(item.href));
   const toolsActive = desktopTools.some((item) => active(item.href));
   const accountPage = pathname.startsWith("/account");
 

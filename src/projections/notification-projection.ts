@@ -12,6 +12,19 @@ export interface NotificationSummaryDto {
   last_delivery: string | null; // Timestamp
 }
 
+export function summarizeNotificationActions(actions: Array<{ status?: string | null; outcome?: string | null }>) {
+  const summary = { pending: 0, sent: 0, failed: 0, retry: 0 };
+  for (const action of actions) {
+    const status = action.status || "PENDING";
+    const outcome = action.outcome || null;
+    if (outcome === "DELIVERED" || status === "SENT") summary.sent++;
+    else if (status === "PENDING" || status === "PROCESSING") summary.pending++;
+    else if (status === "FAILED" || outcome === "FAILED") summary.failed++;
+    else if (status === "RETRY") summary.retry++;
+  }
+  return summary;
+}
+
 /**
  * Builds and applies the Notification Projection read model.
  */
@@ -38,7 +51,7 @@ export async function projectNotification(client: SupabaseClient): Promise<Proje
     // 2. Query ALL notification actions (no sync_run filter)
     const { data: notificationActions, error: notificationActionsError } = await client
       .from("notification_actions")
-      .select("id, target_id, status, provider, provider_response, processed_at, payload, created_at");
+      .select("id, target_id, status, outcome, provider, provider_response, processed_at, payload, created_at");
 
     if (notificationActionsError) {
       throw new Error(`Notification actions query failed: ${notificationActionsError.message}`);
@@ -93,18 +106,13 @@ export async function projectNotification(client: SupabaseClient): Promise<Proje
       let simulation = false;
       let lastDelivery: string | null = null;
 
-      for (const action of actions) {
-        const status = action.status || "PENDING";
-        if (status === "PENDING" || status === "PROCESSING") {
-          pending++;
-        } else if (status === "SENT") {
-          sent++;
-        } else if (status === "FAILED" || status === "CANCELLED" || status === "EXPIRED") {
-          failed++;
-        } else if (status === "RETRY") {
-          retry++;
-        }
+      const deliverySummary = summarizeNotificationActions(actions);
+      pending = deliverySummary.pending;
+      sent = deliverySummary.sent;
+      failed = deliverySummary.failed;
+      retry = deliverySummary.retry;
 
+      for (const action of actions) {
         // Determine if simulation is true
         if (
           action.status === "SIMULATED" ||

@@ -87,6 +87,10 @@ export interface DecisionSourceLinks {
   followupCaseId?: string;
   actionId?: string;
   plannerRunId?: string;
+  /** Persisted LC-C1 routing/critic provenance; never an execution approval. */
+  triageRoute?: string;
+  criticVerdict?: string;
+  promotedFromDecisionId?: string;
   sourceType: string;
   sourceId: string;
 }

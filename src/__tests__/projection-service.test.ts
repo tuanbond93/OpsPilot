@@ -7,6 +7,7 @@ import type { IIncidentProjection } from "@/projections/interfaces/IIncidentProj
 import type { IPlannerProjection } from "@/projections/interfaces/IPlannerProjection";
 import type { INotificationProjection } from "@/projections/interfaces/INotificationProjection";
 import type { IProjectionRunRepository } from "@/repositories/interfaces/IProjectionRunRepository";
+import * as supabaseConnector from "@/connectors/supabase";
 
 describe("Sprint 8.10 Hardening — ProjectionService Architecture & Injection Tests", () => {
   beforeEach(() => {
@@ -50,6 +51,7 @@ describe("Sprint 8.10 Hardening — ProjectionService Architecture & Injection T
   });
 
   it("3. ProjectionEngine delegates to ProjectionService via ServiceFactory", async () => {
+    vi.spyOn(supabaseConnector, "createAdminClient").mockReturnValue({} as any);
     const refreshSpy = vi.fn().mockResolvedValue(undefined);
     const mockService = { refreshProjections: refreshSpy } as any;
     vi.spyOn(ServiceFactory, "getProjectionService").mockReturnValue(mockService);

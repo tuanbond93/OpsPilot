@@ -277,9 +277,8 @@ export default function ActionPlannerPage() {
           )}
         </div>
         <h1 className="text-3xl font-extrabold text-slate-100">Action Planner dựa trên bằng chứng</h1>
-        <p className="text-sm text-slate-400">
-          Lập kế hoạch hành động vận hành dựa trên bằng chứng xác thực và kiểm soát phê duyệt thủ công
-        </p>
+        <p className="text-sm text-slate-400">AI đề xuất hành động từ bằng chứng đã kiểm chứng; không tự thực thi.</p>
+        <p className="mt-2 text-sm font-semibold text-cyan-200">Việc cần làm: chọn sự cố, tạo kế hoạch, kiểm tra bằng chứng rồi phê duyệt hoặc từ chối.</p>
       </header>
 
       {/* Incident Selection Form */}

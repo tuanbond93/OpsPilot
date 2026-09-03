@@ -31,6 +31,13 @@ export type PilotOutcome = {
   measuredAt: string;
 };
 
+/** An LC-06 verifier record, distinct from an operator-observed outcome. */
+export type PilotVerifiedOutcome = {
+  decisionId: string;
+  classification: string;
+  verifiedAt: string;
+};
+
 export type PilotQualitySnapshot = ReturnType<typeof buildPilotQualitySnapshot>;
 
 function countBy<T>(items: T[], key: (item: T) => string) {
@@ -55,6 +62,7 @@ export function buildPilotQualitySnapshot(input: {
   reviews: PilotReview[];
   decisions: PilotDecision[];
   outcomes: PilotOutcome[];
+  verifiedOutcomes?: PilotVerifiedOutcome[];
   authEnforced?: boolean;
   generatedAt?: string;
 }) {
@@ -63,6 +71,7 @@ export function buildPilotQualitySnapshot(input: {
   );
   const rated = reviewed.filter((review) => review.rating !== null);
   const decisionsWithOutcome = new Set(input.outcomes.map((outcome) => outcome.decisionId));
+  const decisionsWithVerifiedOutcome = new Set((input.verifiedOutcomes || []).map((outcome) => outcome.decisionId));
   const resolvedFeedback = input.feedback.filter((item) => item.currentStatus === "RESOLVED").length;
   const verifiedWarehouses = new Set(input.verifications.map((item) => item.warehouseName));
   const activity = [
@@ -112,11 +121,17 @@ export function buildPilotQualitySnapshot(input: {
       shadow: input.decisions.filter((item) => item.mode === "SHADOW").length,
       humanApproval: input.decisions.filter((item) => item.mode === "HUMAN_APPROVAL").length,
       withOutcome: decisionsWithOutcome.size,
+      withVerifiedOutcome: decisionsWithVerifiedOutcome.size,
       outcomeCoverage:
         input.decisions.length > 0
           ? Number((decisionsWithOutcome.size / input.decisions.length).toFixed(4))
           : null,
       outcomes: countBy(input.outcomes, (item) => item.status),
+      verifiedOutcomes: countBy(input.verifiedOutcomes || [], (item) => item.classification),
+      verifiedOutcomeCoverage:
+        input.decisions.length > 0
+          ? Number((decisionsWithVerifiedOutcome.size / input.decisions.length).toFixed(4))
+          : null,
     },
     activityTrend: activityDates.map((date) => ({
       date,
@@ -146,9 +161,9 @@ export function buildPilotQualitySnapshot(input: {
       },
       {
         key: "decision_outcome",
-        label: "Decision có outcome quan sát thực tế",
-        state: decisionsWithOutcome.size > 0 ? "HAS_EVIDENCE" : "NO_EVIDENCE",
-        evidence: `${decisionsWithOutcome.size}/${input.decisions.length} Decision có outcome`,
+        label: "Decision có outcome đã được xác thực",
+        state: decisionsWithVerifiedOutcome.size > 0 ? "HAS_EVIDENCE" : "NO_EVIDENCE",
+        evidence: `${decisionsWithVerifiedOutcome.size}/${input.decisions.length} Decision có outcome qua LC-06 verifier; outcome tự ghi không được tính là verified`,
       },
       {
         key: "identity_rbac",

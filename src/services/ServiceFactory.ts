@@ -41,6 +41,7 @@ import { DecisionService } from './impl/DecisionService';
 import type { IDecisionPilotService } from './interfaces/IDecisionPilotService';
 import { DecisionPilotService } from './impl/DecisionPilotService';
 import { ExecutionWorkOrderService } from "./impl/ExecutionWorkOrderService";
+import { DecisionTelegramRequestService } from "./decision-telegram-shadow";
 
 export class ServiceFactory {
   public static getDecisionService(client?: SupabaseClient): IDecisionService {
@@ -53,7 +54,9 @@ export class ServiceFactory {
       RepositoryFactory.getIncidentHistoryRepository(client),
       RepositoryFactory.getFollowupRepository(client),
       RepositoryFactory.getPlannerRepository(client),
-      this.getDecisionService(client)
+      this.getDecisionService(client),
+      RepositoryFactory.getTriageAuditRepository(client),
+      client ? new DecisionTelegramRequestService(client) : undefined
     );
   }
   public static getExecutionWorkOrderService(client?: SupabaseClient): ExecutionWorkOrderService {
@@ -97,6 +100,7 @@ export class ServiceFactory {
     const actionQueue = new ActionQueue(client);
     const syncLockRepo = RepositoryFactory.getSyncLockRepository(client);
     const triageAuditRepo = RepositoryFactory.getTriageAuditRepository(client);
+    const playbookDirectiveRepo = RepositoryFactory.getPlaybookDirectiveRepository(client);
 
     return new SyncService(
       syncRunRepo,
@@ -108,7 +112,8 @@ export class ServiceFactory {
       aiJobRepo,
       actionQueue,
       syncLockRepo,
-      triageAuditRepo
+      triageAuditRepo,
+      playbookDirectiveRepo
     );
   }
   public static getPlannerService(client?: SupabaseClient): IPlannerService {
@@ -159,7 +164,8 @@ export class ServiceFactory {
       plannerRepo,
       exceptionRepo,
       rootCauseAgent,
-      actionPlannerAgent
+      actionPlannerAgent,
+      this.getDecisionPilotService(client)
     );
   }
   

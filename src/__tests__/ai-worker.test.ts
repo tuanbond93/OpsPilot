@@ -136,13 +136,14 @@ describe("Sprint 6.5 — AI Background Worker Tests", () => {
 
   it("6. Architecture Validation: delegates to AiWorkerService via ServiceFactory", async () => {
     const worker = new AiAnalysisWorker();
-    const getAiWorkerServiceSpy = vi.spyOn(ServiceFactory, 'getAiWorkerService');
-    
-    // Attempt processing (it will mock or fail, doesn't matter for architecture spy)
+    vi.spyOn(supabaseConnector, "createAdminClient").mockReturnValue({} as any);
+    const getAiWorkerServiceSpy = vi.spyOn(ServiceFactory, "getAiWorkerService").mockReturnValue({
+      processPendingJobs: vi.fn().mockResolvedValue({ processedCount: 0 }),
+    } as any);
+
     await worker.processPendingJobs("test-arch-worker", 1);
-    
+
     expect(getAiWorkerServiceSpy).toHaveBeenCalled();
-    getAiWorkerServiceSpy.mockRestore();
   });
 
 });

@@ -12,6 +12,19 @@ const assignmentByName = new Map(assignments.map((item) => [item.warehouseName, 
 
 export const dynamic = "force-dynamic";
 
+function readableError(error: unknown) {
+  const candidate = error instanceof Error
+    ? error.message
+    : error && typeof error === "object" && "message" in error
+      ? (error as { message?: unknown }).message
+      : error && typeof error === "object" && "error" in error
+        ? (error as { error?: unknown }).error
+        : null;
+  return typeof candidate === "string" && candidate.trim() && candidate !== "[object Object]"
+    ? candidate
+    : "Không thể tải dữ liệu follow-up từ database. Vui lòng thử lại hoặc kiểm tra kết nối Supabase.";
+}
+
 export async function GET(request: NextRequest) {
   const auth = await authorizeApiRequest(request, "VIEW_SYSTEM");
   if (!auth.ok) return auth.response;
@@ -59,6 +72,38 @@ export async function GET(request: NextRequest) {
       });
     if (!cases.length) return NextResponse.json({ ...result, totalCases: 0, cases });
 
+    // A follow-up is actionable only when the operator can see the concrete
+    // orders behind it.  The latest incident history is the evidence snapshot
+    // that owns those sample order codes (not the historical follow-up
+    // payload, which can be stale after a source sync).
+    const incidentIds = new Set<string>(cases.map((item: any) => incidentByKey.get(item.incident_key)?.id).filter((id: unknown): id is string => typeof id === "string"));
+    const sampleOrderCodesByIncident = new Map<string, string[]>();
+    if (incidentIds.size) {
+      const { data: histories, error: historyError } = await dbClient
+        .from("incident_history")
+        .select("incident_id, sample_order_codes, recorded_at")
+        .order("recorded_at", { ascending: false })
+        .limit(2000);
+      if (historyError) {
+        return NextResponse.json({ ...result, totalCases: cases.length, cases, enrichmentWarning: "ORDER_SAMPLES_UNAVAILABLE" });
+      }
+      for (const history of histories || []) {
+        if (!incidentIds.has(history.incident_id)) continue;
+        if (sampleOrderCodesByIncident.has(history.incident_id)) continue;
+        const codes = Array.isArray(history.sample_order_codes)
+          ? history.sample_order_codes.filter((code: unknown): code is string => typeof code === "string" && code.trim().length > 0)
+          : [];
+        sampleOrderCodesByIncident.set(history.incident_id, codes);
+      }
+    }
+    const casesWithOrderCodes = cases.map((item: any) => {
+      const incident = incidentByKey.get(item.incident_key);
+      return {
+        ...item,
+        sample_order_codes: incident?.id ? sampleOrderCodesByIncident.get(incident.id) || [] : [],
+      };
+    });
+
     // Telegram replies are immutable reminder events.  Surface them beside the
     // relevant follow-up case so a manager does not have to inspect Telegram
     // itself to understand the latest explanation or support request.
@@ -66,25 +111,35 @@ export async function GET(request: NextRequest) {
       .from("telegram_followup_reminders")
       .select("id, followup_case_id, group_id, telegram_message_id")
       .eq("status", "SENT");
-    if (reminderError) throw reminderError;
+    // Telegram is supporting evidence, not the source of truth for follow-up.
+    // A missing migration or a transient Telegram-audit query must not make
+    // the entire operational follow-up screen unavailable.
+    if (reminderError) {
+      return NextResponse.json({ ...result, totalCases: casesWithOrderCodes.length, cases: casesWithOrderCodes, enrichmentWarning: "TELEGRAM_REMINDERS_UNAVAILABLE" });
+    }
 
-    const visibleCaseIds = new Set(cases.map((item) => item.id));
+    const visibleCaseIds = new Set(casesWithOrderCodes.map((item) => item.id));
     const reminderRows = ((reminders || []) as Array<{ id: string; followup_case_id: string; group_id: string; telegram_message_id: number | null }>)
       .filter((row) => visibleCaseIds.has(row.followup_case_id));
-    const reminderIds = reminderRows.map((row) => row.id);
-    if (!reminderIds.length) return NextResponse.json({ ...result, totalCases: cases.length, cases });
-
-    const [eventsResult, membersResult, allSentResult] = await Promise.all([
-      dbClient.from("telegram_followup_reminder_events").select("id, reminder_id, event_type, actor, metadata, occurred_at").in("reminder_id", reminderIds).in("event_type", ["FEEDBACK_RECEIVED", "SIGNAL_RECEIVED"]).order("occurred_at", { ascending: false }),
+    const reminderIds = new Set(reminderRows.map((row) => row.id));
+    const incidentKeys = new Set(casesWithOrderCodes.map((item) => item.incident_key).filter(Boolean));
+    const [eventsResult, privateEventsResult, membersResult, allSentResult] = await Promise.all([
+      reminderIds.size
+        ? dbClient.from("telegram_followup_reminder_events").select("id, reminder_id, event_type, actor, metadata, occurred_at").in("event_type", ["FEEDBACK_RECEIVED", "SIGNAL_RECEIVED"]).order("occurred_at", { ascending: false }).limit(1000)
+        : Promise.resolve({ data: [], error: null }),
+      incidentKeys.size
+        ? dbClient.from("conversation_events").select("id, incident_key, member_id, text, source_chat_type, created_at").eq("source_chat_type", "private").eq("direction", "INBOUND").order("created_at", { ascending: false }).limit(1000)
+        : Promise.resolve({ data: [], error: null }),
       dbClient.from("telegram_pilot_members").select("id, display_name, username"),
       Promise.resolve({ data: reminders || [], error: null }),
     ]);
-    if (eventsResult.error) throw eventsResult.error;
-    if (membersResult.error) throw membersResult.error;
-    if (allSentResult.error) throw allSentResult.error;
+    if (eventsResult.error || privateEventsResult.error || membersResult.error || allSentResult.error) {
+      return NextResponse.json({ ...result, totalCases: casesWithOrderCodes.length, cases: casesWithOrderCodes, enrichmentWarning: "TELEGRAM_RESPONSES_UNAVAILABLE" });
+    }
 
     const memberName = new Map((membersResult.data || []).map((member: any) => [member.id, member.username ? `@${member.username}` : member.display_name || "Nhân viên Telegram"]));
     const caseByReminder = new Map(reminderRows.map((row) => [row.id, row.followup_case_id]));
+    const caseIdByIncidentKey = new Map(casesWithOrderCodes.map((item) => [item.incident_key, item.id]));
     const messageCoverage = new Map<string, number>();
     for (const row of (allSentResult.data || []) as Array<{ group_id: string; telegram_message_id: number | null }>) {
       if (row.telegram_message_id === null) continue;
@@ -94,6 +149,7 @@ export async function GET(request: NextRequest) {
     const reminderById = new Map(reminderRows.map((row) => [row.id, row]));
     const responsesByCase = new Map<string, any[]>();
     for (const event of (eventsResult.data || []) as Array<any>) {
+      if (!reminderIds.has(event.reminder_id)) continue;
       const caseId = caseByReminder.get(event.reminder_id);
       const reminder = reminderById.get(event.reminder_id);
       if (!caseId || !reminder) continue;
@@ -110,12 +166,27 @@ export async function GET(request: NextRequest) {
       };
       responsesByCase.set(caseId, [...(responsesByCase.get(caseId) || []), response]);
     }
-    const casesWithTelegramResponses = cases.map((item) => ({ ...item, telegramResponses: (responsesByCase.get(item.id) || []).slice(0, 5) }));
+    for (const event of (privateEventsResult.data || []) as Array<any>) {
+      if (!event.incident_key || !incidentKeys.has(event.incident_key)) continue;
+      const caseId = caseIdByIncidentKey.get(event.incident_key);
+      if (!caseId) continue;
+      const response = {
+        id: event.id,
+        type: "PRIVATE_REPLY",
+        text: typeof event.text === "string" ? event.text : null,
+        signal: null,
+        sender: event.member_id ? memberName.get(event.member_id) || "Nhân viên Telegram" : "Nhân viên Telegram",
+        receivedAt: event.created_at,
+        coveredCaseCount: 1,
+        source: "PRIVATE_DM",
+      };
+      responsesByCase.set(caseId, [...(responsesByCase.get(caseId) || []), response]);
+    }
+    const casesWithTelegramResponses = casesWithOrderCodes.map((item) => ({ ...item, telegramResponses: (responsesByCase.get(item.id) || []).slice(0, 5) }));
     return NextResponse.json({ ...result, totalCases: casesWithTelegramResponses.length, cases: casesWithTelegramResponses });
   } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : String(err);
     return NextResponse.json(
-      { error: "FollowupFetchFailed", message },
+      { error: "FollowupFetchFailed", message: readableError(err) },
       { status: 500 }
     );
   }

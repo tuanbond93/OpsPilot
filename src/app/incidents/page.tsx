@@ -12,6 +12,9 @@ interface Incident {
   plannerStatus?: string; aiStatus?: string; lastDetectedAt?: string;
 }
 
+interface AccountScope { zones: string[]; }
+const PREFERRED_ZONE = "Miền Bắc 3";
+
 export default function IncidentListPage() {
   const [items, setItems] = useState<Incident[]>([]);
   const [source, setSource] = useState("");
@@ -19,12 +22,23 @@ export default function IncidentListPage() {
   const [query, setQuery] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [zones, setZones] = useState<string[]>([]);
+  const [zoneFilter, setZoneFilter] = useState(PREFERRED_ZONE);
 
   const load = useCallback(async () => {
     setLoading(true); setError("");
     try {
-      const response = await fetch("/api/dashboard", { cache: "no-store" });
-      const payload = await response.json();
+      const scopeParam = zoneFilter === "ALL" ? "all" : `zone:${zoneFilter}`;
+      const [response, scopeResponse] = await Promise.all([
+        fetch(`/api/dashboard?scope=${encodeURIComponent(scopeParam)}`, { cache: "no-store" }),
+        fetch("/api/account/scope", { cache: "no-store" }),
+      ]);
+      const [payload, scopePayload] = await Promise.all([response.json(), scopeResponse.json()]);
+      if (scopeResponse.ok) {
+        const availableZones = ((scopePayload as AccountScope).zones || []);
+        setZones(availableZones);
+        if (zoneFilter !== "ALL" && !availableZones.includes(zoneFilter)) setZoneFilter("ALL");
+      }
       if (!response.ok || !payload.ok) throw new Error(payload.message || "Không thể tải danh sách sự cố.");
       setSource(payload.source || "unknown"); setFreshness(payload.dataFreshness || "unknown");
       if (payload.source === "degraded_fallback") {
@@ -34,7 +48,7 @@ export default function IncidentListPage() {
       setItems(payload.incidents?.items || []);
     } catch (caught) { setError(caught instanceof Error ? caught.message : String(caught)); }
     finally { setLoading(false); }
-  }, []);
+  }, [zoneFilter]);
 
   useEffect(() => { void load(); }, [load]);
   const filtered = useMemo(() => {
@@ -45,11 +59,12 @@ export default function IncidentListPage() {
   return <main id="main-content" tabIndex={-1} className="min-h-dvh bg-slate-950 px-4 py-6 text-slate-100 sm:px-6 lg:px-8">
     <div className="mx-auto max-w-7xl space-y-5">
       <header className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
-        <div><p className="text-xs font-semibold uppercase tracking-[0.18em] text-blue-300">Operations queue</p><h1 className="mt-1 text-2xl font-bold sm:text-3xl">Sự cố cần xử lý</h1><p className="mt-1 text-sm text-slate-400">Ưu tiên theo dữ liệu vận hành hiện có; mở từng sự cố để xem bằng chứng và khuyến nghị AI.</p></div>
+        <div><p className="text-xs font-semibold uppercase tracking-[0.18em] text-blue-300">Sự cố đang ảnh hưởng vận hành</p><h1 className="mt-1 text-2xl font-bold sm:text-3xl">Sự cố cần xử lý</h1><p className="mt-1 text-sm text-slate-400">Danh sách đã xếp theo mức độ ảnh hưởng trong vùng bạn quản lý.</p><p className="mt-2 text-sm font-semibold text-cyan-200">Việc cần làm: mở sự cố đầu tiên, kiểm chứng đơn và chạy phân tích AI.</p></div>
         <button type="button" onClick={() => void load()} disabled={loading} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-lg border border-slate-700 px-4 text-sm font-semibold hover:bg-slate-900 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-400 disabled:opacity-50"><RefreshCw aria-hidden="true" size={17} className={loading ? "animate-spin motion-reduce:animate-none" : ""}/>Làm mới</button>
       </header>
       <div className="flex flex-col gap-3 rounded-xl border border-slate-800 bg-slate-900/70 p-4 sm:flex-row sm:items-end sm:justify-between">
         <div className="w-full max-w-xl"><label htmlFor="incident-search" className="mb-2 block text-sm font-semibold">Tìm sự cố</label><div className="relative"><Search aria-hidden="true" size={17} className="absolute left-3 top-3.5 text-slate-500"/><input id="incident-search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Mã sự cố, kho hoặc nguyên nhân" className="min-h-11 w-full rounded-lg border border-slate-700 bg-slate-950 pl-10 pr-3 text-base focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-400"/></div></div>
+        <label className="grid gap-2 text-sm font-semibold">Vùng ưu tiên<select value={zoneFilter} onChange={(event) => setZoneFilter(event.target.value)} className="min-h-11 min-w-52 rounded-lg border border-slate-700 bg-slate-950 px-3 text-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-400"><option value="ALL">Tất cả vùng</option>{zones.map((zone) => <option key={zone} value={zone}>{zone}</option>)}</select></label>
         <p className="text-xs text-slate-400">Nguồn: <span className="font-mono text-slate-200">{source || "—"}</span> · Freshness: <span className="font-mono text-slate-200">{freshness || "—"}</span></p>
       </div>
       <div aria-live="polite">{loading && <p className="rounded-xl border border-slate-800 bg-slate-900 p-8 text-center text-slate-400">Đang tải sự cố…</p>}{error && <div role="alert" className="rounded-xl border border-rose-500/40 bg-rose-500/10 p-4 text-rose-200"><p className="font-semibold">Không tải được dữ liệu</p><p className="mt-1 text-sm">{error}</p></div>}{!loading && !error && filtered.length === 0 && <p className="rounded-xl border border-dashed border-slate-700 p-10 text-center text-slate-400">Không có sự cố phù hợp với bộ lọc hiện tại.</p>}</div>

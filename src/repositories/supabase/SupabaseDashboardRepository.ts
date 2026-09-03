@@ -8,12 +8,14 @@ export class SupabaseDashboardRepository extends BaseRepository implements IDash
   }
 
   async getIncidentSummaries(): Promise<any[]> {
-    const [summaries, incidents, histories] = await Promise.all([
+    const [summaries, incidents, histories, followups] = await Promise.all([
       this.executeMany<any>(this.client.from("incident_summary").select("*") as unknown as Promise<{ data: any[] | null; error: any }>),
       this.executeMany<any>(this.client.from("incidents").select("id, incident_key, warehouse_id, warehouse_name, reason_code, reason_name, status, priority_score, first_detected_at, last_detected_at") as unknown as Promise<{ data: any[] | null; error: any }>),
       this.executeMany<any>(this.client.from("incident_history").select("incident_id, recorded_at, affected_order_count, average_age_hours, maximum_age_hours, oldest_order_code, sample_order_codes").order("recorded_at", { ascending: false }) as unknown as Promise<{ data: any[] | null; error: any }>),
+      this.executeMany<any>(this.client.from("followup_cases").select("incident_id, current_state, resolved_at, closed_at, updated_at") as unknown as Promise<{ data: any[] | null; error: any }>),
     ]);
     const incidentById = new Map(incidents.map((row) => [row.id, row]));
+    const followupByIncidentId = new Map(followups.map((row) => [row.incident_id, row]));
     const latestHistoryByIncident = new Map<string, any>();
     const previousHistoryByIncident = new Map<string, any>();
     for (const row of histories) {
@@ -24,6 +26,7 @@ export class SupabaseDashboardRepository extends BaseRepository implements IDash
       const incident = incidentById.get(summary.incident_id) || {};
       const history = latestHistoryByIncident.get(summary.incident_id) || {};
       const previousHistory = previousHistoryByIncident.get(summary.incident_id) || {};
+      const followup = followupByIncidentId.get(summary.incident_id) || {};
       return {
         ...summary,
         ...incident,
@@ -35,6 +38,9 @@ export class SupabaseDashboardRepository extends BaseRepository implements IDash
         latest_snapshot_at: history.recorded_at ?? null,
         previous_affected_order_count: previousHistory.affected_order_count ?? null,
         previous_snapshot_at: previousHistory.recorded_at ?? null,
+        followup_state: followup.current_state ?? summary.followup_state,
+        followup_resolved_at: followup.resolved_at ?? null,
+        followup_closed_at: followup.closed_at ?? null,
       };
     });
   }
@@ -46,6 +52,11 @@ export class SupabaseDashboardRepository extends BaseRepository implements IDash
   }
   async getNotificationSummaries(): Promise<any[]> {
     return this.executeMany(this.client.from("notification_summary").select("*") as unknown as Promise<{ data: any[] | null; error: any }>);
+  }
+  async getTelegramFollowupRemindersUpdatedSince(sinceIso: string): Promise<any[]> {
+    return this.executeMany(this.client.from("telegram_followup_reminders")
+      .select("id, followup_case_id, status, sent_at, updated_at")
+      .gte("updated_at", sinceIso) as unknown as Promise<{ data: any[] | null; error: any }>);
   }
   async getRecentFollowupEvents(limit: number): Promise<any[]> {
     return this.executeMany(this.client.from("followup_events").select("*").order("created_at", { ascending: false }).limit(limit) as unknown as Promise<{ data: any[] | null; error: any }>);

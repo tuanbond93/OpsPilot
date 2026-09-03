@@ -1,5 +1,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import warehouseAssignments from "@/data/warehouse-assignments.generated.json";
+import { getProvinceCode } from "@/config/pilot-provinces";
 
 type WarehouseAssignment = { warehouseName: string; warehouseId?: string; zone: string; province: string };
 type MemberRow = {
@@ -122,7 +123,10 @@ function scopeMatchesContext(
       }
       return { matches: false, reason: "region_mismatch" };
     case "PROVINCE":
-      if (province && normalizeProvince(scope.scope_code) === normalizeProvince(province)) {
+      // Scopes are stored using the stable province code (for example YBA),
+      // while incident metadata carries the human-readable province name.
+      // Continue accepting legacy name-based scopes during the transition.
+      if (province && [province, getProvinceCode(province)].some((value) => normalizeProvince(scope.scope_code) === normalizeProvince(value))) {
         return { matches: true, reason: `scope_province:${scope.scope_code}` };
       }
       return { matches: false, reason: "province_mismatch" };

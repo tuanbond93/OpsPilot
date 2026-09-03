@@ -79,6 +79,8 @@ export interface Incident {
   sampleOrderCodes: string[]; // Maximum 5 sample order codes for UI preview
   averageAgeHours: number | null;
   maximumAgeHours: number | null;
+  /** Deterministic distribution of the Rillnet statuses currently in this incident. */
+  rillnetStatusSignature?: string;
   oldestOrderCode: string | null;
   pickupJourneyCoveragePercent?: number;
   pickupDelayedOrderCount?: number;

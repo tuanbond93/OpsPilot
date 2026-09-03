@@ -25,7 +25,8 @@ export class AiAnalysisWorker {
    */
   async processPendingJobs(
     workerId: string = `worker-${Math.random().toString(36).substring(2, 7)}`,
-    maxJobs: number = 5
+    maxJobs: number = 5,
+    incidentId?: string
   ): Promise<WorkerProcessResult> {
     let dbClient;
     try {
@@ -49,10 +50,11 @@ export class AiAnalysisWorker {
 
     try {
       const aiWorkerService = ServiceFactory.getAiWorkerService(dbClient);
-      const result = await aiWorkerService.processPendingJobs(workerId, maxJobs);
+      const result = await aiWorkerService.processPendingJobs(workerId, maxJobs, incidentId);
 
       // New orchestration: run AIWorkflowService for each incident returned.
       for (const job of result.jobs) {
+        if (job.status !== "COMPLETED") continue;
         try {
           const workflow = new AIWorkflowService(undefined, dbClient);
           const wfResult = await workflow.execute(job.incidentId);

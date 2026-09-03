@@ -1,17 +1,20 @@
 // ==UserScript==
 // @name         OpsPilot GHN Tracking Bridge
 // @namespace    https://opspilot-tau-lyart.vercel.app/
-// @version      2.0.0
+// @version      2.3.0
 // @description  Tra cứu lộ trình GHN trực tiếp cho OpsPilot mà không gửi token lên server.
 // @author       OpsPilot
 // @match        https://tracuunoibo.ghn.vn/*
 // @match        https://nhanh.ghn.vn/*
 // @match        https://opspilot-tau-lyart.vercel.app/*
+// @downloadURL  https://opspilot-tau-lyart.vercel.app/ghn-bridge.user.js
+// @updateURL    https://opspilot-tau-lyart.vercel.app/ghn-bridge.user.js
 // @grant        GM_xmlhttpRequest
 // @grant        GM_setValue
 // @grant        GM_getValue
 // @grant        unsafeWindow
 // @connect      fe-online-gateway.ghn.vn
+// @connect      nhanh-api.ghn.vn
 // @connect      rillnet-app.vercel.app
 // @run-at       document-start
 // ==/UserScript==
@@ -19,12 +22,19 @@
 (function () {
   "use strict";
 
-  const TOKEN_KEY = "opspilot_ghn_tracking_token";
+  const TRACKING_TOKEN_KEY = "opspilot_ghn_tracking_token";
+  const LASTMILE_TOKEN_KEY = "opspilot_ghn_lastmile_token";
+  const AUTHORIZATION_KEY = "opspilot_ghn_lastmile_authorization";
   const ORDER_DETAIL_PREFIX = "opspilot_ghn_order_detail:";
   const ORDER_LOGS_ENDPOINT = "https://fe-online-gateway.ghn.vn/order-tracking/public-api/internal/order-logs";
   const META_ENDPOINT = "https://rillnet-app.vercel.app/wh_meta.json";
+  const LASTMILE_API = "https://nhanh-api.ghn.vn";
+  const LASTMILE_INGEST_PATH = "/api/integrations/ghn-lastmile/bridge";
+  const LASTMILE_HUB_IDS = ["21156000", "21158000", "21160000", "21161000", "21321001", "23052000", "23064000", "23083000", "23084000"];
+  const LASTMILE_POLL_INTERVAL_MS = 15 * 60 * 1000;
+  const LASTMILE_REQUEST_DELAY_MS = 350;
   const ORDER_CODE_PATTERN = /^[A-Z0-9_-]{4,40}$/i;
-  const BRIDGE_VERSION = "2.0.0";
+  const BRIDGE_VERSION = "2.3.0";
   const STATUS_LABELS = {
     ready_to_pick: "Chờ lấy hàng", picking: "Đang lấy hàng", picked: "Đã lấy hàng",
     storing: "Đang lưu tại kho", transporting: "Đang trung chuyển", delivering: "Đang giao hàng",
@@ -41,24 +51,54 @@
 
   if (isGhnPage) {
     const pageWindow = typeof unsafeWindow !== "undefined" ? unsafeWindow : window;
-    let lastToken = "";
-    const remember = (value) => {
+    let lastTrackingToken = "";
+    let lastLastmileToken = "";
+    let lastAuthorization = "";
+    const rememberTrackingToken = (value) => {
       const token = normalizeToken(value);
-      if (!token || token === lastToken) return;
-      lastToken = token;
-      GM_setValue(TOKEN_KEY, token);
+      if (!token || token === lastTrackingToken) return;
+      lastTrackingToken = token;
+      GM_setValue(TRACKING_TOKEN_KEY, token);
+      console.info("[OpsPilot GHN Bridge] GHN tracking session captured.");
     };
-    const readHeaders = (headers) => {
+    const rememberLastmileToken = (value) => {
+      const token = normalizeToken(value);
+      if (!token || token === lastLastmileToken) return;
+      lastLastmileToken = token;
+      GM_setValue(LASTMILE_TOKEN_KEY, token);
+      console.info("[OpsPilot GHN Bridge] GHN last-mile session captured.");
+    };
+    const rememberAuthorization = (value) => {
+      const authorization = typeof value === "string" ? value.trim() : "";
+      if (!authorization || authorization === lastAuthorization) return;
+      lastAuthorization = authorization;
+      GM_setValue(AUTHORIZATION_KEY, authorization);
+      console.info("[OpsPilot GHN Bridge] GHN authorization captured.");
+    };
+    const readHeaders = (headers, hostname) => {
       if (!headers) return;
+      const rememberToken = hostname === "fe-online-gateway.ghn.vn"
+        ? rememberTrackingToken
+        : hostname === "nhanh-api.ghn.vn"
+          ? rememberLastmileToken
+          : () => {};
       if (headers instanceof pageWindow.Headers) {
-        remember(headers.get("token") || headers.get("authorization") || headers.get("x-auth-token"));
+        rememberToken(headers.get("token"));
+        if (hostname === "nhanh-api.ghn.vn") rememberAuthorization(headers.get("authorization"));
         return;
       }
       if (Array.isArray(headers)) {
-        for (const pair of headers) if (Array.isArray(pair) && /^(token|authorization|x-auth-token)$/i.test(String(pair[0]))) remember(pair[1]);
+        for (const pair of headers) {
+          if (!Array.isArray(pair)) continue;
+          if (/^token$/i.test(String(pair[0]))) rememberToken(pair[1]);
+          if (hostname === "nhanh-api.ghn.vn" && /^authorization$/i.test(String(pair[0]))) rememberAuthorization(pair[1]);
+        }
         return;
       }
-      for (const key of Object.keys(headers)) if (/^(token|authorization|x-auth-token)$/i.test(key)) remember(headers[key]);
+      for (const key of Object.keys(headers)) {
+        if (/^token$/i.test(key)) rememberToken(headers[key]);
+        if (hostname === "nhanh-api.ghn.vn" && /^authorization$/i.test(key)) rememberAuthorization(headers[key]);
+      }
     };
 
     const detailField = (value, keys) => {
@@ -124,13 +164,18 @@
       }
     };
     const hintedOrderCode = (input) => { try { const url = new URL(typeof input === "string" ? input : input.url, location.href); return text(url.searchParams.get("order_code")) || text(url.searchParams.get("orderCode")); } catch (_) { return null; } };
+    const apiHostname = (input) => { try { return new URL(typeof input === "string" ? input : input.url, location.href).hostname; } catch (_) { return ""; } };
+    const isSupportedApiHostname = (hostname) => hostname === "fe-online-gateway.ghn.vn" || hostname === "nhanh-api.ghn.vn";
     const observeJson = (response, code) => { try { response.clone().json().then((value) => saveOrderDetails(value, code)).catch(() => {}); } catch (_) {} };
     const originalFetch = pageWindow.fetch;
     if (typeof originalFetch === "function") {
       pageWindow.fetch = function (input, init) {
         try {
-          readHeaders(init && init.headers);
-          if (input && typeof input === "object") readHeaders(input.headers);
+          const hostname = apiHostname(input);
+          if (isSupportedApiHostname(hostname)) {
+            readHeaders(init && init.headers, hostname);
+            if (input && typeof input === "object") readHeaders(input.headers, hostname);
+          }
         } catch (_) {}
         const code = hintedOrderCode(input);
         return originalFetch.apply(this, arguments).then((response) => { observeJson(response, code); return response; });
@@ -140,10 +185,13 @@
     const xhrPrototype = pageWindow.XMLHttpRequest && pageWindow.XMLHttpRequest.prototype;
     if (xhrPrototype) {
       const originalOpen = xhrPrototype.open;
-      xhrPrototype.open = function (_method, url) { this.__opspilotOrderCode = hintedOrderCode(url); return originalOpen.apply(this, arguments); };
+      xhrPrototype.open = function (_method, url) { this.__opspilotOrderCode = hintedOrderCode(url); this.__opspilotRequestUrl = String(url || ""); return originalOpen.apply(this, arguments); };
       const originalSetRequestHeader = xhrPrototype.setRequestHeader;
       xhrPrototype.setRequestHeader = function (header, value) {
-        if (/^(token|authorization|x-auth-token)$/i.test(String(header))) remember(value);
+        const hostname = apiHostname(this.__opspilotRequestUrl);
+        if (/^token$/i.test(String(header)) && hostname === "fe-online-gateway.ghn.vn") rememberTrackingToken(value);
+        if (/^token$/i.test(String(header)) && hostname === "nhanh-api.ghn.vn") rememberLastmileToken(value);
+        if (/^authorization$/i.test(String(header)) && hostname === "nhanh-api.ghn.vn") rememberAuthorization(value);
         return originalSetRequestHeader.apply(this, arguments);
       };
       const originalSend = xhrPrototype.send;
@@ -210,7 +258,7 @@
   }
 
   async function trackOrder(orderCode) {
-    const token = normalizeToken(await GM_getValue(TOKEN_KEY, ""));
+    const token = normalizeToken(await GM_getValue(TRACKING_TOKEN_KEY, ""));
     if (!token) throw new Error("GHN_SESSION_NOT_FOUND");
     const url = `${ORDER_LOGS_ENDPOINT}?order_code=${encodeURIComponent(orderCode)}`;
     const response = await gmRequest({ method: "GET", url, headers: { accept: "application/json", token } });
@@ -290,6 +338,151 @@
       journey: journey.map((point, index) => ({ ...point, warehouseName: nameFor(point.warehouseId), current: index === journey.length - 1 && phase !== "IN_TRANSIT" && phase !== "COMPLETED" }))
     };
   }
+
+  const pause = (ms) => new Promise((resolve) => window.setTimeout(resolve, ms));
+  const safeCount = (value) => Number.isFinite(Number(value)) ? Math.max(0, Math.trunc(Number(value))) : 0;
+  const localDateTime = (iso) => {
+    const date = new Date(iso);
+    const parts = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Ho_Chi_Minh", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).formatToParts(date);
+    const get = (type) => (parts.find((part) => part.type === type) || {}).value || "";
+    return { date: `${get("year")}-${get("month")}-${get("day")}`, time: `${get("hour")}:${get("minute")}` };
+  };
+  const scheduleDateRange = (iso) => {
+    const local = localDateTime(iso);
+    const localMidnightUtc = new Date(`${local.date}T00:00:00+07:00`).getTime();
+    return {
+      fromDate: new Date(localMidnightUtc - 3 * 24 * 60 * 60 * 1000).toISOString(),
+      toDate: new Date(localMidnightUtc + 5 * 24 * 60 * 60 * 1000 - 1).toISOString()
+    };
+  };
+  const withinShift = (time, shift) => {
+    const start = text(shift && shift.start_at); const end = text(shift && shift.end_at);
+    if (!/^\d{2}:\d{2}$/.test(start || "") || !/^\d{2}:\d{2}$/.test(end || "")) return false;
+    return start <= end ? time >= start && time < end : time >= start || time < end;
+  };
+  async function lastmilePost(path, payload) {
+    const token = normalizeToken(await GM_getValue(LASTMILE_TOKEN_KEY, ""))
+      || normalizeToken(await GM_getValue(TRACKING_TOKEN_KEY, ""));
+    if (!token) throw new Error("GHN_SESSION_NOT_FOUND");
+    const authorization = String(await GM_getValue(AUTHORIZATION_KEY, "") || "").trim();
+    if (!authorization) throw new Error("GHN_AUTHORIZATION_NOT_FOUND");
+    const response = await gmRequest({ method: "POST", url: `${LASTMILE_API}${path}`, headers: { "content-type": "application/json", accept: "application/json", token, Authorization: authorization }, data: JSON.stringify(payload) });
+    if (response.status === 401 || response.status === 403) throw new Error("GHN_SESSION_EXPIRED");
+    if (response.status === 429) throw new Error("GHN_RATE_LIMITED");
+    if (response.status < 200 || response.status >= 300) {
+      let upstream = null;
+      try {
+        const parsed = JSON.parse(response.responseText);
+        upstream = [text(parsed.errorCode) || text(parsed.code), text(parsed.message) || text(parsed.error)].filter(Boolean).join("-");
+      } catch (_) {}
+      throw new Error(`GHN_HTTP_${response.status || "UNKNOWN"}:${path}${upstream ? `:${upstream.slice(0, 120)}` : ""}`);
+    }
+    const body = JSON.parse(response.responseText);
+    if (!body || (body.code != null && body.code !== 0) || body.status === "ERROR") throw new Error("GHN_INVALID_RESPONSE");
+    return body;
+  }
+  async function collectTripItemsAggregate(tripCode) {
+    let offset = 0, total = Infinity, successful = 0, returned = 0, cancelled = 0;
+    const seen = new Set();
+    while (offset < total) {
+      const body = await lastmilePost("/api/lastmile/trip/get-trip-items", { typeList: ["PICK", "DELIVER", "RETURN"], offset, limit: 50, TripCode: tripCode });
+      const rows = Array.isArray(body.data) ? body.data : [];
+      total = safeCount(body.total);
+      for (const row of rows) {
+        const key = `${row.type || ""}:${row.orderCode || ""}`;
+        if (!row.orderCode || seen.has(key)) continue;
+        seen.add(key);
+        if (row.type === "DELIVER" && row.isSucceeded === true) successful += 1;
+        if (row.type === "RETURN" || row.isReturn === true) returned += 1;
+        if (row.isCancel === true) cancelled += 1;
+      }
+      offset += rows.length;
+      if (!rows.length) break;
+      await pause(LASTMILE_REQUEST_DELAY_MS);
+    }
+    return { successful, returned, cancelled };
+  }
+  async function collectHubSnapshot(hubId) {
+    const now = new Date(); const nowIso = now.toISOString(); const local = localDateTime(nowIso);
+    const range = scheduleDateRange(nowIso);
+    const schedules = await lastmilePost("/api/sop/user-schedule/get-user-schedules-by-hub", { hub_id: hubId, from_date: range.fromDate, to_date: range.toDate });
+    await pause(LASTMILE_REQUEST_DELAY_MS);
+    const tripBody = await lastmilePost("/api/lastmile/trip/get-trip-list-by-hub", { hub_id: hubId, status: "ON_TRIP", is_ready: 0, offset: 0, limit: 100, reverse: 1, page: 1, size: 100 });
+    const trips = (Array.isArray(tripBody.data) ? tripBody.data : []).filter((trip) => String(trip.hubId) === hubId && trip.status === "ON_TRIP");
+    const weekdays = schedules.data && Array.isArray(schedules.data.weekdays) ? schedules.data.weekdays : [];
+    const dateLabel = (weekdays.find((day) => localDateTime(day.date).date === local.date) || {}).value;
+    const scheduled = new Set(), activeScheduled = new Set(), onLeave = new Set();
+    for (const user of schedules.data && Array.isArray(schedules.data.users) ? schedules.data.users : []) {
+      const userId = text(user.user_id); const schedule = (user.schedules || []).find((item) => item.date === dateLabel);
+      const shifts = schedule && Array.isArray(schedule.shifts) ? schedule.shifts : [];
+      const working = shifts.filter((shift) => shift.is_on_leave !== true);
+      if (userId && working.length) scheduled.add(userId);
+      if (userId && working.some((shift) => withinShift(local.time, shift))) activeScheduled.add(userId);
+      if (userId && shifts.length && !working.length) onLeave.add(userId);
+    }
+    const activeDrivers = new Set(trips.map((trip) => text(trip.driverId)).filter(Boolean));
+    let successful = 0, returned = 0, cancelled = 0;
+    for (const trip of trips) {
+      const aggregate = await collectTripItemsAggregate(String(trip.tripCode));
+      successful += aggregate.successful; returned += aggregate.returned; cancelled += aggregate.cancelled;
+      await pause(LASTMILE_REQUEST_DELAY_MS);
+    }
+    const assigned = trips.reduce((sum, trip) => sum + safeCount(trip.deliverCount), 0);
+    return {
+      hubId,
+      sourceFetchedAt: nowIso,
+      staffing: { hubId, scheduleDate: local.date, scheduledForDayCount: scheduled.size, currentlyScheduledWorkforceCount: activeScheduled.size, onLeaveCount: onLeave.size, activeDriverCount: activeDrivers.size, scheduledActiveDriverCount: [...activeDrivers].filter((id) => activeScheduled.has(id)).length, unscheduledActiveDriverCount: [...activeDrivers].filter((id) => !activeScheduled.has(id)).length, sourceFetchedAt: nowIso },
+      workload: { hubId, activeTripCount: trips.length, activeDriverCount: activeDrivers.size, assignedDeliveryCount: assigned, successfulDeliveryCount: Math.min(successful, assigned), pendingDeliveryCount: Math.max(0, assigned - successful), returnCount: returned, cancelledCount: cancelled, latestSourceUpdatedAt: trips.map((trip) => trip.lastUpdatedTime).filter(Boolean).sort().at(-1) || null, sourceFetchedAt: nowIso }
+    };
+  }
+  let lastmileCollectionRunning = false;
+  const reportLastmileStatus = (stage, detail = {}) => {
+    const payload = { version: BRIDGE_VERSION, stage, at: new Date().toISOString(), ...detail };
+    console.info("[OpsPilot GHN Bridge]", payload);
+    window.dispatchEvent(new CustomEvent("GHN_LASTMILE_STATUS", { detail: payload }));
+  };
+  async function collectAllowedHubs() {
+    if (lastmileCollectionRunning) {
+      reportLastmileStatus("ALREADY_RUNNING");
+      return;
+    }
+    lastmileCollectionRunning = true;
+    try {
+      const token = normalizeToken(await GM_getValue(LASTMILE_TOKEN_KEY, ""))
+        || normalizeToken(await GM_getValue(TRACKING_TOKEN_KEY, ""));
+      if (!token) {
+        reportLastmileStatus("NO_GHN_SESSION", { message: "Reload nhanh.ghn.vn and perform one data refresh, then retry." });
+        return;
+      }
+      const authorization = String(await GM_getValue(AUTHORIZATION_KEY, "") || "").trim();
+      if (!authorization) {
+        reportLastmileStatus("NO_GHN_AUTHORIZATION", { message: "Reload nhanh.ghn.vn and perform one data refresh, then retry." });
+        return;
+      }
+      reportLastmileStatus("STARTED", { hubCount: LASTMILE_HUB_IDS.length });
+      const snapshots = [];
+      for (const hubId of LASTMILE_HUB_IDS) {
+        try {
+          snapshots.push(await collectHubSnapshot(hubId));
+          reportLastmileStatus("HUB_COLLECTED", { hubId });
+        } catch (error) {
+          reportLastmileStatus("HUB_FAILED", { hubId, error: error instanceof Error ? error.message : "UNKNOWN_ERROR" });
+        }
+        await pause(LASTMILE_REQUEST_DELAY_MS);
+      }
+      if (!snapshots.length) {
+        reportLastmileStatus("NO_SNAPSHOTS");
+        return;
+      }
+      const response = await fetch(LASTMILE_INGEST_PATH, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ source: "ghn_tampermonkey_lastmile", snapshots }) });
+      reportLastmileStatus(response.ok ? "COMPLETED" : "INGEST_FAILED", { status: response.status, snapshotCount: snapshots.length });
+    } catch (error) {
+      reportLastmileStatus("FAILED", { error: error instanceof Error ? error.message : "UNKNOWN_ERROR" });
+    } finally { lastmileCollectionRunning = false; }
+  }
+  window.addEventListener("GHN_LASTMILE_COLLECT", () => { void collectAllowedHubs(); });
+  window.setTimeout(() => { void collectAllowedHubs(); }, 15_000);
+  window.setInterval(() => { void collectAllowedHubs(); }, LASTMILE_POLL_INTERVAL_MS);
 
   function respond(requestId, detail) {
     window.dispatchEvent(new CustomEvent(`GHN_ORDER_TRACKING_RESPONSE_${requestId}`, { detail }));

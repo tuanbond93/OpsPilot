@@ -9,8 +9,10 @@ out
 build
 
 # Local reports, coverage, and rendered inspection assets
-coverage
+/coverage
 tmp
+/outputs
+/supabase/.temp
 
 # Local configuration and secrets
 .env

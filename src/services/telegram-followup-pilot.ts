@@ -6,15 +6,18 @@ import { formatTelegramFollowupReminder, type FollowupReminderStage } from "@/in
 import { ServiceFactory } from "@/services/ServiceFactory";
 import { NotificationGateway, type DeliveryRequest } from "@/notifications/gateway";
 import { FEATURE_FLAGS } from "@/config/feature-flags";
+import { dispatchRillnetChangeReviews } from "@/services/telegram-rillnet-review";
+import { formatFollowupDeliverySummary, type FollowupDeliverySummaryItem } from "@/integrations/telegram/followup-delivery-summary";
 
 type PilotMember = { id: string; group_id: string; display_name: string; username: string | null; warehouse_name: string | null; warehouse_names: unknown; zone_names: unknown };
 type PilotGroup = { id: string; telegram_chat_id: string; title: string };
 type WarehouseAssignment = { warehouseName: string; zone: string; province: string };
 type PilotTopic = { id: string; group_id: string; message_thread_id: number; topic_title: string; province_name: string | null; is_escalation: boolean; status: string };
-type PendingCase = { id: string; incident_id: string; incident_key: string; current_state: string; latest_affected_order_count: number };
+type PendingCase = { id: string; incident_id: string; incident_key: string; current_state: string; first_detected_at: string; latest_affected_order_count: number; last_action_requested_at: string | null };
+type ActionRequestEvent = { followup_case_id: string; event_type: string; event_time: string };
 type Incident = { id: string; incident_key: string; warehouse_id: string; warehouse_name: string | null; reason_code: string; reason_name: string; priority_score: number; first_detected_at: string; last_detected_at: string };
 type History = { sample_order_codes?: unknown; maximum_age_hours?: number | null };
-type Candidate = { followupCase: PendingCase; incident: Incident; stage: FollowupReminderStage; action: "first_push" | "second_push" | "third_push" | "escalation"; group: PilotGroup; topic: PilotTopic; recipients: PilotMember[]; history?: History };
+type Candidate = { followupCase: PendingCase; incident: Incident; stage: FollowupReminderStage; action: "first_push" | "second_push" | "third_push" | "escalation"; attemptMarker: string; group: PilotGroup; topic: PilotTopic; recipients: PilotMember[]; history?: History };
 
 const PILOT_ZONE = "Miền Bắc 3";
 // Keep a comfortable per-group cadence. This is effectively three messages
@@ -41,18 +44,22 @@ function isEligible(member: PilotMember, warehouseName: string, zoneName: string
   return warehouses.includes(warehouseName) || Boolean(zoneName && list(member.zone_names).includes(zoneName));
 }
 
-export type TelegramFollowupPilotResult = { scanned: number; sent: number; coveredCases: number; skipped: number; deferred: number; failed: number; stateConfirmationsFailed: number; details: Array<{ followupCaseId: string; status: string; reason?: string }> };
+export type TelegramFollowupPilotResult = { scanned: number; sent: number; coveredCases: number; skipped: number; deferred: number; failed: number; stateConfirmationsFailed: number; rillnetReviews: { scanned: number; sent: number; skipped: number; failed: number }; details: Array<{ followupCaseId: string; status: string; reason?: string }> };
 
 /**
  * Sends only deterministic, roster-mapped Miền Bắc 3 follow-up messages.
  * It never runs an operational action and is idempotent per case + ladder stage.
  */
 export async function runTelegramFollowupPilotDispatch(client: SupabaseClient, actor = "telegram_followup_pilot"): Promise<TelegramFollowupPilotResult> {
-  const result: TelegramFollowupPilotResult = { scanned: 0, sent: 0, coveredCases: 0, skipped: 0, deferred: 0, failed: 0, stateConfirmationsFailed: 0, details: [] };
+  const result: TelegramFollowupPilotResult = { scanned: 0, sent: 0, coveredCases: 0, skipped: 0, deferred: 0, failed: 0, stateConfirmationsFailed: 0, rillnetReviews: { scanned: 0, sent: 0, skipped: 0, failed: 0 }, details: [] };
+  const reviewResult = await dispatchRillnetChangeReviews(client, actor);
+  result.rillnetReviews = { scanned: reviewResult.scanned, sent: reviewResult.sent, skipped: reviewResult.skipped, failed: reviewResult.failed };
+  result.failed += reviewResult.failed;
+  result.details.push(...reviewResult.details.map((item) => ({ ...item, status: `RILLNET_REVIEW_${item.status}` })));
   // The queue is global while this pilot is deliberately scoped to Miền Bắc 3.
   // Read a bounded wider window so non-pilot cases cannot starve eligible pilot
   // cases simply because they happen to be older in the global ordering.
-  const { data: pendingRows, error: pendingError } = await client.from("followup_cases").select("id, incident_id, incident_key, current_state, latest_affected_order_count").in("current_state", Object.keys(stageByState)).order("last_action_requested_at", { ascending: true }).limit(1000);
+  const { data: pendingRows, error: pendingError } = await client.from("followup_cases").select("id, incident_id, incident_key, current_state, first_detected_at, latest_affected_order_count, last_action_requested_at").in("current_state", Object.keys(stageByState)).order("last_action_requested_at", { ascending: true }).limit(1000);
   if (pendingError) throw pendingError;
   const cases = (pendingRows || []) as PendingCase[];
   if (!cases.length) return result;
@@ -76,7 +83,20 @@ export async function runTelegramFollowupPilotDispatch(client: SupabaseClient, a
   });
   result.scanned = pilotCases.length;
 
+  const { data: actionRequestEvents, error: actionRequestError } = await client.from("followup_events")
+    .select("followup_case_id, event_type, event_time")
+    .in("followup_case_id", pilotCases.map((item) => item.id))
+    .in("event_type", ["CASE_CREATED", "CASE_REOPENED", "PUSH_REQUESTED", "ESCALATION_REQUESTED"])
+    .order("event_time", { ascending: false })
+    .limit(1000);
+  if (actionRequestError) throw actionRequestError;
+  const latestActionRequestByCase = new Map<string, string>();
+  for (const event of (actionRequestEvents || []) as ActionRequestEvent[]) {
+    if (!latestActionRequestByCase.has(event.followup_case_id)) latestActionRequestByCase.set(event.followup_case_id, event.event_time);
+  }
+
   const candidates: Candidate[] = [];
+  const deliverySummary: FollowupDeliverySummaryItem[] = [];
   let lastTelegramMessageAt = 0;
   for (const followupCase of pilotCases) {
     const stageInfo = stageByState[followupCase.current_state];
@@ -95,13 +115,14 @@ export async function runTelegramFollowupPilotDispatch(client: SupabaseClient, a
     const groupTopics = topicsByGroup.get(group.id) || [];
     const topic = groupTopics.find((item) => provinceKey(item.province_name) === provinceKey(provinceName)) || groupTopics.find((item) => item.is_escalation);
     if (!topic) { result.skipped++; result.details.push({ followupCaseId: followupCase.id, status: "SKIPPED", reason: `topic_missing:province=${provinceName || "unknown"}` }); continue; }
-    const idempotencyKey = `telegram-followup:${followupCase.id}:${stageInfo.stage}`;
+    const attemptMarker = followupCase.last_action_requested_at || latestActionRequestByCase.get(followupCase.id) || followupCase.first_detected_at;
+    const idempotencyKey = `telegram-followup:${followupCase.id}:${stageInfo.stage}:${attemptMarker}`;
     const { data: existing, error: existingError } = await client.from("telegram_followup_reminders").select("status").eq("idempotency_key", idempotencyKey).maybeSingle();
     if (existingError) throw existingError;
     if (existing?.status === "SENT" || existing?.status === "PENDING") { result.skipped++; result.details.push({ followupCaseId: followupCase.id, status: "SKIPPED", reason: "already_dispatched" }); continue; }
     const { data: histories, error: historyError } = await client.from("incident_history").select("sample_order_codes, maximum_age_hours").eq("incident_id", incident.id).order("recorded_at", { ascending: false }).limit(1);
     if (historyError) throw historyError;
-    candidates.push({ followupCase, incident, stage: stageInfo.stage, action: stageInfo.action, group, topic, recipients, history: histories?.[0] as History | undefined });
+    candidates.push({ followupCase, incident, stage: stageInfo.stage, action: stageInfo.action, attemptMarker, group, topic, recipients, history: histories?.[0] as History | undefined });
   }
 
   const batches = new Map<string, Candidate[]>();
@@ -115,7 +136,7 @@ export async function runTelegramFollowupPilotDispatch(client: SupabaseClient, a
     const now = new Date().toISOString();
     const reminders: Array<{ id: string; candidate: Candidate }> = [];
     for (const candidate of batch) {
-      const idempotencyKey = `telegram-followup:${candidate.followupCase.id}:${candidate.stage}`;
+      const idempotencyKey = `telegram-followup:${candidate.followupCase.id}:${candidate.stage}:${candidate.attemptMarker}`;
       const payload = { followup_case_id: candidate.followupCase.id, group_id: first.group.id, message_thread_id: first.topic.message_thread_id, reminder_stage: candidate.stage, status: "PENDING", recipient_member_ids: candidate.recipients.map((member) => member.id), idempotency_key: idempotencyKey, sent_by: actor };
       const { data: reminder, error: reminderError } = await client.from("telegram_followup_reminders").insert(payload).select("id").single();
       if (reminderError) {
@@ -162,8 +183,9 @@ export async function runTelegramFollowupPilotDispatch(client: SupabaseClient, a
           },
           options: {
             parseMode: "HTML",
-            idempotencyKey: `telegram-followup:${first.followupCase.id}:${first.stage}`,
+            idempotencyKey: `telegram-followup:${first.followupCase.id}:${first.stage}:${first.attemptMarker}`,
             actor,
+            mirror: false,
           },
         };
         const gatewayResult = await gateway.send(deliveryRequest, client);
@@ -185,13 +207,32 @@ export async function runTelegramFollowupPilotDispatch(client: SupabaseClient, a
       }
       result.sent++;
       result.coveredCases += reminders.length;
+      deliverySummary.push({ province: provinceByWarehouseId.get(String(first.incident.warehouse_id)) || provinceByWarehouseName.get(String(first.incident.warehouse_name || "")) || "Chưa xác định", warehouse: String(first.incident.warehouse_name || ""), stage: first.stage, coveredCases: reminders.length, status: "SUCCESS" });
     } catch (error) {
       const reason = error instanceof Error ? error.message.slice(0, 1000) : String(error).slice(0, 1000);
       const reminderIds = reminders.map((item) => item.id);
       await client.from("telegram_followup_reminders").update({ status: "FAILED", failure_reason: reason, updated_at: new Date().toISOString() }).in("id", reminderIds);
       await client.from("telegram_followup_reminder_events").insert(reminders.map((item) => ({ reminder_id: item.id, event_type: "REMINDER_FAILED", actor, metadata: { stage: first.stage, reason, aggregateSize: reminders.length } })));
       result.failed += reminders.length;
+      deliverySummary.push({ province: provinceByWarehouseId.get(String(first.incident.warehouse_id)) || provinceByWarehouseName.get(String(first.incident.warehouse_name || "")) || "Chưa xác định", warehouse: String(first.incident.warehouse_name || ""), stage: first.stage, coveredCases: reminders.length, status: "FAILED", error: reason });
       reminders.forEach(({ candidate }) => result.details.push({ followupCaseId: candidate.followupCase.id, status: "FAILED", reason }));
+    }
+  }
+  if (deliverySummary.length || reviewResult.summaries.length) {
+    const { data: managerTopic, error: managerTopicError } = await client.from("telegram_pilot_topics")
+      .select("message_thread_id, telegram_pilot_groups!inner(telegram_chat_id, status)")
+      .eq("status", "ACTIVE").eq("is_manager_decision", true).eq("telegram_pilot_groups.status", "ACTIVE").maybeSingle();
+    if (managerTopicError || !managerTopic) {
+      result.failed++;
+      result.details.push({ followupCaseId: "delivery-summary", status: "FAILED", reason: managerTopicError?.message || "manager_shadow_topic_missing" });
+    } else {
+      try {
+        const group = managerTopic.telegram_pilot_groups as unknown as { telegram_chat_id: string | number };
+        await new TelegramClient().sendToChat(String(group.telegram_chat_id), formatFollowupDeliverySummary(deliverySummary, new Date(), reviewResult.summaries), { parseMode: "HTML", messageThreadId: Number(managerTopic.message_thread_id) });
+      } catch (error) {
+        result.failed++;
+        result.details.push({ followupCaseId: "delivery-summary", status: "FAILED", reason: error instanceof Error ? error.message : String(error) });
+      }
     }
   }
   return result;

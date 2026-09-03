@@ -10,6 +10,8 @@ import type { Incident, IncidentReasonCode } from "../../engine/incident";
 
 import type { IIncidentHistoryRepository } from "../../repositories/interfaces/IIncidentHistoryRepository";
 import type { IExceptionRepository } from "../../repositories/interfaces/IExceptionRepository";
+import type { IDecisionPilotService } from "../interfaces/IDecisionPilotService";
+import { createHash } from "node:crypto";
 
 export class AiWorkerService implements IAiWorkerService {
   constructor(
@@ -20,7 +22,8 @@ export class AiWorkerService implements IAiWorkerService {
     private plannerRepo: IPlannerRepository,
     private exceptionRepo: IExceptionRepository,
     private rootCauseAgent: RootCauseAgent,
-    private actionPlannerAgent: ActionPlannerAgent
+    private actionPlannerAgent: ActionPlannerAgent,
+    private decisionPilotService?: IDecisionPilotService
   ) {}
 
   async enqueueJob(jobData: any): Promise<void> {
@@ -29,7 +32,8 @@ export class AiWorkerService implements IAiWorkerService {
 
   async processPendingJobs(
     workerId: string = `worker-${Math.random().toString(36).substring(2, 7)}`,
-    maxJobs: number = 5
+    maxJobs: number = 5,
+    incidentId?: string
   ): Promise<any> {
     const result = {
       processedCount: 0,
@@ -39,7 +43,9 @@ export class AiWorkerService implements IAiWorkerService {
     };
 
     for (let i = 0; i < maxJobs; i++) {
-      const job = await this.aiJobRepo.claimPendingJob(workerId);
+      const job = incidentId
+        ? await this.aiJobRepo.claimPendingJobForIncident(workerId, incidentId)
+        : await this.aiJobRepo.claimPendingJob(workerId);
       if (!job) break;
 
       result.processedCount++;
@@ -95,13 +101,59 @@ export class AiWorkerService implements IAiWorkerService {
         const rcResponse = await this.rootCauseAgent.analyzeIncident(incident, historyRows);
 
         // 5. Run Action Planner Agent (reads persisted Root Cause)
-        await this.actionPlannerAgent.analyzeIncident({
+        const plannerResponse = await this.actionPlannerAgent.analyzeIncident({
           incident: incidentRow,
           historyRows,
           rootCauseResult: rcResponse.analysis,
           followupCase,
           activeExceptions,
         });
+
+        // The decision lane must read its evidence back from storage, never
+        // from this worker's memory. ActionPlanner retains backward-compatible
+        // best-effort writes, so make the Level C persistence contract explicit
+        // here and fail this job if it cannot be satisfied.
+        const persistedResult = {
+          ...plannerResponse.result,
+          rootCauseSummary: rcResponse.analysis.summary,
+          rootCause: rcResponse.analysis as unknown as Record<string, unknown>,
+        };
+        // Older ActionPlanner runs intentionally swallow a persistence failure
+        // to keep Lane A operational. Level C cannot do that: create its own
+        // evidence-bearing run when the legacy best-effort write yielded none.
+        const plannerRunId = plannerResponse.runId || (await this.plannerRepo.createPlannerRun({
+          incident_id: incidentRow.id,
+          followup_case_id: followupCase?.id || null,
+          status: "DRAFT",
+          context_hash: createHash("sha256").update(`level-c:${job.id}`).digest("hex"),
+          prompt_version: 1,
+          provider: String(plannerResponse.result.metadata?.provider || "level_c_worker").slice(0, 50),
+          model: String(plannerResponse.result.metadata?.model || "unknown").slice(0, 50),
+          result: persistedResult,
+        })).id;
+        const persistedPlanner = await this.plannerRepo.getPlannerRunById(plannerRunId);
+        if (!persistedPlanner) {
+          throw new Error("PERSISTED_PLANNER_REQUIRED: planner run cannot be read back");
+        }
+        const updatedPlanner = await this.plannerRepo.updatePlannerRunResult(plannerRunId, {
+          ...(persistedPlanner.result || {}),
+          ...persistedResult,
+        });
+        if (!updatedPlanner) {
+          throw new Error("PERSISTED_ROOT_CAUSE_REQUIRED: root cause could not be persisted with planner run");
+        }
+
+        // LC-C1 hand-off is intentionally after persisted root-cause and
+        // planner output. DecisionPilot independently requires the latest
+        // persisted AI_DECISION_REQUIRED triage, therefore routine Lane A
+        // jobs cannot enter the Telegram manager-decision lane.
+        const shadowResult = this.decisionPilotService
+          ? await this.decisionPilotService.createShadowFromIncident({
+              incidentId: incidentRow.id,
+              actor: `ai-worker:${workerId}`,
+              idempotencyKey: `ai-shadow:${job.id}`,
+            })
+          : null;
 
         // 6. Mark Completed
         await this.aiJobRepo.markJobCompleted(job.id);
@@ -111,6 +163,11 @@ export class AiWorkerService implements IAiWorkerService {
           incidentId: job.incident_id,
           status: "COMPLETED",
           durationMs: Date.now() - jobStart,
+          decisionShadow: shadowResult?.ok
+            ? "CREATED"
+            : shadowResult
+              ? `NOT_CREATED:${shadowResult.error || "BLOCKED"}`
+              : "NOT_CONFIGURED",
         });
       } catch (err: unknown) {
         result.failedCount++;

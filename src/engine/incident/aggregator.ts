@@ -119,6 +119,14 @@ export function aggregateIncidents(
       affectedOrderCount,
       maximumAgeHours || 0
     );
+    const statusCounts = new Map<string, number>();
+    for (const order of group.orders) {
+      const status = String(order.status || "unknown").trim().toLowerCase() || "unknown";
+      statusCounts.set(status, (statusCounts.get(status) || 0) + 1);
+    }
+    const rillnetStatusSignature = JSON.stringify(
+      [...statusCounts.entries()].sort(([left], [right]) => left.localeCompare(right))
+    );
 
     incidents.push({
       incidentId: incidentKey, // Stable UUID / Key fallback
@@ -136,6 +144,7 @@ export function aggregateIncidents(
       sampleOrderCodes,
       averageAgeHours,
       maximumAgeHours,
+      rillnetStatusSignature,
       oldestOrderCode,
       pickupJourneyCoveragePercent,
       pickupDelayedOrderCount: delayedPickupJourneys.length,

@@ -101,7 +101,7 @@ describe("Sprint 7 Hardened — Executive Operations Control Center Tests", () =
     expect(health.aiProvider).toHaveProperty("healthReason");
   });
 
-  it("4. Write controls governance returns writeControlsEnabled = false in production mode", async () => {
+  it("4. Production fails closed when auth enforcement is disabled", async () => {
     vi.stubEnv("ALLOW_IN_MEMORY_FALLBACK", "true");
     vi.stubEnv("NODE_ENV", "production");
     vi.stubEnv("ENABLE_DASHBOARD_WRITE_CONTROLS", "false");
@@ -110,7 +110,8 @@ describe("Sprint 7 Hardened — Executive Operations Control Center Tests", () =
     const response = await GET(req);
 
     const json = await response.json();
-    expect(json.writeControlsEnabled).toBe(false);
+    expect(response.status).toBe(503);
+    expect(json.error).toBe("AUTH_ENFORCEMENT_REQUIRED");
   });
 
   it("5. Route delegates to DashboardService", async () => {

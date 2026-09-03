@@ -50,6 +50,10 @@ export function translateStatus(value: unknown): string {
   const status = repairOperationalText(value).toUpperCase();
   return ({
     PENDING: "CHỜ DUYỆT",
+    NEW: "MỚI PHÁT HIỆN",
+    READY_FOR_REVIEW: "SẴN SÀNG ĐỂ DUYỆT",
+    COMPLETED: "ĐÃ HOÀN TẤT",
+    RUNNING: "ĐANG CHẠY",
     APPROVED: "ĐÃ PHÊ DUYỆT",
     EDITED: "ĐÃ CHỈNH SỬA",
     REJECTED: "ĐÃ TỪ CHỐI",
@@ -83,6 +87,29 @@ export function translateStatus(value: unknown): string {
     INSUFFICIENT_DATA: "CHƯA ĐỦ DỮ LIỆU",
     UNKNOWN: "CHƯA XÁC ĐỊNH",
   } as Record<string, string>)[status] || repairOperationalText(value);
+}
+
+export function statusGuidance(value: unknown): { owner: string; next: string } {
+  const status = repairOperationalText(value).toUpperCase();
+  return ({
+    NEW: { owner: "Người vận hành", next: "Mở hồ sơ và kiểm tra dữ liệu đơn." },
+    PENDING: { owner: "Người duyệt", next: "Đối chiếu bằng chứng trước khi duyệt." },
+    READY_FOR_REVIEW: { owner: "Người duyệt", next: "Duyệt hoặc từ chối kèm lý do." },
+    DRAFT: { owner: "Người vận hành", next: "Kiểm tra đề xuất và chuyển sang chờ duyệt." },
+    APPROVED: { owner: "Người vận hành", next: "Thực hiện hành động đã được duyệt." },
+    PROCESSING: { owner: "Hệ thống", next: "Chờ xử lý hoàn tất; chưa cần thao tác." },
+    COMPLETED: { owner: "Người vận hành", next: "Kiểm tra kết quả và bằng chứng mới nhất." },
+    FIRST_PUSH_PENDING: { owner: "Người vận hành", next: "Gửi nhắc việc lần đầu cho đầu mối phụ trách." },
+    SECOND_PUSH_PENDING: { owner: "Người vận hành", next: "Kiểm tra phản hồi trước khi nhắc tiếp." },
+    WAITING_FOR_RESPONSE: { owner: "Đầu mối phụ trách", next: "Chờ phản hồi hoặc kiểm tra lại khi đến hạn." },
+    NEXT_CHECK_PENDING: { owner: "Người vận hành", next: "Kiểm tra lại diễn biến ở thời điểm kế tiếp." },
+    ESCALATION_PENDING: { owner: "Quản lý", next: "Xem bằng chứng và quyết định báo cấp trên." },
+    RESOLVED: { owner: "Người vận hành", next: "Xác nhận kết quả cuối và đóng hồ sơ." },
+    NONE: { owner: "Người vận hành", next: "Hoàn tất bước kiểm tra trước đó." },
+  } as Record<string, { owner: string; next: string }>)[status] || {
+    owner: "Người phụ trách",
+    next: "Mở hồ sơ để kiểm tra trạng thái chi tiết.",
+  };
 }
 
 export function orderStatusLabel(value: unknown): string {

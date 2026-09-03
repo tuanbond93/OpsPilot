@@ -18,17 +18,11 @@ export class FollowupService implements IFollowupService {
 
   async getAllCases(): Promise<{ totalCases: number; cases: any[] }> {
     if (this.followupRepo) {
-      try {
-        const cases = await this.followupRepo.getAllCases();
-        if (cases.length > 0) {
-          return {
-            totalCases: cases.length,
-            cases,
-          };
-        }
-      } catch {
-        // Fallback if DB tables not migrated yet
-      }
+      const cases = await this.followupRepo.getAllCases();
+      return {
+        totalCases: cases.length,
+        cases,
+      };
     }
 
     // Fallback in-memory state engine run
@@ -163,11 +157,15 @@ export class FollowupService implements IFollowupService {
       current_state: transitionResult.newState,
       first_detected_at: followupCase.first_detected_at,
       last_checked_at: refTimeIso,
+      next_action_at: transitionResult.nextActionAt ?? followupCase.next_action_at,
+      last_action_requested_at: followupCase.last_action_requested_at,
       last_action_confirmed_at: refTimeIso,
       baseline_affected_order_count: followupCase.baseline_affected_order_count,
       latest_affected_order_count: followupCase.latest_affected_order_count,
       current_progress_percent: followupCase.current_progress_percent,
       current_assessment: followupCase.current_assessment,
+      current_rillnet_status_signature: followupCase.current_rillnet_status_signature || "",
+      last_action_rillnet_status_signature: followupCase.current_rillnet_status_signature || null,
     });
 
     const newEvent = await this.followupRepo.insertEvent({
@@ -251,8 +249,10 @@ export class FollowupService implements IFollowupService {
         last_action_confirmed_at: refTimeIso,
         baseline_affected_order_count: followupCase.baseline_affected_order_count,
         latest_affected_order_count: followupCase.latest_affected_order_count,
-        current_progress_percent: followupCase.current_progress_percent,
-        current_assessment: followupCase.current_assessment,
+      current_progress_percent: followupCase.current_progress_percent,
+      current_assessment: followupCase.current_assessment,
+      current_rillnet_status_signature: followupCase.current_rillnet_status_signature || "",
+      last_action_rillnet_status_signature: followupCase.current_rillnet_status_signature || null,
       });
 
       const newEvent = await this.followupRepo.insertEvent({
@@ -270,6 +270,47 @@ export class FollowupService implements IFollowupService {
     }
 
     return null;
+  }
+
+  async resumeAfterRillnetChange(
+    id: string,
+    resumedBy: string = "manager"
+  ): Promise<{ ok: boolean; followupCase?: any; event?: any; error?: string; message?: string }> {
+    if (!this.followupRepo) return { ok: false, error: "NotFound", message: `Follow-up case '${id}' not found.` };
+
+    const followupCase = await this.followupRepo.getCaseById(id);
+    if (!followupCase) return { ok: false, error: "NotFound", message: `Follow-up case '${id}' not found.` };
+    if (followupCase.current_state !== "RILLNET_CHANGE_PAUSED") {
+      return { ok: false, error: "StateMismatch", message: "Case is not paused because of a Rillnet status change." };
+    }
+
+    const now = new Date().toISOString();
+    const updatedCase = await this.followupRepo.upsertCase({
+      incident_id: followupCase.incident_id,
+      incident_key: followupCase.incident_key,
+      current_state: "FOLLOWING_UP",
+      first_detected_at: followupCase.first_detected_at,
+      last_checked_at: now,
+      last_action_confirmed_at: now,
+      baseline_affected_order_count: followupCase.baseline_affected_order_count,
+      latest_affected_order_count: followupCase.latest_affected_order_count,
+      current_progress_percent: followupCase.current_progress_percent,
+      current_assessment: followupCase.current_assessment,
+      current_rillnet_status_signature: followupCase.current_rillnet_status_signature || "",
+      last_action_rillnet_status_signature: followupCase.current_rillnet_status_signature || null,
+      rillnet_change_summary: null,
+    });
+    const event = await this.followupRepo.insertEvent({
+      followup_case_id: updatedCase.id,
+      event_type: "FOLLOWUP_RESUMED",
+      event_time: now,
+      old_state: "RILLNET_CHANGE_PAUSED",
+      new_state: "FOLLOWING_UP",
+      assessment: followupCase.current_assessment,
+      confirmed_by: resumedBy,
+      notes: "Manager resumed monitoring after reviewing the Rillnet status change. No Telegram message was sent.",
+    });
+    return { ok: true, followupCase: updatedCase, event };
   }
 
   async processIncidentFollowups(

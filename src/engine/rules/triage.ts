@@ -19,6 +19,8 @@ export type TriageInput = Pick<Incident,
   followupState?: string | null;
   actionRequired?: boolean;
   hasConflictingActions?: boolean;
+  /** Approved deterministic directives selected from the playbook registry. */
+  playbookDirectiveCandidates?: Array<Record<string, unknown>>;
   zoneName?: string | null;
   pilotZoneNames?: readonly string[];
 };
@@ -88,6 +90,7 @@ export function routeIncident(input: TriageInput): TriageResult {
     followupState: input.followupState || "NEW",
     zoneName: input.zoneName || null,
     pilotScope,
+    playbookDirectiveCandidates: input.playbookDirectiveCandidates || [],
   };
   const severity = severityFromPriority(input.priorityScore);
 

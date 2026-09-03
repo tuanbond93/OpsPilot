@@ -10,6 +10,7 @@ import type { IActionQueue } from "@/engine/action-queue/IActionQueue";
 import { RootCauseAgent } from "@/agents/root-cause";
 import { ActionPlannerAgent } from "@/agents/action-planner";
 import { readApprovedPlaybookGuidance } from "@/services/playbook-guidance";
+import { loadLatestOperationalEvidence } from "@/services/ghn-lastmile-operational-evidence";
 
 const MAX_REVIEWED_BY_LENGTH = 200;
 
@@ -67,6 +68,13 @@ export class PlannerService implements IPlannerService {
       const actionHistory = await (this.actionQueue as any).getAllActions?.() || [];
       let approvedPlaybookGuidance: import("@/services/playbook-guidance").ApprovedPlaybookGuidance[] = [];
       try { approvedPlaybookGuidance = await readApprovedPlaybookGuidance(dbInc.id); } catch { /* Guidance is optional; planner remains safe without it. */ }
+      let operationalEvidence = null;
+      try {
+        operationalEvidence = await loadLatestOperationalEvidence(dbInc.warehouse_id);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        logger.warn({ component: "PlannerService", operation: "loadOperationalEvidence", status: "warning", message: "GHN operational evidence unavailable; planner will continue with limitations.", metadata: { code: "GHN_OPERATIONAL_EVIDENCE_UNAVAILABLE", message, incidentId: dbInc.id } });
+      }
 
       let rootCauseResult = null;
       try {
@@ -103,6 +111,7 @@ export class PlannerService implements IPlannerService {
         followupEvents,
         actionHistory,
         activeExceptions,
+        operationalEvidence,
         approvedPlaybookGuidance,
         options: { provider, model, forceRegenerate, requestedBy },
       });

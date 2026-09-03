@@ -7,6 +7,7 @@ export interface IAiJobRepository {
     scheduledAt?: string
   ): Promise<AiAnalysisJobRow>;
   claimPendingJob(workerId: string, lockTimeoutMs?: number): Promise<AiAnalysisJobRow | null>;
+  claimPendingJobForIncident(workerId: string, incidentId: string, lockTimeoutMs?: number): Promise<AiAnalysisJobRow | null>;
   markJobCompleted(jobId: string): Promise<AiAnalysisJobRow | null>;
   markJobFailed(
     jobId: string,

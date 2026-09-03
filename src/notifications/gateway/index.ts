@@ -334,7 +334,7 @@ export class NotificationGateway {
     province: string | null,
     client: SupabaseClient
   ): Promise<DeliveryResult | null> {
-    if (!isMirrorEnabled()) return null;
+    if (!isMirrorEnabled() || request.options?.mirror === false) return null;
 
     const mirrorTarget = await this.mirrorService.resolveMirrorTarget(client, province);
     if (!mirrorTarget) return null;

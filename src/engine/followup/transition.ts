@@ -16,6 +16,13 @@ export interface ProcessTransitionParams {
   transitionResult: TransitionResult;
   snapshotId?: string;
   referenceTimeMs?: number;
+  currentRillnetStatusSignature?: string;
+  lastActionRillnetStatusSignature?: string | null;
+  rillnetChangeSummary?: string | null;
+  rillnetReviewBeforeSignature?: string;
+  rillnetReviewAfterSignature?: string;
+  rillnetReviewSnapshotId?: string;
+  rillnetReviewOrderCodes?: string[];
 }
 
 export function buildCaseMutation(params: ProcessTransitionParams): FollowupCaseUpsert {
@@ -30,6 +37,7 @@ export function buildCaseMutation(params: ProcessTransitionParams): FollowupCase
     latest_affected_order_count: params.latestCount,
     current_progress_percent: params.changePercent,
     current_assessment: params.assessment,
+    current_rillnet_status_signature: params.currentRillnetStatusSignature || "",
   };
 
   if (params.transitionResult.nextActionAt !== undefined) {
@@ -46,6 +54,18 @@ export function buildCaseMutation(params: ProcessTransitionParams): FollowupCase
   }
   if (params.transitionResult.newState === "CLOSED") {
     payload.closed_at = refTimeIso;
+  }
+  if (params.transitionResult.eventType === "RILLNET_STATUS_CHANGED") {
+    payload.rillnet_change_summary = params.rillnetChangeSummary || "Rillnet changed status after the last reminder.";
+    payload.rillnet_changed_at = refTimeIso;
+    payload.rillnet_review_before_signature = params.rillnetReviewBeforeSignature || null;
+    payload.rillnet_review_after_signature = params.rillnetReviewAfterSignature || null;
+    payload.rillnet_review_detected_at = refTimeIso;
+    payload.rillnet_review_snapshot_id = params.rillnetReviewSnapshotId || null;
+    payload.rillnet_review_order_codes = params.rillnetReviewOrderCodes || [];
+  }
+  if (params.lastActionRillnetStatusSignature !== undefined) {
+    payload.last_action_rillnet_status_signature = params.lastActionRillnetStatusSignature;
   }
 
   return payload;

@@ -1,4 +1,4 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { createAdminClient } from "@/connectors/supabase";
 import { ServiceFactory } from "@/services/ServiceFactory";
 import {
@@ -6,10 +6,12 @@ import {
   type PilotDecision,
   type PilotFeedback,
   type PilotOutcome,
+  type PilotVerifiedOutcome,
   type PilotReview,
   type PilotVerification,
 } from "@/services/pilot-quality";
-import { isAuthEnforced } from "@/security/api-security";
+import { authorizeApiRequest, isAuthEnforced } from "@/security/api-security";
+import { buildMb03ReadinessSnapshot } from "@/services/telegram-mb03-readiness";
 
 export const dynamic = "force-dynamic";
 
@@ -21,10 +23,12 @@ function incidentContext(value: IncidentRelation | IncidentRelation[] | null): I
   return value || { warehouse_name: null, reason_name: null };
 }
 
-export async function GET() {
+export async function GET(request: NextRequest) {
+  const auth = await authorizeApiRequest(request, "VIEW_SYSTEM");
+  if (!auth.ok) return auth.response;
   try {
     const db = createAdminClient();
-    const [verificationResult, feedbackResult, workflowResult, reviewResult, decisionResult, outcomeResult] =
+    const [verificationResult, feedbackResult, workflowResult, reviewResult, decisionResult, outcomeResult, verifiedOutcomeResult, mb03Result] =
       await Promise.all([
         db.from("incident_verifications").select("incident_id,actual_cause,verified_at,incidents(warehouse_name,reason_name)").order("verified_at", { ascending: false }).limit(1000),
         db.from("incident_feedback_reports").select("id,category,reported_at").order("reported_at", { ascending: false }).limit(1000),
@@ -32,9 +36,11 @@ export async function GET() {
         db.from("copilot_reviews").select("status,rating,reviewed_at").eq("is_active", true).limit(1000),
         db.from("decisions").select("id,decision_mode,decision_status").limit(1000),
         db.from("decision_outcomes").select("decision_id,status,measured_at").limit(1000),
+        db.from("decision_outcome_verifications").select("decision_id,classification,observed_at").limit(1000),
+        db.from("conversation_events").select("ai_result,created_at").eq("direction", "OUTBOUND").contains("ai_result", { type: "MB03_DISCOVERY" }).order("created_at", { ascending: false }).limit(1000),
       ]);
 
-    const failed = [verificationResult, feedbackResult, workflowResult, reviewResult, decisionResult, outcomeResult]
+    const failed = [verificationResult, feedbackResult, workflowResult, reviewResult, decisionResult, outcomeResult, verifiedOutcomeResult, mb03Result]
       .find((result) => result.error);
     if (failed?.error) {
       return NextResponse.json({ error: "PILOT_QUALITY_QUERY_FAILED", message: failed.error.message }, { status: 500 });
@@ -77,6 +83,11 @@ export async function GET() {
         status: row.status,
         measuredAt: row.measured_at,
       })) as PilotOutcome[],
+      verifiedOutcomes: (verifiedOutcomeResult.data || []).map((row) => ({
+        decisionId: row.decision_id,
+        classification: row.classification,
+        verifiedAt: row.observed_at,
+      })) as PilotVerifiedOutcome[],
       authEnforced: isAuthEnforced(),
     });
 
@@ -84,6 +95,7 @@ export async function GET() {
     return NextResponse.json({
       ok: true,
       snapshot,
+      mb03: buildMb03ReadinessSnapshot(mb03Result.data || []),
       copilotQuality: qualityResult.ok ? qualityResult.summary : null,
       limitations: [
         "Các tỷ lệ chỉ phản ánh mẫu đã được con người review hoặc xác minh.",

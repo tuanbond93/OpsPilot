@@ -24,6 +24,7 @@ describe("pilot quality snapshot", () => {
         { id: "d2", mode: "HUMAN_APPROVAL", status: "READY_FOR_REVIEW" },
       ],
       outcomes: [{ decisionId: "d1", status: "SUCCESS", measuredAt: "2026-08-23" }],
+      verifiedOutcomes: [{ decisionId: "d1", classification: "SUCCESS", verifiedAt: "2026-08-23" }],
       authEnforced: true,
     });
 
@@ -32,6 +33,8 @@ describe("pilot quality snapshot", () => {
     expect(result.review.averageRating).toBe(4);
     expect(result.feedback.resolutionRate).toBe(0.5);
     expect(result.decision.outcomeCoverage).toBe(0.5);
+    expect(result.decision.verifiedOutcomeCoverage).toBe(0.5);
+    expect(result.decision.withVerifiedOutcome).toBe(1);
     expect(result.verificationCauses[0]).toEqual({ label: "STAFFING", count: 2 });
     expect(result.sample.verifiedWarehouses).toBe(2);
     expect(result.verificationCoverage.byWarehouse).toEqual([
@@ -47,5 +50,18 @@ describe("pilot quality snapshot", () => {
     expect(result.review.averageRating).toBeNull();
     expect(result.feedback.resolutionRate).toBeNull();
     expect(result.decision.outcomeCoverage).toBeNull();
+  });
+
+  it("does not treat an operator-observed outcome as a verified Level C outcome", () => {
+    const result = buildPilotQualitySnapshot({
+      verifications: [], feedback: [], reviews: [],
+      decisions: [{ id: "d1", mode: "HUMAN_APPROVAL", status: "SUCCESS" }],
+      outcomes: [{ decisionId: "d1", status: "SUCCESS", measuredAt: "2026-08-23" }],
+      verifiedOutcomes: [],
+    });
+
+    expect(result.decision.withOutcome).toBe(1);
+    expect(result.decision.withVerifiedOutcome).toBe(0);
+    expect(result.readiness.find((item) => item.key === "decision_outcome")?.state).toBe("NO_EVIDENCE");
   });
 });

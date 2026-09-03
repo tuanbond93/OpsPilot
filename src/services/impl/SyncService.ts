@@ -8,6 +8,7 @@ import type { IFollowupRepository } from "@/repositories/interfaces/IFollowupRep
 import type { IAiJobRepository } from "@/repositories/interfaces/IAiJobRepository";
 import type { ISyncLockRepository } from "@/repositories/interfaces/ISyncLockRepository";
 import type { ITriageAuditRepository } from "@/repositories/interfaces/ITriageAuditRepository";
+import type { IPlaybookDirectiveRepository } from "@/repositories/interfaces/IPlaybookDirectiveRepository";
 import type { PhaseTimingInfo, DetectedBottleneck } from "@/jobs/sync-rillnet";
 import type { SyncPhase, SyncRunRow } from "@/connectors/supabase/types";
 import { RillnetConnector } from "@/connectors/rillnet";
@@ -18,6 +19,7 @@ import { refresh } from "@/projections/projection-engine";
 import { logRuntimeError, logRuntimeMessage } from "@/observability/runtimeDiagnostics";
 import { logger } from "@/observability/logger";
 import { getRoutePromotion, routeIncident, shouldEnqueueAiJob, type TriageResult } from "@/engine/rules/triage";
+import { hasConflictingActions, selectApplicablePlaybookDirectives } from "@/engine/rules/conflict-detector";
 import warehouseAssignments from "@/data/warehouse-assignments.generated.json";
 
 type WarehouseAssignment = { warehouseId: string; warehouseName: string; zone: string };
@@ -72,7 +74,8 @@ export class SyncService implements ISyncService {
     private aiJobRepo: IAiJobRepository | null = null,
     private actionQueue: ActionQueue | null = null,
     private syncLockRepo: ISyncLockRepository | null = null,
-    private triageAuditRepo: ITriageAuditRepository | null = null
+    private triageAuditRepo: ITriageAuditRepository | null = null,
+    private playbookDirectiveRepo: IPlaybookDirectiveRepository | null = null
   ) {}
 
   async runSync(_options?: SyncOptions): Promise<SyncSummary> {
@@ -769,15 +772,40 @@ export class SyncService implements ISyncService {
 
           const followupStateByIncidentId = new Map(followupResults.map((item) => [item.incidentId, item.newState]));
           const triageByIncidentId = new Map<string, TriageResult>();
+          // Directives are human-approved configuration, not observations from Rillnet
+          // and not content inferred by an AI model. An unavailable registry fails
+          // closed: it cannot manufacture a conflict or interrupt Lane A follow-up.
+          let activeDirectives: Awaited<ReturnType<IPlaybookDirectiveRepository["getActiveDirectives"]>> = [];
+          if (this.playbookDirectiveRepo) {
+            try {
+              activeDirectives = await this.playbookDirectiveRepo.getActiveDirectives();
+            } catch (error) {
+              logRuntimeError("SyncService.playbookDirectives", error);
+            }
+          }
           for (const inc of incidents) {
             const dbId = keyToIdMap.get(inc.incidentKey) || inc.incidentId;
             const zoneName = warehouseZoneById.get(inc.warehouseId) || warehouseZoneByName.get(inc.warehouseName) || null;
+            const followupState = followupStateByIncidentId.get(dbId) || "NEW";
+            const directiveCandidates = selectApplicablePlaybookDirectives(activeDirectives, {
+              reasonCode: inc.reasonCode,
+              followupState,
+              warehouseId: inc.warehouseId,
+              zoneName,
+            });
             triageByIncidentId.set(dbId, routeIncident({
               ...inc,
               incidentId: dbId,
-              followupState: followupStateByIncidentId.get(dbId) || "NEW",
+              followupState,
               actionRequired: true,
-              hasConflictingActions: false,
+              hasConflictingActions: hasConflictingActions(directiveCandidates.map((directive) => ({ action: directive.actionCode, polarity: directive.polarity }))),
+              playbookDirectiveCandidates: directiveCandidates.map((directive) => ({
+                directiveId: directive.id,
+                policyVersion: directive.policyVersion,
+                actionCode: directive.actionCode,
+                polarity: directive.polarity,
+                priority: directive.priority,
+              })),
               zoneName,
               pilotZoneNames: TRIAGE_PILOT_ZONES,
             }));
@@ -818,13 +846,31 @@ export class SyncService implements ISyncService {
           }
 
           if (this.aiJobRepo && incidents.length > 0) {
-            for (const inc of incidents) {
+            // Preserve the non-null repository across async callbacks. TypeScript
+            // cannot otherwise guarantee that a mutable class property remains
+            // available after the Promise boundary.
+            const aiJobRepo = this.aiJobRepo;
+            const eligibleIncidents = incidents.filter((inc) => {
               const dbId = keyToIdMap.get(inc.incidentKey) || inc.incidentId;
               const triage = triageByIncidentId.get(dbId);
-              if (dbId && triage && shouldEnqueueAiJob(triage)) {
+              return Boolean(dbId && triage && shouldEnqueueAiJob(triage));
+            });
+
+            // Supabase enqueue performs a network round-trip. Running every
+            // incident serially made a normal sync consume the whole Vercel
+            // request budget, preventing downstream Telegram confirmation.
+            // Keep concurrency bounded to protect the database while ensuring
+            // the durable sync can reach its notification phase promptly.
+            const enqueueConcurrency = 10;
+            for (let offset = 0; offset < eligibleIncidents.length; offset += enqueueConcurrency) {
+              const batch = eligibleIncidents.slice(offset, offset + enqueueConcurrency);
+              await Promise.all(batch.map(async (inc) => {
+                const dbId = keyToIdMap.get(inc.incidentKey) || inc.incidentId;
+                const triage = triageByIncidentId.get(dbId);
+                if (dbId && triage && shouldEnqueueAiJob(triage)) {
                 const priority = inc.priorityScore >= 75 ? "urgent" : inc.priorityScore >= 50 ? "high" : "medium";
                 try {
-                  await this.aiJobRepo.enqueueJob(dbId, priority);
+                  await aiJobRepo.enqueueJob(dbId, priority);
                   successfulEnqueue++;
                 } catch (e: any) {
                   logger.info({
@@ -836,7 +882,8 @@ export class SyncService implements ISyncService {
                   });
                   throw e;
                 }
-              }
+                }
+              }));
             }
           }
 

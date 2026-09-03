@@ -7,6 +7,20 @@ import { HealthRegistry } from "../../integrations/health";
 import { StartupValidator } from "../../integrations/startup-validator";
 import { ITriageAuditRepository } from "../../repositories/interfaces/ITriageAuditRepository";
 
+const VIETNAM_OFFSET_MS = 7 * 60 * 60 * 1000;
+
+export function getVietnamDayWindow(nowMs: number) {
+  const vietnamNow = new Date(nowMs + VIETNAM_OFFSET_MS);
+  const startMs = Date.UTC(vietnamNow.getUTCFullYear(), vietnamNow.getUTCMonth(), vietnamNow.getUTCDate()) - VIETNAM_OFFSET_MS;
+  return { startMs, endMs: startMs + 24 * 60 * 60 * 1000, startIso: new Date(startMs).toISOString() };
+}
+
+export function isTimestampInWindow(value: unknown, startMs: number, endMs: number) {
+  if (typeof value !== "string") return false;
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) && timestamp >= startMs && timestamp < endMs;
+}
+
 export class DashboardService implements IDashboardService {
   constructor(
     private dashboardRepo: IDashboardRepository,
@@ -28,6 +42,10 @@ export class DashboardService implements IDashboardService {
     let syncRunMs = 0;
 
     const todayStr = nowIso.slice(0, 10);
+    // Vietnam does not observe daylight saving time. Calculate a stable local
+    // day window so "hôm nay" never silently means the current UTC date.
+    const vietnamDay = getVietnamDayWindow(now);
+    const isTodayInVietnam = (value: unknown) => isTimestampInWindow(value, vietnamDay.startMs, vietnamDay.endMs);
     const t0 = performance.now();
 
     const [
@@ -35,7 +53,9 @@ export class DashboardService implements IDashboardService {
       warehousesListRaw,
       plannerListRaw,
       notificationsListRaw,
+      telegramRemindersToday,
       latestSyncRun,
+      recentSyncRuns,
       allAiJobs,
       actionEvents,
       followupEvents,
@@ -45,7 +65,9 @@ export class DashboardService implements IDashboardService {
       this.dashboardRepo.getWarehouseSummaries(),
       this.dashboardRepo.getPlannerSummaries(),
       this.dashboardRepo.getNotificationSummaries(),
+      this.dashboardRepo.getTelegramFollowupRemindersUpdatedSince(vietnamDay.startIso),
       this.syncRepo.getLatestSyncRun(),
+      this.syncRepo.getLatestSyncRuns(20),
       this.aiJobRepo.getAllJobs(100),
       this.dashboardRepo.getRecentActionEvents(30),
       this.dashboardRepo.getRecentFollowupEvents(30),
@@ -131,6 +153,8 @@ export class DashboardService implements IDashboardService {
         latestSnapshotAt: i.latest_snapshot_at || null,
         previousSnapshotAt: i.previous_snapshot_at || null,
         followupState: i.followup_state || "NEW",
+        followupResolvedAt: i.followup_resolved_at || null,
+        followupClosedAt: i.followup_closed_at || null,
         plannerStatus: i.planner_status || "NONE",
         aiStatus: latestAiJobByIncident.get(i.incident_id)?.status || "NONE",
         triage: triage ? {
@@ -166,8 +190,16 @@ export class DashboardService implements IDashboardService {
       ? Math.round((totalMaxAge / ageCount) * 10) / 10
       : 0;
 
-    const incidentsResolvedToday = liveIncidentsList.filter(
-      (i: any) => i.followupState === "CLOSED"
+    const incidentsResolvedToday = liveIncidentsList.filter((i: any) =>
+      ["RESOLVED", "CLOSED"].includes(i.followupState)
+      && (isTodayInVietnam(i.followupResolvedAt) || isTodayInVietnam(i.followupClosedAt))
+    ).length;
+
+    const telegramPushSentToday = telegramRemindersToday.filter((reminder: any) =>
+      reminder.status === "SENT" && isTodayInVietnam(reminder.sent_at)
+    ).length;
+    const telegramPushFailedToday = telegramRemindersToday.filter((reminder: any) =>
+      reminder.status === "FAILED" && isTodayInVietnam(reminder.updated_at)
     ).length;
 
     const aiJobsPending = allAiJobs.filter((j: any) => j.status === "PENDING").length;
@@ -189,7 +221,7 @@ export class DashboardService implements IDashboardService {
     }
 
     const followupsWaiting = liveIncidentsList.filter((i: any) =>
-      ["WAITING_FOR_RESPONSE", "NEXT_CHECK_PENDING", "FIRST_PUSH_PENDING", "SECOND_PUSH_PENDING", "ESCALATION_PENDING"].includes(
+      ["WAITING_FOR_RESPONSE", "NEXT_CHECK_PENDING", "FIRST_PUSH_PENDING", "SECOND_PUSH_PENDING", "THIRD_PUSH_PENDING", "ESCALATION_PENDING", "FOLLOWING_UP", "RILLNET_CHANGE_PAUSED"].includes(
         i.followupState
       )
     ).length;
@@ -206,7 +238,8 @@ export class DashboardService implements IDashboardService {
       aiJobsPending,
       aiJobsRunning,
       notificationsPending,
-      notificationsFailed,
+      notificationsFailed: telegramPushFailedToday,
+      telegramPushSentToday,
       followupsWaiting,
       plannerDraftsWaitingReview,
     };
@@ -433,7 +466,10 @@ export class DashboardService implements IDashboardService {
         lastFailureAt: null,
         freshnessSeconds: 0,
       },
+      // A failed/latest attempt must not be presented as a fresh snapshot.
       lastSync: latestSyncRun?.completed_at || latestSyncRun?.started_at || null,
+      lastSuccessfulSync: recentSyncRuns.find((run) => run.status === "success")?.completed_at || recentSyncRuns.find((run) => run.status === "success")?.started_at || null,
+      latestSyncStatus: latestSyncRun?.status || null,
       lastAiWorker: allAiJobs[0]?.updated_at || null,
       lastNotificationDispatch: null,
     };
@@ -457,11 +493,12 @@ export class DashboardService implements IDashboardService {
         highPriorityIncidents: "Active incidents with priority_score >= 50",
         averageIncidentDurationHours: "Average hours elapsed since first_detected_at for active incidents",
         averageOldestOrderAgeHours: "Average maximum_age_hours across active incidents from history snapshots",
-        incidentsResolvedToday: "Incidents resolved within the current UTC day",
+        incidentsResolvedToday: "Follow-up cases moved to RESOLVED or CLOSED within the current Vietnam day",
         aiJobsPending: "Count of AI background analysis jobs in PENDING status",
         aiJobsRunning: "Count of AI background analysis jobs in PROCESSING status",
         notificationsPending: "Count of notification actions in PENDING status",
-        notificationsFailed: "Count of notification actions in FAILED status",
+        notificationsFailed: "Telegram follow-up cases with a failed delivery in the current Vietnam day",
+        telegramPushSentToday: "Telegram follow-up cases delivered successfully in the current Vietnam day",
         followupsWaiting: "Follow-up cases in active waiting states",
         plannerDraftsWaitingReview: "Action Planner runs in DRAFT status waiting for review",
       },

@@ -29,7 +29,7 @@ export class SupabaseTriageAuditRepository implements ITriageAuditRepository {
     if (!incidentIds.length) return [];
     const { data, error } = await this.client
       .from("incident_triage_evaluations")
-      .select("incident_id, sync_run_id, route, reason_code, severity, decision_complexity, triage_reason, routing_version, evidence, created_at")
+      .select("id, incident_id, sync_run_id, route, reason_code, severity, decision_complexity, triage_reason, routing_version, evidence, created_at")
       .in("incident_id", incidentIds)
       .order("created_at", { ascending: false });
     if (error) throw new Error(`Triage audit lookup failed: ${error.message}`);
@@ -38,6 +38,7 @@ export class SupabaseTriageAuditRepository implements ITriageAuditRepository {
     for (const row of data || []) {
       if (latestByIncident.has(row.incident_id)) continue;
       latestByIncident.set(row.incident_id, {
+        id: row.id,
         incidentId: row.incident_id,
         syncRunId: row.sync_run_id,
         route: row.route,

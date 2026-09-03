@@ -15,12 +15,24 @@ export class SupabasePlannerRepository extends BaseRepository implements IPlanne
 
   async createPlannerRun(run: Partial<PlannerRunRow>): Promise<PlannerRunRow> {
     const nowIso = new Date().toISOString();
+    // PlannerRunRow is the database-shaped type, where prompt_version is
+    // numeric. Older callers may still pass a domain string; accept both but
+    // never serialize an already numeric version a second time.
+    const rawPromptVersion = run.prompt_version;
+    const promptVersion = rawPromptVersion === undefined || rawPromptVersion === null
+      ? 1
+      : typeof rawPromptVersion === "number"
+        ? rawPromptVersion
+        : serializePromptVersion(rawPromptVersion as unknown as string);
+    if (!Number.isInteger(promptVersion) || promptVersion < 1) {
+      throw new Error(`Invalid prompt version number ${String(rawPromptVersion)}`);
+    }
     const newRun: Partial<PlannerRunRow> = {
       incident_id: run.incident_id,
       followup_case_id: run.followup_case_id || null,
       status: run.status || "DRAFT",
       context_hash: run.context_hash || "",
-      prompt_version: run.prompt_version ? serializePromptVersion(run.prompt_version as any) : 1,
+      prompt_version: promptVersion,
       provider: run.provider || "deterministic_fallback",
       model: run.model || "none",
       result: run.result || {},
@@ -117,6 +129,16 @@ export class SupabasePlannerRepository extends BaseRepository implements IPlanne
 
     }
     return row;
+  }
+
+  async updatePlannerRunResult(id: string, result: Record<string, unknown>): Promise<PlannerRunRow | null> {
+    const query = this.client
+      .from("planner_runs")
+      .update({ result })
+      .eq("id", id)
+      .select()
+      .maybeSingle();
+    return this.executeOptional<PlannerRunRow>(query as any);
   }
 
   async getAllPlannerRuns(incidentId?: string, limit: number = 50): Promise<PlannerRunRow[]> {

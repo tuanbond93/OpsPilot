@@ -40,6 +40,8 @@ export interface DeliveryRequest {
     inlineKeyboard?: Array<Array<{ text: string; callbackData: string }>>;
     idempotencyKey?: string;
     actor?: string;
+    /** Disable per-delivery Telegram mirror when the caller emits one batch summary. */
+    mirror?: boolean;
   };
 }
 

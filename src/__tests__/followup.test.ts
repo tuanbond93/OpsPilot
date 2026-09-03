@@ -8,6 +8,7 @@ import {
 import { DEFAULT_FOLLOWUP_CONFIG } from "../config/followup";
 import type { Incident } from "../engine/incident";
 import fs from "fs";
+import { MockFollowupRepository } from "@/repositories/mock/MockFollowupRepository";
 
 describe("Sprint 4.3 Hardened: Follow-up Engine & Action Governance Tests", () => {
   beforeEach(() => {
@@ -280,5 +281,35 @@ describe("Sprint 4.3 Hardened: Follow-up Engine & Action Governance Tests", () =
     const { progressPercent, assessment } = evaluateProgressAssessment(10000, 1, 2);
     expect(progressPercent).toBe(-999900);
     expect(assessment).toBe("worsening");
+  });
+
+  it("14. A changed Rillnet status pauses reminders before a later Telegram stage can be requested", async () => {
+    const repo = new MockFollowupRepository();
+    repo.seed([{
+      id: "case-rillnet-change",
+      incident_id: dummyIncident.incidentId,
+      incident_key: dummyIncident.incidentKey,
+      current_state: "FIRST_PUSH_SENT",
+      first_detected_at: dummyIncident.firstDetectedAt,
+      last_checked_at: "2026-08-05T08:00:00Z",
+      last_action_confirmed_at: "2026-08-05T08:00:00Z",
+      baseline_affected_order_count: 100,
+      latest_affected_order_count: 100,
+      current_progress_percent: 0,
+      current_assessment: "no_progress",
+      current_rillnet_status_signature: '[["storing",100]]',
+      last_action_rillnet_status_signature: '[["storing",100]]',
+    }], []);
+    const engine = new FollowupEngine(repo, null);
+    const result = await engine.processIncidentFollowups([{
+      ...dummyIncident,
+      rillnetStatusSignature: '[["transporting",100]]',
+    }], new Map(), undefined, new Date("2026-08-05T11:00:00Z").getTime());
+
+    expect(result[0].newState).toBe("RILLNET_CHANGE_PAUSED");
+    const stored = await repo.getCaseById(dummyIncident.incidentKey);
+    expect(stored?.rillnet_change_summary).toContain("Rillnet status changed");
+    const events = await repo.getEventsByCaseId(stored!.id);
+    expect(events[0]?.event_type).toBe("RILLNET_STATUS_CHANGED");
   });
 });

@@ -61,7 +61,18 @@ export async function readJsonBody(request: NextRequest, maxBytes = 32_768): Pro
 }
 
 export async function authorizeApiRequest(request: NextRequest, permission: OpsPermission, rate = { limit: 60, windowMs: 60_000 }) {
-  if (!isAuthEnforced()) return { ok: true as const, identity: null };
+  if (!isAuthEnforced()) {
+    if (process.env.NODE_ENV === "production") {
+      return {
+        ok: false as const,
+        response: NextResponse.json(
+          { error: "AUTH_ENFORCEMENT_REQUIRED" },
+          { status: 503 }
+        ),
+      };
+    }
+    return { ok: true as const, identity: null };
+  }
   const mutationGuard = validateMutationRequest(request);
   if (!mutationGuard.ok) return { ok: false as const, response: NextResponse.json({ error: mutationGuard.error }, { status: mutationGuard.status }) };
   const ip = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || request.headers.get("x-real-ip") || "unknown";

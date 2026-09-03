@@ -27,6 +27,10 @@ export interface IFollowupService {
     error?: string;
     message?: string;
   }>;
+  resumeAfterRillnetChange(
+    id: string,
+    resumedBy?: string
+  ): Promise<{ ok: boolean; followupCase?: any; event?: any; error?: string; message?: string }>;
 
   handleFollowupStateConfirmation(
     action: any,

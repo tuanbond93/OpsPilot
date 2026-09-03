@@ -1,16 +1,16 @@
 # OpsPilot Project Status
 
-Last Updated: 2026-08-26
+Last Updated: 2026-09-03
 
 ## Season 2 — Level C Decision System
 
 - Current state: **VALIDATED THROUGH LC-07**; Supabase migration schema verified, while end-to-end pilot runtime evidence is still pending.
 - Current branch: `codex/season2-safe-checkpoint`
-- Safe worktree checkpoint: `4211b1a` — Season 2 decision platform and worktree hygiene.
+- Safe committed checkpoint: `1798ab1` — pilot debug baseline before the current MB03/Level C integration batch.
 - Latest implementation checkpoint: LC-04 automatic Decision follow-up scheduling.
-- Worktree at handoff: clean; generated builds, logs, dependency backups, `tmp/` and `*.tsbuildinfo` are ignored but not deleted.
+- Worktree status: integration batch in progress; MB03, Telegram decision, Rillnet review, GHN last-mile evidence and release-hardening changes await a new checkpoint.
 - Migration evidence: on 2026-08-26, Supabase read-only checks returned HTTP 200 for `decisions`, `decision_followup_schedules`, `decision_outcome_observation_contracts`, and `decision_outcome_verifications`.
-- Quality evidence: TypeScript PASS; ESLint PASS; **56 test files / 331 tests PASS**; Next.js production build PASS.
+- Quality evidence (2026-09-03): secret scan PASS; TypeScript PASS; ESLint PASS; **92 test files / 475 tests PASS**; Next.js production build PASS.
 - Integration freeze: GHN Data API, MCP Gateway and GTalk remain out of scope until company access is granted.
 - Financial boundary: Decision Core remains `NOT_EVALUATED`; P15-B.1 remains the financial authority.
 
@@ -39,6 +39,8 @@ REAL/CURRENT DATA → AUTO DETECT → AI RCA → AI OPTIONS
 ```
 
 First missing link: `verified operational outcome → safe financial handoff to P15-B.1`.
+
+Pilot evidence rule (2026-08-31): the readiness scorecard counts a Decision outcome as Level C evidence only after an LC-06 `decision_outcome_verifications` record exists. An operator-observed outcome remains visible but is not treated as verified evidence.
 
 > Post-V1 update (2026-08-23): the repository now includes the Sprint 13 production UI, Copilot human review, Decision Core, Pilot feedback/quality and learning-data workflows, plus Supabase authentication and role-based authorization. These additions remain subject to the validation evidence recorded by the current release run; the historical Sprint 12.4 declaration below is preserved.
 

@@ -80,6 +80,7 @@ export async function GET(request: Request) {
           aiJobsRunning: 0,
           notificationsPending: 0,
           notificationsFailed: 0,
+          telegramPushSentToday: 0,
         },
         incidents: emptyBounded,
         workerStatus: { pendingCount: 0, processingCount: 0, completedTodayCount: 0, failedTodayCount: 0, retryQueueCount: 0, workerHealth: "degraded", lastExecution: null, averageRuntimeMs: 0, queueDepth: 0 },
@@ -88,7 +89,7 @@ export async function GET(request: Request) {
         plannerSummary: { draftCount: 0, approvedCount: 0, rejectedCount: 0, recentRecommendations: emptyBounded },
         timeline: { ...emptyBounded },
         diagnostics: { timings: { incidentsMs: 0, historiesMs: 0, followupsMs: 0, plannerMs: 0, aiJobsMs: 0, notificationsMs: 0, syncRunMs: 0, aggregationMs: 0, totalMs: 0 } },
-        health: { database: healthUnavailable, aiWorker: healthUnavailable, notificationPlatform: healthUnavailable, aiProvider: healthUnavailable, cronWorker: healthUnavailable, lastSync: null, lastAiWorker: null, lastNotificationDispatch: null },
+        health: { database: healthUnavailable, aiWorker: healthUnavailable, notificationPlatform: healthUnavailable, aiProvider: healthUnavailable, cronWorker: healthUnavailable, lastSync: null, lastSuccessfulSync: null, latestSyncStatus: null, lastAiWorker: null, lastNotificationDispatch: null },
         writeControlsEnabled: context.writeControlsEnabled,
       };
       return NextResponse.json(fallback);

@@ -3,6 +3,7 @@ import { INTEGRATIONS_CONFIG } from "../../../../config/integrations";
 import { SCHEDULER_JOBS } from "../../../../config/scheduler";
 import { SecretProvider } from "../../../../integrations/secrets";
 import { authorizeApiRequest } from "@/security/api-security";
+import { assessProductionReadiness } from "@/security/production-readiness";
 
 export const dynamic = "force-dynamic";
 
@@ -54,6 +55,7 @@ export async function GET(request: NextRequest) {
         activeJobsCount: jobsSummary.length,
         jobs: jobsSummary,
       },
+      productionReadiness: assessProductionReadiness(),
     });
   } catch (err: any) {
     return NextResponse.json(

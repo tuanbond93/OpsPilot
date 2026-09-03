@@ -26,7 +26,9 @@ const provinceOptions = Array.from(new Map(warehouseOptions.filter((warehouse) =
 export const dynamic = "force-dynamic";
 
 export async function GET(request: NextRequest) {
-  const auth = await authorizeApiRequest(request, "MANAGE_SYSTEM", { limit: 30, windowMs: 60_000 });
+  // Reading the roster/topic configuration is diagnostic and does not mutate
+  // Telegram delivery. PATCH below remains protected by MANAGE_SYSTEM.
+  const auth = await authorizeApiRequest(request, "VIEW_SYSTEM", { limit: 30, windowMs: 60_000 });
   if (!auth.ok) return auth.response;
   const client = createAdminClient();
   const { data: groups, error: groupError } = await client.from("telegram_pilot_groups").select("*").order("created_at", { ascending: false });
@@ -47,11 +49,13 @@ export async function PATCH(request: NextRequest) {
   if (topicId) {
     const provinceName = typeof parsed.body.provinceName === "string" ? canonicalProvince(parsed.body.provinceName) : "";
     const isEscalation = parsed.body.isEscalation === true;
+    const isManagerDecision = parsed.body.isManagerDecision === true;
     const status = ["PENDING", "ACTIVE", "SUSPENDED"].includes(String(parsed.body.status)) ? String(parsed.body.status) : "PENDING";
     if (provinceName && !provinceOptions.includes(provinceName)) return NextResponse.json({ error: "UNKNOWN_PROVINCE" }, { status: 400 });
-    if (!provinceName && !isEscalation) return NextResponse.json({ error: "TOPIC_SCOPE_REQUIRED", message: "Chọn một tỉnh hoặc đánh dấu topic Escalation." }, { status: 400 });
+    if (!provinceName && !isEscalation && !isManagerDecision) return NextResponse.json({ error: "TOPIC_SCOPE_REQUIRED", message: "Chọn một tỉnh, Escalation hoặc Manager Decision Shadow." }, { status: 400 });
+    if ((isEscalation && isManagerDecision) || ((isEscalation || isManagerDecision) && provinceName)) return NextResponse.json({ error: "TOPIC_SCOPE_CONFLICT", message: "Một topic chỉ có thể là tỉnh, Escalation hoặc Manager Decision Shadow." }, { status: 400 });
     const client = createAdminClient();
-    const { data, error } = await client.from("telegram_pilot_topics").update({ province_name: provinceName || null, is_escalation: isEscalation, status, mapped_at: new Date().toISOString(), mapped_by: auth.identity?.actor || "telegram-topic-admin" }).eq("id", topicId).select("*").maybeSingle();
+    const { data, error } = await client.from("telegram_pilot_topics").update({ province_name: provinceName || null, is_escalation: isEscalation, is_manager_decision: isManagerDecision, status, mapped_at: new Date().toISOString(), mapped_by: auth.identity?.actor || "telegram-topic-admin" }).eq("id", topicId).select("*").maybeSingle();
     if (error) return NextResponse.json({ error: "TELEGRAM_TOPIC_MAP_FAILED", message: error.message }, { status: 503 });
     if (!data) return NextResponse.json({ error: "TELEGRAM_TOPIC_NOT_FOUND" }, { status: 404 });
     return NextResponse.json({ ok: true, topic: data });

@@ -24,11 +24,14 @@ export async function GET(request: NextRequest) {
     const incidentById = new Map((incidents || []).map((row: any) => [row.id, row]));
     const latestHistoryByIncident = new Map<string, any>();
     for (const row of histories || []) if (!latestHistoryByIncident.has(row.incident_id)) latestHistoryByIncident.set(row.incident_id, row);
-    const allowed = auth.identity ? new Set(resolveDataScope(auth.identity.role, auth.identity.appMetadata, auth.identity.userMetadata).warehouseIds) : null;
+    const scope = auth.identity ? resolveDataScope(auth.identity.role, auth.identity.appMetadata, auth.identity.userMetadata) : null;
+    const allowed = scope ? new Set(scope.warehouseIds) : null;
+    const assignmentByWarehouseId = new Map((scope?.warehouses || []).map((warehouse) => [warehouse.warehouseId, warehouse]));
     return NextResponse.json({ ...result, items: (result.items || []).map((item) => {
       const incident = incidentById.get(item.incidentId) as any;
       const history = latestHistoryByIncident.get(item.incidentId);
-      return { ...item, warehouseName: incident?.warehouse_name, reasonName: incident?.reason_name, affectedOrderCount: history?.affected_order_count, sampleOrderCodes: history?.sample_order_codes || [], oldestOrderCode: history?.oldest_order_code || null };
+      const warehouseId = String(incident?.warehouse_id || "");
+      return { ...item, warehouseId, zoneName: assignmentByWarehouseId.get(warehouseId)?.zone || null, warehouseName: incident?.warehouse_name, reasonName: incident?.reason_name, affectedOrderCount: history?.affected_order_count, sampleOrderCodes: history?.sample_order_codes || [], oldestOrderCode: history?.oldest_order_code || null };
     }).filter((item) => !allowed || allowed.has((incidentById.get(item.incidentId) as any)?.warehouse_id)) });
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);

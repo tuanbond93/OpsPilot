@@ -14,6 +14,9 @@
 # Environment files
 .env
 .env*.local
+*.env
+!.env.example
+!*.env.example
 
 # Logs
 npm-debug.log*
@@ -34,3 +37,9 @@ yarn-error.log*
 .idea/
 
 .vercel
+
+# Local Supabase CLI state (may contain linked-project connection metadata)
+/supabase/.temp/
+
+# Local pilot evidence and rendered inspection artifacts
+/outputs/
