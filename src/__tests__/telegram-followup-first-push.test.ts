@@ -29,4 +29,12 @@ describe("Telegram first-push reminder", () => {
     expect(message).toContain("Tồn &lt;chưa rõ&gt;");
     expect(message).toContain("order_code=A%261");
   });
+
+  it("asks eligible outbound cases to use quick responses and reserves text for Khác", () => {
+    const message = formatTelegramFollowupFirstPush({ incidentKey: "INC-04", warehouseName: "Kho A", reasonName: "Kho tồn", affectedOrderCount: 1, orderCodes: ["A1"], structuredOutboundResponses: true }, []);
+    expect(message).toContain("Chọn một phản hồi bên dưới");
+    expect(message).toContain("Chỉ Reply nếu chọn Khác");
+    expect(message).toContain("không cần nhập lại mã đơn");
+    expect(message).not.toContain("MÃ_ĐƠN: nguyên nhân / hướng xử lý");
+  });
 });

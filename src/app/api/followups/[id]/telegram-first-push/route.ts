@@ -2,6 +2,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import { createAdminClient } from "@/connectors/supabase";
 import { TelegramClient } from "@/integrations/telegram";
 import { formatTelegramFollowupFirstPush } from "@/integrations/telegram/followup-first-push";
+import { followupInlineKeyboard, supportsStructuredOutboundResponses } from "@/integrations/telegram/followup-actions";
 import { readJsonBody, resolveActor } from "@/security/api-security";
 import { authorizeLinkedIncidentScope } from "@/security/scope-guard";
 import warehouseAssignments from "@/data/warehouse-assignments.generated.json";
@@ -36,7 +37,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     if (!followupCase) return NextResponse.json({ error: "FOLLOWUP_CASE_NOT_FOUND" }, { status: 404 });
     if (followupCase.current_state !== "FIRST_PUSH_PENDING") return NextResponse.json({ error: "FIRST_PUSH_NOT_PENDING", message: "Chỉ gửi được khi case đang chờ nhắc lần 1." }, { status: 409 });
 
-    const { data: incident, error: incidentError } = await client.from("incidents").select("id, incident_key, warehouse_name, reason_name, priority_score").eq("id", followupCase.incident_id).maybeSingle();
+    const { data: incident, error: incidentError } = await client.from("incidents").select("id, incident_key, warehouse_name, reason_code, reason_name, priority_score").eq("id", followupCase.incident_id).maybeSingle();
     if (incidentError) throw incidentError;
     if (!incident) return NextResponse.json({ error: "INCIDENT_NOT_FOUND" }, { status: 404 });
     const warehouseName = String(incident.warehouse_name || "Kho chưa xác định");
@@ -85,6 +86,9 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     await client.from("telegram_followup_reminder_events").insert({ reminder_id: reminder.id, event_type: "REMINDER_REQUESTED", actor, metadata: { followupCaseId: followupCase.id, incidentId: incident.id, recipientMemberIds: recipients.map((member) => member.id) } });
 
     const history = histories?.[0] as { sample_order_codes?: unknown; maximum_age_hours?: number | null } | undefined;
+    const structuredOutboundResponses = supportsStructuredOutboundResponses(incident.reason_code);
+    const message = formatTelegramFollowupFirstPush({ incidentKey: String(incident.incident_key || followupCase.incident_key), warehouseName, reasonName: String(incident.reason_name || "Sự cố vận hành"), affectedOrderCount: Number(followupCase.latest_affected_order_count || 0), maximumAgeHours: history?.maximum_age_hours, orderCodes: list(history?.sample_order_codes), structuredOutboundResponses }, recipients.map((member) => ({ displayName: member.display_name, username: member.username })));
+    const inlineKeyboard = structuredOutboundResponses ? followupInlineKeyboard(reminder.id, true) : undefined;
     try {
       let sent: { messageId: string | number; response?: any };
       if (FEATURE_FLAGS.notificationGateway) {
@@ -94,7 +98,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
           incidentId: incident.id,
           incidentKey: String(incident.incident_key || followupCase.incident_key),
           followupCaseId: followupCase.id,
-          message: formatTelegramFollowupFirstPush({ incidentKey: String(incident.incident_key || followupCase.incident_key), warehouseName, reasonName: String(incident.reason_name || "Sự cố vận hành"), affectedOrderCount: Number(followupCase.latest_affected_order_count || 0), maximumAgeHours: history?.maximum_age_hours, orderCodes: list(history?.sample_order_codes) }, recipients.map((member) => ({ displayName: member.display_name, username: member.username }))),
+          message,
           audience: {
             warehouse: warehouseName,
             chatId: String(group.telegram_chat_id),
@@ -102,6 +106,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
           },
           options: {
             parseMode: "HTML",
+            inlineKeyboard,
             idempotencyKey: idempotencyKey,
             actor,
           },
@@ -109,7 +114,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         const gatewayResult = await gateway.send(deliveryRequest, client);
         sent = { messageId: gatewayResult.primary.telegramMessageId || `gw-${Date.now()}` };
       } else {
-        sent = await new TelegramClient().sendToChat(String(group.telegram_chat_id), formatTelegramFollowupFirstPush({ incidentKey: String(incident.incident_key || followupCase.incident_key), warehouseName, reasonName: String(incident.reason_name || "Sự cố vận hành"), affectedOrderCount: Number(followupCase.latest_affected_order_count || 0), maximumAgeHours: history?.maximum_age_hours, orderCodes: list(history?.sample_order_codes) }, recipients.map((member) => ({ displayName: member.display_name, username: member.username }))), { parseMode: "HTML" });
+        sent = await new TelegramClient().sendToChat(String(group.telegram_chat_id), message, { parseMode: "HTML", inlineKeyboard });
       }
       const now = new Date().toISOString();
       const { data: sentReminder, error: sentError } = await client.from("telegram_followup_reminders").update({ status: "SENT", telegram_message_id: Number(sent.messageId), sent_at: now, failure_reason: null, updated_at: now }).eq("id", reminder.id).select("*").single();

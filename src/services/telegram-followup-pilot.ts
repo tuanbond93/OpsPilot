@@ -3,6 +3,7 @@ import warehouseAssignments from "@/data/warehouse-assignments.generated.json";
 import type { IncidentReasonCode } from "@/engine/incident";
 import { TelegramClient } from "@/integrations/telegram";
 import { formatTelegramFollowupReminder, type FollowupReminderStage } from "@/integrations/telegram/followup-first-push";
+import { followupInlineKeyboard, supportsStructuredOutboundResponses } from "@/integrations/telegram/followup-actions";
 import { ServiceFactory } from "@/services/ServiceFactory";
 import { NotificationGateway, type DeliveryRequest } from "@/notifications/gateway";
 import { FEATURE_FLAGS } from "@/config/feature-flags";
@@ -157,6 +158,9 @@ export async function runTelegramFollowupPilotDispatch(client: SupabaseClient, a
     }
     if (!reminders.length) continue;
     const orderCodes = [...new Set(batch.flatMap((candidate) => list(candidate.history?.sample_order_codes)))];
+    const structuredOutboundResponses = supportsStructuredOutboundResponses(first.incident.reason_code);
+    const message = formatTelegramFollowupReminder(first.stage, { incidentKey: first.incident.incident_key || first.followupCase.incident_key, warehouseName: String(first.incident.warehouse_name || ""), reasonName: first.incident.reason_name, affectedOrderCount: batch.reduce((total, candidate) => total + Number(candidate.followupCase.latest_affected_order_count || 0), 0), maximumAgeHours: Math.max(...batch.map((candidate) => Number(candidate.history?.maximum_age_hours || 0))), orderCodes, structuredOutboundResponses }, first.recipients.map((member) => ({ displayName: member.display_name, username: member.username })));
+    const inlineKeyboard = structuredOutboundResponses ? followupInlineKeyboard(reminders[0].id, true) : undefined;
     try {
       const waitMs = Math.max(0, TELEGRAM_MESSAGE_INTERVAL_MS - (Date.now() - lastTelegramMessageAt));
       if (waitMs) await new Promise<void>((resolve) => setTimeout(resolve, waitMs));
@@ -172,7 +176,7 @@ export async function runTelegramFollowupPilotDispatch(client: SupabaseClient, a
           incidentId: first.incident.id,
           incidentKey: first.incident.incident_key || first.followupCase.incident_key,
           followupCaseId: first.followupCase.id,
-          message: formatTelegramFollowupReminder(first.stage, { incidentKey: first.incident.incident_key || first.followupCase.incident_key, warehouseName: String(first.incident.warehouse_name || ""), reasonName: first.incident.reason_name, affectedOrderCount: batch.reduce((total, candidate) => total + Number(candidate.followupCase.latest_affected_order_count || 0), 0), maximumAgeHours: Math.max(...batch.map((candidate) => Number(candidate.history?.maximum_age_hours || 0))), orderCodes }, first.recipients.map((member) => ({ displayName: member.display_name, username: member.username }))),
+          message,
           audience: {
             province: provinceName || undefined,
             warehouse: String(first.incident.warehouse_name || ""),
@@ -183,6 +187,7 @@ export async function runTelegramFollowupPilotDispatch(client: SupabaseClient, a
           },
           options: {
             parseMode: "HTML",
+            inlineKeyboard,
             idempotencyKey: `telegram-followup:${first.followupCase.id}:${first.stage}:${first.attemptMarker}`,
             actor,
             mirror: false,
@@ -191,7 +196,7 @@ export async function runTelegramFollowupPilotDispatch(client: SupabaseClient, a
         const gatewayResult = await gateway.send(deliveryRequest, client);
         sent = { messageId: gatewayResult.primary.telegramMessageId || `gw-${Date.now()}` };
       } else {
-        sent = await new TelegramClient().sendToChat(String(first.group.telegram_chat_id), formatTelegramFollowupReminder(first.stage, { incidentKey: first.incident.incident_key || first.followupCase.incident_key, warehouseName: String(first.incident.warehouse_name || ""), reasonName: first.incident.reason_name, affectedOrderCount: batch.reduce((total, candidate) => total + Number(candidate.followupCase.latest_affected_order_count || 0), 0), maximumAgeHours: Math.max(...batch.map((candidate) => Number(candidate.history?.maximum_age_hours || 0))), orderCodes }, first.recipients.map((member) => ({ displayName: member.display_name, username: member.username }))), { parseMode: "HTML", messageThreadId: first.topic.message_thread_id });
+        sent = await new TelegramClient().sendToChat(String(first.group.telegram_chat_id), message, { parseMode: "HTML", messageThreadId: first.topic.message_thread_id, inlineKeyboard });
       }
       lastTelegramMessageAt = Date.now();
       const deliveredAt = new Date().toISOString();
