@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { timingSafeEqual } from "crypto";
 import { createAdminClient } from "@/connectors/supabase";
 import { parseWorkOrderCallbackData } from "@/integrations/telegram/work-order-actions";
-import { parseFollowupCallbackData } from "@/integrations/telegram/followup-actions";
+import { buildFollowupResponseEventRows, followupResponseAcknowledgment, isValidFollowupCallbackTarget, parseFollowupCallbackData } from "@/integrations/telegram/followup-actions";
 import { parseRillnetReviewCallbackData } from "@/integrations/telegram/rillnet-review-actions";
 import { parseDecisionCallbackData, toDecisionResponseEventAction } from "@/integrations/telegram/decision-actions";
 import { canManageTelegramDecision } from "@/integrations/telegram/decision-authorization";
@@ -265,7 +265,8 @@ export async function POST(request: NextRequest) {
   }
   const eventType = isJoin ? "JOIN_REQUEST" : update.callback_query ? "CALLBACK_RECEIVED" : message.reply_to_message?.message_id ? "FREE_TEXT_FEEDBACK" : "UNSUPPORTED_UPDATE";
   try {
-    await recordEvent(client, { telegram_update_id: update.update_id, group_id: group.id, member_id: member.id, event_type: eventType, telegram_message_id: message.message_id || null, reply_to_message_id: message.reply_to_message?.message_id || null, message_text: eventType === "FREE_TEXT_FEEDBACK" ? text.slice(0, 4000) : null, metadata: { callbackData: update.callback_query?.data?.slice(0, 128) || null, chatType: chat.type, messageThreadId: threadId, topicId: topic?.id || null } });
+    const eventRecorded = await recordEvent(client, { telegram_update_id: update.update_id, group_id: group.id, member_id: member.id, event_type: eventType, telegram_message_id: message.message_id || null, reply_to_message_id: message.reply_to_message?.message_id || null, message_text: eventType === "FREE_TEXT_FEEDBACK" ? text.slice(0, 4000) : null, metadata: { callbackData: update.callback_query?.data?.slice(0, 128) || null, chatType: chat.type, messageThreadId: threadId, topicId: topic?.id || null } });
+    if (update.callback_query && !eventRecorded) return NextResponse.json({ ok: true, duplicate: true });
   } catch (error) {
     return NextResponse.json({ error: "TELEGRAM_AUDIT_WRITE_FAILED", message: error instanceof Error ? error.message : String(error) }, { status: 503 });
   }
@@ -470,15 +471,20 @@ export async function POST(request: NextRequest) {
     if (followupCallback) {
       const { data: representative, error: reminderError } = await client.from("telegram_followup_reminders").select("id, group_id, telegram_message_id, recipient_member_ids").eq("id", followupCallback.reminderId).eq("group_id", group.id).eq("status", "SENT").maybeSingle();
       if (reminderError) return NextResponse.json({ error: "TELEGRAM_FOLLOWUP_LOOKUP_FAILED", message: reminderError.message }, { status: 503 });
-      const recipients = Array.isArray(representative?.recipient_member_ids) ? representative.recipient_member_ids.filter((value): value is string => typeof value === "string") : [];
-      if (representative && representative.telegram_message_id === message.message_id && recipients.includes(member.id)) {
-        const { data: related, error: relatedError } = await client.from("telegram_followup_reminders").select("id").eq("group_id", group.id).eq("status", "SENT").eq("telegram_message_id", message.message_id);
-        if (relatedError) return NextResponse.json({ error: "TELEGRAM_FOLLOWUP_LOOKUP_FAILED", message: relatedError.message }, { status: 503 });
-        const { error: eventError } = await client.from("telegram_followup_reminder_events").insert((related || []).map((reminder) => ({ reminder_id: reminder.id, event_type: "SIGNAL_RECEIVED", actor: `telegram:${member.id}`, metadata: { signal: followupCallback.signal, telegramUpdateId: update.update_id, telegramUserId: member.telegram_user_id, telegramMessageId: message.message_id } })));
-        if (eventError) return NextResponse.json({ error: "TELEGRAM_FOLLOWUP_SIGNAL_WRITE_FAILED", message: eventError.message }, { status: 503 });
-        const acknowledgment = followupCallback.signal === "ACKNOWLEDGED" ? "Đã ghi nhận nhận việc. Hãy Reply để giải trình." : followupCallback.signal === "NEEDS_SUPPORT" ? "Đã ghi nhận cần hỗ trợ. Hãy Reply nêu rõ vướng mắc." : "Đã ghi nhận cập nhật tiến độ. Hãy Reply nêu nội dung mới.";
-        return NextResponse.json({ method: "answerCallbackQuery", callback_query_id: update.callback_query.id, text: acknowledgment, show_alert: false });
+      if (!isValidFollowupCallbackTarget(representative, message.message_id, member.id)) {
+        return NextResponse.json({ method: "answerCallbackQuery", callback_query_id: update.callback_query.id, text: "Phản hồi không hợp lệ hoặc đã hết hiệu lực.", show_alert: true });
       }
+      const { data: related, error: relatedError } = await client.from("telegram_followup_reminders").select("id, followup_case_id, reminder_stage").eq("group_id", group.id).eq("status", "SENT").eq("telegram_message_id", message.message_id);
+      if (relatedError) return NextResponse.json({ error: "TELEGRAM_FOLLOWUP_LOOKUP_FAILED", message: relatedError.message }, { status: 503 });
+      if (!related?.length) return NextResponse.json({ method: "answerCallbackQuery", callback_query_id: update.callback_query.id, text: "Phản hồi không còn gắn với follow-up đang hoạt động.", show_alert: true });
+      const eventRows = buildFollowupResponseEventRows(related, followupCallback.signal, {
+        actor: `telegram:${member.id}`,
+        telegramUpdateId: Number(update.update_id),
+        telegramMessageId: Number(message.message_id),
+      });
+      const { error: eventError } = await client.from("telegram_followup_reminder_events").insert(eventRows);
+      if (eventError) return NextResponse.json({ error: "TELEGRAM_FOLLOWUP_SIGNAL_WRITE_FAILED", message: eventError.message }, { status: 503 });
+      return NextResponse.json({ method: "answerCallbackQuery", callback_query_id: update.callback_query.id, text: followupResponseAcknowledgment(followupCallback.signal), show_alert: false });
     }
   }
   if (eventType === "FREE_TEXT_FEEDBACK" && text && message.reply_to_message?.message_id && member.status === "ACTIVE") {

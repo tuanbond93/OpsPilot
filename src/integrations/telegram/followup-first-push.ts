@@ -7,6 +7,7 @@ export type FirstPushTelegramContext = {
   affectedOrderCount: number;
   maximumAgeHours?: number | null;
   orderCodes?: string[];
+  structuredOutboundResponses?: boolean;
 };
 
 export type FollowupReminderStage = "FIRST" | "SECOND" | "THIRD" | "ESCALATION";
@@ -47,7 +48,9 @@ export function formatTelegramFollowupReminder(
     "Mã đơn cần kiểm tra:",
     orders.length ? [orders.map(orderLookupLink).join("\n"), allOrders.length > orders.length ? `- … và ${allOrders.length - orders.length} mã khác trên OpsPilot` : ""].filter(Boolean).join("\n") : "- Chưa có mã đơn trong snapshot; báo Manager trước khi kết luận.",
     "",
-    needsManager
+    context.structuredOutboundResponses
+      ? "<b>Chọn một phản hồi bên dưới.</b> Chỉ Reply nếu chọn Khác; không cần nhập lại mã đơn."
+      : needsManager
       ? "<b>Reply theo từng dòng:</b>\nMÃ_ĐƠN: nguyên nhân / hướng xử lý\nChưa có xử lý sau 3 lần nhắc; Manager xác nhận hướng xử lý tiếp theo."
       : "<b>Reply theo từng dòng:</b>\nMÃ_ĐƠN: nguyên nhân / hướng xử lý",
   ].join("\n");
