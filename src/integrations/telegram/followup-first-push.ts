@@ -7,9 +7,25 @@ export type FirstPushTelegramContext = {
   affectedOrderCount: number;
   maximumAgeHours?: number | null;
   orderCodes?: string[];
+  reasonCode?: string;
   structuredOutboundResponses?: boolean;
   orderEvidence?: Array<{ orderCode: string; status?: string | null; observedAt?: string | null; source: "RILLNET_OBSERVED" | "GHN_VERIFIED" | "HUMAN_VERIFICATION_REQUIRED"; ghnStatus?: string | null; ghnVerifiedAt?: string | null }>;
 };
+
+type CohortEvidenceMember = { orderCode: string; status?: string | null; observedAt?: string | null; source?: string | null };
+
+export function logicalReminderOrderCodes(members: Array<CohortEvidenceMember & { lastReminderAt?: string | null }>, attemptMarker: string | null | undefined) {
+  return [...new Set(members.filter((member) => Boolean(attemptMarker) && member.lastReminderAt === attemptMarker).map((member) => member.orderCode))];
+}
+
+export function buildRillnetOrderEvidence(orderCodes: string[], members: CohortEvidenceMember[]) {
+  return [...new Set(orderCodes)].map((orderCode) => {
+    const member = members.find((item) => item.orderCode === orderCode && item.source === "rillnet");
+    return member?.status?.trim() && member.observedAt
+      ? { orderCode, status: member.status, observedAt: member.observedAt, source: "RILLNET_OBSERVED" as const }
+      : { orderCode, source: "HUMAN_VERIFICATION_REQUIRED" as const };
+  });
+}
 
 export type FollowupReminderStage = "FIRST" | "SECOND" | "THIRD" | "ESCALATION";
 
@@ -45,16 +61,26 @@ export function formatTelegramFollowupReminder(
   const evidence = context.orderEvidence || [];
   const evidenceLines = evidence.flatMap(item => {
     const observed = item.status && item.observedAt
-      ? [`Đơn: ${escapeTelegramHtml(item.orderCode)}`, `Trạng thái ghi nhận: ${escapeTelegramHtml(item.status)}`, `Nguồn: Rillnet · cập nhật ${escapeTelegramHtml(item.observedAt)}`]
-      : [`Đơn: ${escapeTelegramHtml(item.orderCode)}`, "Chưa xác minh được trạng thái hiện tại."];
+      ? ["Đơn:", `${escapeTelegramHtml(item.orderCode)} — ${escapeTelegramHtml(item.status)}`, "Nguồn:", `Rillnet · cập nhật ${escapeTelegramHtml(item.observedAt)}`]
+      : ["Đơn:", `${escapeTelegramHtml(item.orderCode)} — Chưa xác minh được trạng thái hiện tại.`];
     if (item.ghnStatus && item.ghnVerifiedAt) observed.push(`GHN xác minh: ${escapeTelegramHtml(item.ghnStatus)} · ${escapeTelegramHtml(item.ghnVerifiedAt)}`);
-    return [...observed, `OpsPilot phát hiện: ${escapeTelegramHtml(context.reasonName)}`, `Cần kiểm tra: ${escapeTelegramHtml(needsManager ? "Manager xác nhận hướng xử lý và trạng thái thực tế của đơn." : "Kiểm tra tình trạng xử lý thực tế và cập nhật nguyên nhân / hướng xử lý.")}`, ""];
+    return [...observed, ""];
   });
+  const actionLines = needsManager
+    ? ["Cần kiểm tra:", "Manager xác nhận hướng xử lý và trạng thái thực tế của đơn."]
+    : context.reasonCode === "KHO_TON"
+      ? ["Cần kiểm tra:", "Xác nhận đơn hiện thuộc trường hợp nào:", "- đã có lịch xuất/chuyển;", "- đang chờ xe/chuyến;", "- chưa tới COT xuất;", "- hoặc có nguyên nhân khác."]
+      : context.reasonCode === "KHO_CHU_A_LUAN_CHUYEN"
+        ? ["Cần kiểm tra:", "Xác nhận đơn:", "- đã có lịch xuất/chuyển chưa;", "- đã có xe/chuyến nhận hàng chưa;", "- hay vẫn chưa tới COT xuất."]
+        : ["Cần kiểm tra:", "Kiểm tra tình trạng xử lý thực tế và cập nhật nguyên nhân / hướng xử lý."];
   return [
     `<b>${stageLabel[stage]}</b>`,
     `Sự cố: ${escapeTelegramHtml(context.reasonName)}`,
     `Kho phụ trách: ${escapeTelegramHtml(context.warehouseName)}`,
     ...evidenceLines,
+    `OpsPilot phát hiện: ${escapeTelegramHtml(context.reasonName)}`,
+    ...actionLines,
+    "",
     "Mã đơn cần kiểm tra:",
     orders.length ? [orders.map(orderLookupLink).join("\n"), allOrders.length > orders.length ? `- … và ${allOrders.length - orders.length} mã khác trên OpsPilot` : ""].filter(Boolean).join("\n") : "- Chưa có mã đơn trong snapshot; báo Manager trước khi kết luận.",
     "",

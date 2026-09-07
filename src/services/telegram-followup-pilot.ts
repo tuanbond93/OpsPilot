@@ -2,7 +2,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import warehouseAssignments from "@/data/warehouse-assignments.generated.json";
 import type { IncidentReasonCode } from "@/engine/incident";
 import { TelegramClient } from "@/integrations/telegram";
-import { formatTelegramFollowupReminder, type FollowupReminderStage } from "@/integrations/telegram/followup-first-push";
+import { buildRillnetOrderEvidence, formatTelegramFollowupReminder, logicalReminderOrderCodes, type FollowupReminderStage } from "@/integrations/telegram/followup-first-push";
 import { followupInlineKeyboard, supportsStructuredOutboundResponses } from "@/integrations/telegram/followup-actions";
 import { ServiceFactory } from "@/services/ServiceFactory";
 import { NotificationGateway, type DeliveryRequest } from "@/notifications/gateway";
@@ -21,7 +21,7 @@ type PendingCase = { id: string; incident_id: string; incident_key: string; curr
 type ActionRequestEvent = { followup_case_id: string; event_type: string; event_time: string };
 type Incident = { id: string; incident_key: string; warehouse_id: string; warehouse_name: string | null; reason_code: string; reason_name: string; priority_score: number; first_detected_at: string; last_detected_at: string };
 type History = { sample_order_codes?: unknown; maximum_age_hours?: number | null };
-type Candidate = { followupCase: PendingCase; incident: Incident; stage: FollowupReminderStage; action: "first_push" | "second_push" | "third_push" | "escalation"; attemptMarker: string; group: PilotGroup; topic: PilotTopic; recipients: PilotMember[]; history?: History };
+type Candidate = { followupCase: PendingCase; incident: Incident; stage: FollowupReminderStage; action: "first_push" | "second_push" | "third_push" | "escalation"; attemptMarker: string; reminderOrderCodes: string[]; group: PilotGroup; topic: PilotTopic; recipients: PilotMember[]; history?: History };
 
 const PILOT_ZONE = "Miền Bắc 3";
 // Keep a comfortable per-group cadence. This is effectively three messages
@@ -128,7 +128,7 @@ export async function runTelegramFollowupPilotDispatch(client: SupabaseClient, a
     if (existing?.status === "SENT" || existing?.status === "PENDING") { result.skipped++; result.details.push({ followupCaseId: followupCase.id, status: "SKIPPED", reason: "already_dispatched" }); continue; }
     const { data: histories, error: historyError } = await client.from("incident_history").select("sample_order_codes, maximum_age_hours").eq("incident_id", incident.id).order("recorded_at", { ascending: false }).limit(1);
     if (historyError) throw historyError;
-    const reminderCodes = followupCase.operational_cohort.members.filter(member => member.lastReminderAt === followupCase.last_action_requested_at).map(member => member.orderCode);
+    const reminderCodes = logicalReminderOrderCodes(followupCase.operational_cohort.members, followupCase.last_action_requested_at);
     if (!reminderCodes.length) { result.skipped++; continue; }
     const verification = needsGhnVerification({ escalation: stageInfo.stage === "ESCALATION" });
     const hasGhn = hasVerifiedReminderEvidence(followupCase.operational_cohort, reminderCodes, nowMs);
@@ -141,7 +141,7 @@ export async function runTelegramFollowupPilotDispatch(client: SupabaseClient, a
     result.ghnVerification.skipped += hasGhn ? 0 : reminderCodes.length;
     result.evidenceSourceCounts[hasGhn ? "GHN_VERIFIED" : "RILLNET_OBSERVED"] += reminderCodes.length;
     result.reminderEligibility[hasGhn ? "selected_with_ghn" : "selected_from_rillnet"]++;
-    candidates.push({ followupCase: { ...followupCase, latest_affected_order_count: reminderCodes.length }, incident, stage: stageInfo.stage, action: stageInfo.action, attemptMarker, group, topic, recipients, history: { ...histories?.[0], sample_order_codes: reminderCodes } });
+    candidates.push({ followupCase: { ...followupCase, latest_affected_order_count: reminderCodes.length }, incident, stage: stageInfo.stage, action: stageInfo.action, attemptMarker, reminderOrderCodes: reminderCodes, group, topic, recipients, history: histories?.[0] });
   }
 
   const batches = new Map<string, Candidate[]>();
@@ -175,14 +175,10 @@ export async function runTelegramFollowupPilotDispatch(client: SupabaseClient, a
       await client.from("telegram_followup_reminder_events").insert({ reminder_id: reminder.id, event_type: "REMINDER_REQUESTED", actor, metadata: { stage: candidate.stage, followupCaseId: candidate.followupCase.id, incidentId: candidate.incident.id, recipientMemberIds: candidate.recipients.map((member) => member.id), pilotZone: PILOT_ZONE, aggregateSize: batch.length } });
     }
     if (!reminders.length) continue;
-    const orderCodes = [...new Set(batch.flatMap((candidate) => list(candidate.history?.sample_order_codes)))];
+    const orderCodes = [...new Set(batch.flatMap((candidate) => candidate.reminderOrderCodes))];
     const structuredOutboundResponses = supportsStructuredOutboundResponses(first.incident.reason_code);
-    const orderEvidence = orderCodes.map(orderCode => {
-      const member = batch.flatMap(candidate => candidate.followupCase.operational_cohort?.members || []).find(item => item.orderCode === orderCode);
-      const ghn = member?.source === "ghn_internal_order_logs";
-      return { orderCode, status: !ghn ? member?.status || null : null, observedAt: !ghn ? member?.observedAt || null : null, source: (ghn ? "GHN_VERIFIED" : member ? "RILLNET_OBSERVED" : "HUMAN_VERIFICATION_REQUIRED") as "GHN_VERIFIED" | "RILLNET_OBSERVED" | "HUMAN_VERIFICATION_REQUIRED", ghnStatus: ghn ? member.status : null, ghnVerifiedAt: ghn ? member.observedAt : null };
-    });
-    const message = formatTelegramFollowupReminder(first.stage, { incidentKey: first.incident.incident_key || first.followupCase.incident_key, warehouseName: String(first.incident.warehouse_name || ""), reasonName: first.incident.reason_name, affectedOrderCount: batch.reduce((total, candidate) => total + Number(candidate.followupCase.latest_affected_order_count || 0), 0), maximumAgeHours: Math.max(...batch.map((candidate) => Number(candidate.history?.maximum_age_hours || 0))), orderCodes, orderEvidence, structuredOutboundResponses }, first.recipients.map((member) => ({ displayName: member.display_name, username: member.username })));
+    const orderEvidence = buildRillnetOrderEvidence(orderCodes, batch.flatMap(candidate => candidate.followupCase.operational_cohort?.members || []));
+    const message = formatTelegramFollowupReminder(first.stage, { incidentKey: first.incident.incident_key || first.followupCase.incident_key, warehouseName: String(first.incident.warehouse_name || ""), reasonCode: first.incident.reason_code, reasonName: first.incident.reason_name, affectedOrderCount: batch.reduce((total, candidate) => total + Number(candidate.followupCase.latest_affected_order_count || 0), 0), maximumAgeHours: Math.max(...batch.map((candidate) => Number(candidate.history?.maximum_age_hours || 0))), orderCodes, orderEvidence, structuredOutboundResponses }, first.recipients.map((member) => ({ displayName: member.display_name, username: member.username })));
     const inlineKeyboard = structuredOutboundResponses ? followupInlineKeyboard(reminders[0].id, true) : undefined;
     try {
       const waitMs = Math.max(0, TELEGRAM_MESSAGE_INTERVAL_MS - (Date.now() - lastTelegramMessageAt));
