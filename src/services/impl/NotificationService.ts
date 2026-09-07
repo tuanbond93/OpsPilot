@@ -8,6 +8,12 @@ import { ConsoleProvider } from "../../notifications/providers/console";
 import { NotificationBuilder } from "../../notifications/builder";
 import type { IFollowupRepository } from "../../repositories/interfaces/IFollowupRepository";
 import { evaluateNextState } from "../../engine/followup";
+import {
+  checkpointKey,
+  localHour,
+  nextCheckpoint,
+  OPERATIONAL_CHECKPOINT_POLICY_VERSION,
+} from "@/domain/operational-learning/checkpoint-policy";
 
 export class NotificationService implements INotificationService {
   private providers = new Map<string, NotificationProvider>();
@@ -66,7 +72,80 @@ export class NotificationService implements INotificationService {
     const claimedActions = await this.queue.claimPendingActions(workerId, limit, 300000, referenceTimeMs);
     summary.claimedCount = claimedActions.length;
 
+    const checkpoint = checkpointKey(referenceTimeMs);
+    const pushDispatchAllowed = checkpoint !== null && localHour(referenceTimeMs) !== 8;
+    const pushActionTypes = new Set(["FIRST_PUSH", "SECOND_PUSH", "THIRD_PUSH", "ESCALATION"]);
+
     for (const action of claimedActions) {
+      const isFollowupPush = pushActionTypes.has(action.action_type)
+        && Boolean(action.payload?.incidentId || action.payload?.incident_id);
+
+      if (isFollowupPush) {
+        const policyVersion = String(action.payload?.operationalCheckpointVersion || "");
+        const actionCheckpoint = String(action.payload?.operationalCheckpoint || "");
+
+        // Any follow-up action produced before the checkpoint policy is a legacy
+        // action. Cancel it after claiming so it cannot be sent by this worker.
+        if (policyVersion !== OPERATIONAL_CHECKPOINT_POLICY_VERSION) {
+          const processedAt = new Date(referenceTimeMs).toISOString();
+          await this.queue.updateActionStatus(action.id, "CANCELLED", {
+            processed_at: processedAt,
+            locked_at: null,
+            locked_by: null,
+            attempt_started_at: null,
+            last_error: "LEGACY_PUSH_BLOCKED_BY_OPERATIONAL_CHECKPOINT_POLICY",
+          });
+          await this.queue.appendEvent({
+            action_id: action.id,
+            event_type: "ACTION_CANCELLED",
+            old_status: "PROCESSING",
+            new_status: "CANCELLED",
+            attempt_number: action.retry_count + 1,
+            provider: action.provider,
+            metadata: { reason: "LEGACY_PUSH_BLOCKED_BY_OPERATIONAL_CHECKPOINT_POLICY" },
+          });
+          continue;
+        }
+
+        // A push is meaningful only at the defined checkpoints. Put a current
+        // action back into the queue for the next checkpoint instead of sending
+        // it at an arbitrary worker tick such as 16:00.
+        if (!pushDispatchAllowed) {
+          await this.queue.updateActionStatus(action.id, "PENDING", {
+            scheduled_at: nextCheckpoint(referenceTimeMs),
+            started_at: null,
+            locked_at: null,
+            locked_by: null,
+            attempt_started_at: null,
+            last_error: "DEFERRED_UNTIL_OPERATIONAL_CHECKPOINT",
+          });
+          continue;
+        }
+
+        // Only the action generated for this checkpoint may be delivered. This
+        // prevents a stale 10:00 action from leaking into the 18:00 run.
+        if (actionCheckpoint !== checkpoint) {
+          const processedAt = new Date(referenceTimeMs).toISOString();
+          await this.queue.updateActionStatus(action.id, "CANCELLED", {
+            processed_at: processedAt,
+            locked_at: null,
+            locked_by: null,
+            attempt_started_at: null,
+            last_error: "STALE_PUSH_BLOCKED_BY_OPERATIONAL_CHECKPOINT",
+          });
+          await this.queue.appendEvent({
+            action_id: action.id,
+            event_type: "ACTION_CANCELLED",
+            old_status: "PROCESSING",
+            new_status: "CANCELLED",
+            attempt_number: action.retry_count + 1,
+            provider: action.provider,
+            metadata: { reason: "STALE_PUSH_BLOCKED_BY_OPERATIONAL_CHECKPOINT", checkpoint, actionCheckpoint },
+          });
+          continue;
+        }
+      }
+
       const provider = this.getProvider(action.provider);
       
       let result: any;

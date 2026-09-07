@@ -8,6 +8,7 @@ import type {
 } from "../interfaces/IFollowupRepository";
 
 const FOLLOWUP_CASE_COLUMNS = [
+  "operational_cohort",
   "id",
   "incident_id",
   "incident_key",

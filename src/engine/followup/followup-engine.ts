@@ -23,6 +23,9 @@ import {
 import type { ActionQueueMetrics, IActionQueue } from "../action-queue/IActionQueue";
 import { logRuntimeError, logRuntimeMessage, serializedPayloadBytes } from "@/observability/runtimeDiagnostics";
 import { logger } from "@/observability/logger";
+import type { NormalizedRillnetOrder } from "@/connectors/rillnet";
+import { collectGhnCheckpointObservations, prioritizePilotCheckpointCandidates, requiresGhnCheckpointEvidence } from "@/services/ghn-checkpoint-observations";
+import { assessOperationalCohort, evidenceFromOrder, checkpointKey, localHour, localDay, atHour, nextCheckpoint, OPERATIONAL_CHECKPOINT_POLICY_VERSION } from "@/domain/operational-learning/checkpoint-policy";
 
 function formatRillnetStatusSignature(signature: string | null | undefined): string {
   try {
@@ -103,7 +106,8 @@ export class FollowupEngine {
     incidents: Incident[],
     historyMap: Map<string, IncidentHistoryRow[]> = new Map(),
     config: FollowupConfig = DEFAULT_FOLLOWUP_CONFIG,
-    referenceTimeMs: number = Date.now()
+    referenceTimeMs: number = Date.now(),
+    orders?: NormalizedRillnetOrder[]
   ): Promise<ProcessedFollowupItem[]> {
     this.currentIncidentCount = incidents.length;
     const startedAt = performance.now();
@@ -123,6 +127,11 @@ export class FollowupEngine {
     };
 
     try {
+      if (orders) {
+        const results = await this.processOrderCohorts(incidents, orders, referenceTimeMs, metrics);
+        this.publishMetrics(metrics, startedAt, "success");
+        return results;
+      }
       const results = await this.processIncidentFollowupsInternal(
         incidents,
         historyMap,
@@ -136,6 +145,131 @@ export class FollowupEngine {
       this.publishMetrics(metrics, startedAt, "failed");
       throw error;
     }
+  }
+
+  private async processOrderCohorts(incidents: Incident[], orders: NormalizedRillnetOrder[], now: number, metrics: MutableFollowupRunMetrics): Promise<ProcessedFollowupItem[]> {
+    const checkpoint = checkpointKey(now);
+    if (!checkpoint) return [];
+    const requireGhn = requiresGhnCheckpointEvidence();
+    const isBaseline = localHour(now) === 8;
+    // 08h is an immutable baseline checkpoint. It must be persisted even when
+    // Rillnet's fetchedAt lags the wall clock and before GHN evidence is ready;
+    // later checkpoints use GHN to verify progress against this snapshot.
+    if (!isBaseline && !requireGhn && !orders.some(order => Date.parse(order.fetchedAt) >= atHour(localDay(now), localHour(now)) && Date.parse(order.fetchedAt) <= now)) return [];
+    // A failed read must abort; replacing an unavailable baseline would erase old work.
+    metrics.caseReads++;
+    const existing = this.followupRepo ? await this.followupRepo.getAllCases() : [];
+    const byKey = new Map(existing.map(item => [item.incident_key, item]));
+    const membership = new Map(orders.map(order => [order.orderCode, evidenceFromOrder(order)]));
+    const cached = new Map<string, ReturnType<typeof evidenceFromOrder>>();
+    const candidates = new Map<string, ReturnType<typeof evidenceFromOrder>>();
+    for (const item of existing) for (const member of item.operational_cohort?.members || []) {
+      const failed = item.operational_cohort?.verification?.failures?.[member.orderCode];
+      if (!member.completedAt && member.source === "ghn_internal_order_logs" && !failed
+        && checkpointKey(Date.parse(member.observedAt)) === checkpoint) cached.set(member.orderCode, member);
+      else if (!member.completedAt) candidates.set(member.orderCode, member);
+    }
+    for (const incident of incidents) for (const code of incident.affectedOrders || []) {
+      const order = membership.get(code);
+      if (order && !candidates.has(code)) candidates.set(code, order);
+    }
+    const prioritized = prioritizePilotCheckpointCandidates([...candidates.values()], now);
+    // Do not spend the bounded GHN lookup budget at 08h. The baseline records
+    // the source snapshot only; operational evidence starts at 10h.
+    const verified = requireGhn && !isBaseline ? await collectGhnCheckpointObservations(prioritized) : null;
+    if (verified) {
+      now = Date.parse(verified.checkedAt);
+      if (checkpointKey(now) !== checkpoint) return [];
+    }
+    const observations = verified ? new Map([...cached, ...verified.observations]) : membership;
+    const work = new Map(incidents.map(incident => [incident.incidentKey, incident]));
+    for (const item of existing) {
+      if (work.has(item.incident_key) || !item.operational_cohort || item.current_state === "CLOSED") continue;
+      const member = item.operational_cohort.members[0];
+      work.set(item.incident_key, { incidentId: item.incident_id, incidentKey: item.incident_key,
+        warehouseId: member?.warehouseId || "", warehouseName: item.incident_key, reasonCode: "KHO_TON", reasonName: "Theo dõi nhóm đơn cũ",
+        status: "monitoring", priorityScore: 0, firstDetectedAt: item.first_detected_at, lastDetectedAt: new Date(now).toISOString(),
+        affectedOrderCount: 0, affectedOrders: [], sampleOrderCodes: [], averageAgeHours: null, maximumAgeHours: null, oldestOrderCode: null });
+    }
+    const results: ProcessedFollowupItem[] = [];
+    const mutations: FollowupCaseUpsert[] = [];
+    const params: ProcessTransitionParams[] = [];
+    const actions: EnqueueActionParams[] = [];
+    for (const incident of work.values()) {
+      const prior = byKey.get(incident.incidentKey);
+      if (prior?.operational_cohort?.lastCheckpoint === checkpoint
+        && !Object.keys(prior.operational_cohort.verification?.failures || {}).length) continue;
+      const codes = new Set([
+        ...(prior?.operational_cohort?.members || []).map(member => member.orderCode),
+        ...(incident.affectedOrders || []),
+      ]);
+      const incoming = [...codes].flatMap(code => { const order = membership.get(code); return order ? [order] : []; });
+      const assessment = assessOperationalCohort(prior?.operational_cohort, incoming, observations, now);
+      if (verified) assessment.cohort.verification = {
+        source: "ghn_internal_order_logs", checkedAt: verified.checkedAt,
+        failures: Object.fromEntries([...codes].filter(code => verified.failures[code]).map(code => [code, verified.failures[code]])),
+      };
+      const oldState = prior?.current_state || "NEW";
+      const shouldRemind = !isBaseline && assessment.reminderCodes.length > 0;
+      const resolved = !isBaseline && assessment.due > 0 && assessment.completed === assessment.due && !assessment.unknown;
+      const newState: FollowupState = shouldRemind ? "FIRST_PUSH_PENDING" : resolved ? "RESOLVED" : "FOLLOWING_UP";
+      const notes = `Baseline 8h: ${assessment.baselineDue} đơn đến hạn, ${assessment.baselineProgressed} có tiến triển, ${assessment.baselinePending} chưa hoàn tất. Phát sinh mới đến hạn: ${assessment.newDue}. Tổng đến hạn: ${assessment.due}; hoàn tất chặng: ${assessment.completed}; còn xử lý: ${assessment.pending}; chưa xác minh: ${assessment.unknown}; chưa đến hạn: ${assessment.waiting}. ${isBaseline ? "Snapshot đầu ngày, chưa đánh giá kết quả." : "Tiến triển sau action không chứng minh quan hệ nhân quả."}`;
+      const transitionResult: ReturnType<typeof evaluateNextState> = { oldState, newState, assessment: assessment.assessment,
+        eventType: shouldRemind ? "PUSH_REQUESTED" : resolved ? "INCIDENT_RESOLVED" : "ASSESSMENT_CHECKED", notes,
+        nextActionAt: nextCheckpoint(now), ...(shouldRemind ? { actionRequestedAt: new Date(now).toISOString() } : {}) };
+      assessment.cohort.lastCheckpoint = checkpoint;
+      for (const member of assessment.cohort.members) if (assessment.reminderCodes.includes(member.orderCode)) {
+        member.lastReminderAt = new Date(now).toISOString(); member.lastReminderStatus = member.status;
+      }
+      const processParams: ProcessTransitionParams = { incidentId: incident.incidentId, incidentKey: incident.incidentKey,
+        firstDetectedAt: prior?.first_detected_at || incident.firstDetectedAt, baselineCount: assessment.due,
+        latestCount: assessment.pending + assessment.unknown, changePercent: assessment.progressPercent,
+        assessment: assessment.assessment, transitionResult, referenceTimeMs: now };
+      const mutation = buildCaseMutation(processParams);
+      mutation.operational_cohort = assessment.cohort;
+      if (!resolved) mutation.resolved_at = null;
+      mutations.push(mutation); params.push(processParams);
+      const payload = FollowupMessageBuilder.buildPayload({ warehouse: incident.warehouseName, reason: incident.reasonName,
+        currentCount: processParams.latestCount, baselineCount: assessment.due, previousCount: prior?.latest_affected_order_count || 0,
+        progressPercent: assessment.progressPercent, progressAssessment: assessment.assessment, riskScore: incident.priorityScore,
+        riskLevel: "medium", rootCauseSummary: notes, state: newState, nextActionAt: transitionResult.nextActionAt || null,
+        lastActionRequestedAt: transitionResult.actionRequestedAt || prior?.last_action_requested_at || null,
+        lastActionConfirmedAt: prior?.last_action_confirmed_at || null });
+      if (this.actionQueue && shouldRemind) {
+        actions.push({
+          actionType: "FIRST_PUSH",
+          provider: "console",
+          targetType: "WAREHOUSE",
+          targetId: incident.warehouseId || incident.warehouseName,
+          payload: {
+            ...payload,
+            incidentId: incident.incidentId,
+            incidentKey: incident.incidentKey,
+            operationalCheckpointVersion: OPERATIONAL_CHECKPOINT_POLICY_VERSION,
+            operationalCheckpoint: checkpoint,
+          },
+          deduplicationKey: Deduplicator.generateKey(incident.incidentKey, "FIRST_PUSH", `${OPERATIONAL_CHECKPOINT_POLICY_VERSION}:${checkpoint}`),
+          priority: "high",
+        });
+      }
+      results.push({ incidentId: incident.incidentId, incidentKey: incident.incidentKey, warehouseName: incident.warehouseName,
+        reasonName: incident.reasonName, oldState, newState, progressPercent: assessment.progressPercent, assessment: assessment.assessment, payload });
+    }
+    if (this.followupRepo && mutations.length) {
+      const persisted = await this.persistCases(mutations, metrics);
+      const ids = new Map(persisted.map(item => [item.incident_key, item.id]));
+      await this.persistEvents(params.map(item => {
+        const id = ids.get(item.incidentKey);
+        if (!id) throw new Error(`Missing persisted cohort ${item.incidentKey}`);
+        return buildEventMutation(item, id);
+      }), metrics);
+    }
+    if (actions.length > 0 && this.actionQueue) {
+      metrics.actions += actions.length;
+      if (typeof this.actionQueue.enqueueActionBatch === "function") await this.timeOperation(metrics, "actionEnqueue", () => this.actionQueue!.enqueueActionBatch!(actions));
+      else for (const action of actions) await this.timeOperation(metrics, "actionEnqueue", () => this.actionQueue!.enqueueAction(action));
+    }
+    return results;
   }
 
   private async processIncidentFollowupsInternal(

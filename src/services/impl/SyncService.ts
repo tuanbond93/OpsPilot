@@ -713,11 +713,11 @@ export class SyncService implements ISyncService {
           logPhaseStart("processFollowups");
           let followupQueries = 0;
 
-          if (this.followupRepo && incidents.length > 0) {
-            const referenceTimeMs = _options?.referenceTimeMs || (sourceUpdatedAt ? new Date(sourceUpdatedAt).getTime() : startTime);
+          if (this.followupRepo) {
+            const referenceTimeMs = _options?.referenceTimeMs || startTime;
             const actQueue = this.actionQueue || new ActionQueue(null);
             const followupEngine = new FollowupEngine(this.followupRepo, actQueue);
-            followupResults = await followupEngine.processIncidentFollowups(incidents, historyMap, undefined, referenceTimeMs);
+            followupResults = await followupEngine.processIncidentFollowups(incidents, historyMap, undefined, referenceTimeMs, snapshotResult.orders);
             const followupMetrics = followupEngine.getLastRunMetrics();
             followupQueries = followupMetrics ? followupMetrics.caseReads + followupMetrics.caseWrites + followupMetrics.eventWrites : 0;
           }
