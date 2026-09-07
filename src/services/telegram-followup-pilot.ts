@@ -2,7 +2,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import warehouseAssignments from "@/data/warehouse-assignments.generated.json";
 import type { IncidentReasonCode } from "@/engine/incident";
 import { TelegramClient } from "@/integrations/telegram";
-import { buildRillnetOrderEvidence, formatTelegramFollowupReminder, logicalReminderOrderCodes, type FollowupReminderStage } from "@/integrations/telegram/followup-first-push";
+import { buildCanonicalTelegramReminderContext, formatTelegramFollowupReminder, logicalReminderOrderCodes, type FollowupReminderStage } from "@/integrations/telegram/followup-first-push";
 import { followupInlineKeyboard, supportsStructuredOutboundResponses } from "@/integrations/telegram/followup-actions";
 import { ServiceFactory } from "@/services/ServiceFactory";
 import { NotificationGateway, type DeliveryRequest } from "@/notifications/gateway";
@@ -175,10 +175,19 @@ export async function runTelegramFollowupPilotDispatch(client: SupabaseClient, a
       await client.from("telegram_followup_reminder_events").insert({ reminder_id: reminder.id, event_type: "REMINDER_REQUESTED", actor, metadata: { stage: candidate.stage, followupCaseId: candidate.followupCase.id, incidentId: candidate.incident.id, recipientMemberIds: candidate.recipients.map((member) => member.id), pilotZone: PILOT_ZONE, aggregateSize: batch.length } });
     }
     if (!reminders.length) continue;
-    const orderCodes = [...new Set(batch.flatMap((candidate) => candidate.reminderOrderCodes))];
     const structuredOutboundResponses = supportsStructuredOutboundResponses(first.incident.reason_code);
-    const orderEvidence = buildRillnetOrderEvidence(orderCodes, batch.flatMap(candidate => candidate.followupCase.operational_cohort?.members || []));
-    const message = formatTelegramFollowupReminder(first.stage, { incidentKey: first.incident.incident_key || first.followupCase.incident_key, warehouseName: String(first.incident.warehouse_name || ""), reasonCode: first.incident.reason_code, reasonName: first.incident.reason_name, affectedOrderCount: batch.reduce((total, candidate) => total + Number(candidate.followupCase.latest_affected_order_count || 0), 0), maximumAgeHours: Math.max(...batch.map((candidate) => Number(candidate.history?.maximum_age_hours || 0))), orderCodes, orderEvidence, structuredOutboundResponses }, first.recipients.map((member) => ({ displayName: member.display_name, username: member.username })));
+    const messageContext = buildCanonicalTelegramReminderContext({
+      incidentKey: first.incident.incident_key || first.followupCase.incident_key,
+      warehouseName: String(first.incident.warehouse_name || ""),
+      reasonCode: first.incident.reason_code,
+      reasonName: first.incident.reason_name,
+      affectedOrderCount: batch.reduce((total, candidate) => total + Number(candidate.followupCase.latest_affected_order_count || 0), 0),
+      maximumAgeHours: Math.max(...batch.map((candidate) => Number(candidate.history?.maximum_age_hours || 0))),
+      structuredOutboundResponses,
+      reminderOrderCodes: batch.flatMap((candidate) => candidate.reminderOrderCodes),
+      targets: batch.map((candidate) => ({ operationalCohort: candidate.followupCase.operational_cohort, actionMarker: candidate.followupCase.last_action_requested_at })),
+    });
+    const message = formatTelegramFollowupReminder(first.stage, messageContext, first.recipients.map((member) => ({ displayName: member.display_name, username: member.username })));
     const inlineKeyboard = structuredOutboundResponses ? followupInlineKeyboard(reminders[0].id, true) : undefined;
     try {
       const waitMs = Math.max(0, TELEGRAM_MESSAGE_INTERVAL_MS - (Date.now() - lastTelegramMessageAt));

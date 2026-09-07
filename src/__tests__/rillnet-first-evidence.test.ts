@@ -3,7 +3,8 @@ import { aggregateIncidents } from "@/engine/incident";
 import { FollowupEngine } from "@/engine/followup/followup-engine";
 import { MockFollowupRepository } from "@/repositories/mock/MockFollowupRepository";
 import { GhnOrderTrackingClient } from "@/connectors/ghn-order-tracking";
-import { buildRillnetOrderEvidence, formatTelegramFollowupReminder, logicalReminderOrderCodes } from "@/integrations/telegram/followup-first-push";
+import { readFileSync } from "node:fs";
+import { buildCanonicalTelegramReminderContext, buildRillnetOrderEvidence, formatTelegramFollowupReminder, logicalReminderOrderCodes } from "@/integrations/telegram/followup-first-push";
 import { needsGhnVerification } from "@/services/evidence-policy";
 import type { NormalizedRillnetOrder } from "@/connectors/rillnet";
 
@@ -65,6 +66,50 @@ describe("Rillnet-first evidence boundary", () => {
       { orderCode: "OTHER", status: "storing", observedAt: at(10), source: "rillnet" },
       { orderCode: "TARGET", status: "transporting", observedAt: at(8), source: "rillnet" },
     ])).toEqual([{ orderCode: "TARGET", status: "transporting", observedAt: at(8), source: "RILLNET_OBSERVED" }]);
+  });
+
+  it("keeps scheduled and manual FIRST semantically identical when incident sample differs", () => {
+    const sampleOrderCodes = ["ORDER_A"];
+    const cohort = { version: 1, day: "2026-09-07", capturedAt: at(8), baselineCodes: ["ORDER_A", "ORDER_B"], members: [
+      { orderCode: "ORDER_A", status: "status A", observedAt: at(10), source: "rillnet" },
+      { orderCode: "ORDER_B", status: "status B", observedAt: at(10), source: "rillnet", lastReminderAt: at(10) },
+    ] } as any;
+    const input = { incidentKey: "I", warehouseName: "Kho A", reasonCode: "KHO_TON", reasonName: "Kho tồn", affectedOrderCount: 1, structuredOutboundResponses: true, targets: [{ operationalCohort: cohort, actionMarker: at(10) }] };
+    const scheduled = formatTelegramFollowupReminder("FIRST", buildCanonicalTelegramReminderContext(input), []);
+    const manual = formatTelegramFollowupReminder("FIRST", buildCanonicalTelegramReminderContext(input), []);
+    expect(sampleOrderCodes).toEqual(["ORDER_A"]);
+    expect(scheduled).toBe(manual);
+    for (const message of [scheduled, manual]) {
+      expect(message).toContain("ORDER_B — status B");
+      expect(message).toContain(`Rillnet · cập nhật ${at(10)}`);
+      expect(message).not.toContain("ORDER_A");
+      expect(message).not.toContain("status A");
+    }
+  });
+
+  it("keeps an explicit logical target with UNKNOWN when no matching cohort member exists", () => {
+    const cohort = { version: 1, day: "2026-09-07", capturedAt: at(8), baselineCodes: ["ORDER_A"], members: [
+      { orderCode: "ORDER_A", status: "status A", observedAt: at(10), source: "rillnet" },
+    ] } as any;
+    const input = { incidentKey: "I", warehouseName: "Kho A", reasonCode: "KHO_TON", reasonName: "Kho tồn", affectedOrderCount: 1, structuredOutboundResponses: true, reminderOrderCodes: ["ORDER_B"], targets: [{ operationalCohort: cohort, actionMarker: at(10) }] };
+    const scheduled = formatTelegramFollowupReminder("FIRST", buildCanonicalTelegramReminderContext(input), []);
+    const manual = formatTelegramFollowupReminder("FIRST", buildCanonicalTelegramReminderContext(input), []);
+    expect(scheduled).toBe(manual);
+    for (const message of [scheduled, manual]) {
+      expect(message).toContain("ORDER_B — Chưa xác minh được trạng thái hiện tại.");
+      expect(message).not.toContain("ORDER_A");
+      expect(message).not.toContain("status A");
+    }
+  });
+
+  it("routes both production FIRST entry points through the canonical builder", () => {
+    const scheduledSource = readFileSync("src/services/telegram-followup-pilot.ts", "utf8");
+    const manualSource = readFileSync("src/app/api/followups/[id]/telegram-first-push/route.ts", "utf8");
+    expect(scheduledSource).toContain("buildCanonicalTelegramReminderContext({");
+    expect(manualSource).toContain("buildCanonicalTelegramReminderContext({");
+    expect(manualSource).not.toContain('select("sample_order_codes');
+    expect(manualSource).toContain('authorizeLinkedIncidentScope(request, "followup_cases", id, "MANAGE_FOLLOWUP"');
+    expect(manualSource).toContain("telegram-followup:${followupCase.id}:FIRST");
   });
 
   it("preserves the transfer-specific action wording", () => {

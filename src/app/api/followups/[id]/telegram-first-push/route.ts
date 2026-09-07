@@ -1,7 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { createAdminClient } from "@/connectors/supabase";
 import { TelegramClient } from "@/integrations/telegram";
-import { formatTelegramFollowupFirstPush } from "@/integrations/telegram/followup-first-push";
+import { buildCanonicalTelegramReminderContext, formatTelegramFollowupFirstPush } from "@/integrations/telegram/followup-first-push";
 import { followupInlineKeyboard, supportsStructuredOutboundResponses } from "@/integrations/telegram/followup-actions";
 import { readJsonBody, resolveActor } from "@/security/api-security";
 import { authorizeLinkedIncidentScope } from "@/security/scope-guard";
@@ -44,7 +44,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     const [{ data: members, error: membersError }, { data: groups, error: groupsError }, { data: histories, error: historyError }] = await Promise.all([
       client.from("telegram_pilot_members").select("id, group_id, display_name, username, warehouse_name, warehouse_names, zone_names").eq("status", "ACTIVE"),
       client.from("telegram_pilot_groups").select("id, telegram_chat_id, title").eq("status", "ACTIVE"),
-      client.from("incident_history").select("sample_order_codes, maximum_age_hours").eq("incident_id", incident.id).order("recorded_at", { ascending: false }).limit(1),
+      client.from("incident_history").select("maximum_age_hours").eq("incident_id", incident.id).order("recorded_at", { ascending: false }).limit(1),
     ]);
     if (membersError || groupsError || historyError) throw membersError || groupsError || historyError;
     const groupById = new Map((groups || []).map((group: Group) => [group.id, group]));
@@ -63,6 +63,20 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     if (groupIds.length !== 1) return NextResponse.json({ error: "TELEGRAM_ONE_GROUP_REQUIRED", message: "Case này có người nhận ở nhiều group. Hãy để một group pilot trước khi gửi thử." }, { status: 409 });
     const group = groupById.get(groupIds[0]);
     if (!group) return NextResponse.json({ error: "TELEGRAM_GROUP_NOT_FOUND" }, { status: 404 });
+
+    const history = histories?.[0] as { maximum_age_hours?: number | null } | undefined;
+    const structuredOutboundResponses = supportsStructuredOutboundResponses(incident.reason_code);
+    const messageContext = buildCanonicalTelegramReminderContext({
+      incidentKey: String(incident.incident_key || followupCase.incident_key),
+      warehouseName,
+      reasonCode: String(incident.reason_code || ""),
+      reasonName: String(incident.reason_name || "Sự cố vận hành"),
+      affectedOrderCount: Number(followupCase.latest_affected_order_count || 0),
+      maximumAgeHours: history?.maximum_age_hours,
+      structuredOutboundResponses,
+      targets: [{ operationalCohort: followupCase.operational_cohort, actionMarker: followupCase.last_action_requested_at }],
+    });
+    if (!messageContext.orderCodes?.length) return NextResponse.json({ error: "REMINDER_TARGET_NOT_FOUND", message: "Không tìm thấy logical reminder target trong operational cohort." }, { status: 409 });
 
     // Use the same canonical key as the scheduled pilot dispatcher. A manual
     // retry must never create a second Telegram message for the same case/stage.
@@ -85,9 +99,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     }
     await client.from("telegram_followup_reminder_events").insert({ reminder_id: reminder.id, event_type: "REMINDER_REQUESTED", actor, metadata: { followupCaseId: followupCase.id, incidentId: incident.id, recipientMemberIds: recipients.map((member) => member.id) } });
 
-    const history = histories?.[0] as { sample_order_codes?: unknown; maximum_age_hours?: number | null } | undefined;
-    const structuredOutboundResponses = supportsStructuredOutboundResponses(incident.reason_code);
-    const message = formatTelegramFollowupFirstPush({ incidentKey: String(incident.incident_key || followupCase.incident_key), warehouseName, reasonName: String(incident.reason_name || "Sự cố vận hành"), affectedOrderCount: Number(followupCase.latest_affected_order_count || 0), maximumAgeHours: history?.maximum_age_hours, orderCodes: list(history?.sample_order_codes), structuredOutboundResponses }, recipients.map((member) => ({ displayName: member.display_name, username: member.username })));
+    const message = formatTelegramFollowupFirstPush(messageContext, recipients.map((member) => ({ displayName: member.display_name, username: member.username })));
     const inlineKeyboard = structuredOutboundResponses ? followupInlineKeyboard(reminder.id, true) : undefined;
     try {
       let sent: { messageId: string | number; response?: any };

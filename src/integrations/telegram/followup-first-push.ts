@@ -1,3 +1,5 @@
+import type { OperationalCohort } from "@/domain/operational-learning/checkpoint-policy";
+
 type TelegramRecipient = { displayName: string; username?: string | null };
 
 export type FirstPushTelegramContext = {
@@ -25,6 +27,36 @@ export function buildRillnetOrderEvidence(orderCodes: string[], members: CohortE
       ? { orderCode, status: member.status, observedAt: member.observedAt, source: "RILLNET_OBSERVED" as const }
       : { orderCode, source: "HUMAN_VERIFICATION_REQUIRED" as const };
   });
+}
+
+export function buildCanonicalTelegramReminderContext(input: {
+  incidentKey: string;
+  warehouseName: string;
+  reasonCode?: string;
+  reasonName: string;
+  affectedOrderCount: number;
+  maximumAgeHours?: number | null;
+  structuredOutboundResponses?: boolean;
+  reminderOrderCodes?: string[];
+  targets: Array<{ operationalCohort?: OperationalCohort | null; actionMarker?: string | null }>;
+}): FirstPushTelegramContext {
+  const orderCodes = [...new Set(input.reminderOrderCodes?.length
+    ? input.reminderOrderCodes
+    : input.targets.flatMap(({ operationalCohort, actionMarker }) =>
+      logicalReminderOrderCodes(operationalCohort?.members || [], actionMarker),
+    ))];
+  const members = input.targets.flatMap(({ operationalCohort }) => operationalCohort?.members || []);
+  return {
+    incidentKey: input.incidentKey,
+    warehouseName: input.warehouseName,
+    reasonCode: input.reasonCode,
+    reasonName: input.reasonName,
+    affectedOrderCount: input.affectedOrderCount,
+    maximumAgeHours: input.maximumAgeHours,
+    structuredOutboundResponses: input.structuredOutboundResponses,
+    orderCodes,
+    orderEvidence: buildRillnetOrderEvidence(orderCodes, members),
+  };
 }
 
 export type FollowupReminderStage = "FIRST" | "SECOND" | "THIRD" | "ESCALATION";
