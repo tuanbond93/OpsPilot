@@ -9,12 +9,15 @@ import { NotificationGateway, type DeliveryRequest } from "@/notifications/gatew
 import { FEATURE_FLAGS } from "@/config/feature-flags";
 import { dispatchRillnetChangeReviews } from "@/services/telegram-rillnet-review";
 import { formatFollowupDeliverySummary, type FollowupDeliverySummaryItem } from "@/integrations/telegram/followup-delivery-summary";
+import { checkpointKey, localHour, type OperationalCohort } from "@/domain/operational-learning/checkpoint-policy";
+import { hasVerifiedReminderEvidence } from "@/services/ghn-checkpoint-observations";
+import { needsGhnVerification } from "@/services/evidence-policy";
 
 type PilotMember = { id: string; group_id: string; display_name: string; username: string | null; warehouse_name: string | null; warehouse_names: unknown; zone_names: unknown };
 type PilotGroup = { id: string; telegram_chat_id: string; title: string };
 type WarehouseAssignment = { warehouseName: string; zone: string; province: string };
 type PilotTopic = { id: string; group_id: string; message_thread_id: number; topic_title: string; province_name: string | null; is_escalation: boolean; status: string };
-type PendingCase = { id: string; incident_id: string; incident_key: string; current_state: string; first_detected_at: string; latest_affected_order_count: number; last_action_requested_at: string | null };
+type PendingCase = { id: string; incident_id: string; incident_key: string; current_state: string; first_detected_at: string; latest_affected_order_count: number; last_action_requested_at: string | null; operational_cohort?: OperationalCohort | null };
 type ActionRequestEvent = { followup_case_id: string; event_type: string; event_time: string };
 type Incident = { id: string; incident_key: string; warehouse_id: string; warehouse_name: string | null; reason_code: string; reason_name: string; priority_score: number; first_detected_at: string; last_detected_at: string };
 type History = { sample_order_codes?: unknown; maximum_age_hours?: number | null };
@@ -45,14 +48,15 @@ function isEligible(member: PilotMember, warehouseName: string, zoneName: string
   return warehouses.includes(warehouseName) || Boolean(zoneName && list(member.zone_names).includes(zoneName));
 }
 
-export type TelegramFollowupPilotResult = { scanned: number; sent: number; coveredCases: number; skipped: number; deferred: number; failed: number; stateConfirmationsFailed: number; rillnetReviews: { scanned: number; sent: number; skipped: number; failed: number }; details: Array<{ followupCaseId: string; status: string; reason?: string }> };
+export type TelegramFollowupPilotResult = { scanned: number; sent: number; coveredCases: number; skipped: number; deferred: number; failed: number; stateConfirmationsFailed: number; evidenceSourceCounts: Record<"RILLNET_OBSERVED" | "GHN_VERIFIED" | "HUMAN_VERIFICATION_REQUIRED", number>; ghnVerification: Record<"requested" | "succeeded" | "failed" | "skipped", number>; reminderEligibility: Record<"selected_from_rillnet" | "selected_with_ghn" | "suppressed_waiting_verification" | "other", number>; rillnetReviews: { scanned: number; sent: number; skipped: number; failed: number }; details: Array<{ followupCaseId: string; status: string; reason?: string }> };
 
 /**
  * Sends only deterministic, roster-mapped Miền Bắc 3 follow-up messages.
  * It never runs an operational action and is idempotent per case + ladder stage.
  */
-export async function runTelegramFollowupPilotDispatch(client: SupabaseClient, actor = "telegram_followup_pilot"): Promise<TelegramFollowupPilotResult> {
-  const result: TelegramFollowupPilotResult = { scanned: 0, sent: 0, coveredCases: 0, skipped: 0, deferred: 0, failed: 0, stateConfirmationsFailed: 0, rillnetReviews: { scanned: 0, sent: 0, skipped: 0, failed: 0 }, details: [] };
+export async function runTelegramFollowupPilotDispatch(client: SupabaseClient, actor = "telegram_followup_pilot", nowMs = Date.now()): Promise<TelegramFollowupPilotResult> {
+  const result: TelegramFollowupPilotResult = { scanned: 0, sent: 0, coveredCases: 0, skipped: 0, deferred: 0, failed: 0, stateConfirmationsFailed: 0, evidenceSourceCounts: { RILLNET_OBSERVED: 0, GHN_VERIFIED: 0, HUMAN_VERIFICATION_REQUIRED: 0 }, ghnVerification: { requested: 0, succeeded: 0, failed: 0, skipped: 0 }, reminderEligibility: { selected_from_rillnet: 0, selected_with_ghn: 0, suppressed_waiting_verification: 0, other: 0 }, rillnetReviews: { scanned: 0, sent: 0, skipped: 0, failed: 0 }, details: [] };
+  if (!checkpointKey(nowMs) || localHour(nowMs) === 8) return result;
   const reviewResult = await dispatchRillnetChangeReviews(client, actor);
   result.rillnetReviews = { scanned: reviewResult.scanned, sent: reviewResult.sent, skipped: reviewResult.skipped, failed: reviewResult.failed };
   result.failed += reviewResult.failed;
@@ -60,7 +64,7 @@ export async function runTelegramFollowupPilotDispatch(client: SupabaseClient, a
   // The queue is global while this pilot is deliberately scoped to Miền Bắc 3.
   // Read a bounded wider window so non-pilot cases cannot starve eligible pilot
   // cases simply because they happen to be older in the global ordering.
-  const { data: pendingRows, error: pendingError } = await client.from("followup_cases").select("id, incident_id, incident_key, current_state, first_detected_at, latest_affected_order_count, last_action_requested_at").in("current_state", Object.keys(stageByState)).order("last_action_requested_at", { ascending: true }).limit(1000);
+  const { data: pendingRows, error: pendingError } = await client.from("followup_cases").select("id, incident_id, incident_key, current_state, first_detected_at, latest_affected_order_count, last_action_requested_at, operational_cohort").in("current_state", Object.keys(stageByState)).order("last_action_requested_at", { ascending: true }).limit(1000);
   if (pendingError) throw pendingError;
   const cases = (pendingRows || []) as PendingCase[];
   if (!cases.length) return result;
@@ -100,6 +104,7 @@ export async function runTelegramFollowupPilotDispatch(client: SupabaseClient, a
   const deliverySummary: FollowupDeliverySummaryItem[] = [];
   let lastTelegramMessageAt = 0;
   for (const followupCase of pilotCases) {
+    if (followupCase.operational_cohort?.lastCheckpoint !== checkpointKey(nowMs)) { result.skipped++; continue; }
     const stageInfo = stageByState[followupCase.current_state];
     const incident = incidentByKey.get(followupCase.incident_key);
     if (!stageInfo || !incident) { result.skipped++; result.details.push({ followupCaseId: followupCase.id, status: "SKIPPED", reason: "incident_or_stage_missing" }); continue; }
@@ -123,7 +128,20 @@ export async function runTelegramFollowupPilotDispatch(client: SupabaseClient, a
     if (existing?.status === "SENT" || existing?.status === "PENDING") { result.skipped++; result.details.push({ followupCaseId: followupCase.id, status: "SKIPPED", reason: "already_dispatched" }); continue; }
     const { data: histories, error: historyError } = await client.from("incident_history").select("sample_order_codes, maximum_age_hours").eq("incident_id", incident.id).order("recorded_at", { ascending: false }).limit(1);
     if (historyError) throw historyError;
-    candidates.push({ followupCase, incident, stage: stageInfo.stage, action: stageInfo.action, attemptMarker, group, topic, recipients, history: histories?.[0] as History | undefined });
+    const reminderCodes = followupCase.operational_cohort.members.filter(member => member.lastReminderAt === followupCase.last_action_requested_at).map(member => member.orderCode);
+    if (!reminderCodes.length) { result.skipped++; continue; }
+    const verification = needsGhnVerification({ escalation: stageInfo.stage === "ESCALATION" });
+    const hasGhn = hasVerifiedReminderEvidence(followupCase.operational_cohort, reminderCodes, nowMs);
+    if (verification.required && !hasGhn) {
+      result.skipped++; result.deferred++; result.ghnVerification.requested++; result.ghnVerification.failed++;
+      result.evidenceSourceCounts.HUMAN_VERIFICATION_REQUIRED++; result.reminderEligibility.suppressed_waiting_verification++;
+      result.details.push({ followupCaseId: followupCase.id, status: "VERIFICATION_PENDING", reason: verification.reason });
+      continue;
+    }
+    result.ghnVerification.skipped += hasGhn ? 0 : reminderCodes.length;
+    result.evidenceSourceCounts[hasGhn ? "GHN_VERIFIED" : "RILLNET_OBSERVED"] += reminderCodes.length;
+    result.reminderEligibility[hasGhn ? "selected_with_ghn" : "selected_from_rillnet"]++;
+    candidates.push({ followupCase: { ...followupCase, latest_affected_order_count: reminderCodes.length }, incident, stage: stageInfo.stage, action: stageInfo.action, attemptMarker, group, topic, recipients, history: { ...histories?.[0], sample_order_codes: reminderCodes } });
   }
 
   const batches = new Map<string, Candidate[]>();
@@ -159,7 +177,12 @@ export async function runTelegramFollowupPilotDispatch(client: SupabaseClient, a
     if (!reminders.length) continue;
     const orderCodes = [...new Set(batch.flatMap((candidate) => list(candidate.history?.sample_order_codes)))];
     const structuredOutboundResponses = supportsStructuredOutboundResponses(first.incident.reason_code);
-    const message = formatTelegramFollowupReminder(first.stage, { incidentKey: first.incident.incident_key || first.followupCase.incident_key, warehouseName: String(first.incident.warehouse_name || ""), reasonName: first.incident.reason_name, affectedOrderCount: batch.reduce((total, candidate) => total + Number(candidate.followupCase.latest_affected_order_count || 0), 0), maximumAgeHours: Math.max(...batch.map((candidate) => Number(candidate.history?.maximum_age_hours || 0))), orderCodes, structuredOutboundResponses }, first.recipients.map((member) => ({ displayName: member.display_name, username: member.username })));
+    const orderEvidence = orderCodes.map(orderCode => {
+      const member = batch.flatMap(candidate => candidate.followupCase.operational_cohort?.members || []).find(item => item.orderCode === orderCode);
+      const ghn = member?.source === "ghn_internal_order_logs";
+      return { orderCode, status: !ghn ? member?.status || null : null, observedAt: !ghn ? member?.observedAt || null : null, source: (ghn ? "GHN_VERIFIED" : member ? "RILLNET_OBSERVED" : "HUMAN_VERIFICATION_REQUIRED") as "GHN_VERIFIED" | "RILLNET_OBSERVED" | "HUMAN_VERIFICATION_REQUIRED", ghnStatus: ghn ? member.status : null, ghnVerifiedAt: ghn ? member.observedAt : null };
+    });
+    const message = formatTelegramFollowupReminder(first.stage, { incidentKey: first.incident.incident_key || first.followupCase.incident_key, warehouseName: String(first.incident.warehouse_name || ""), reasonName: first.incident.reason_name, affectedOrderCount: batch.reduce((total, candidate) => total + Number(candidate.followupCase.latest_affected_order_count || 0), 0), maximumAgeHours: Math.max(...batch.map((candidate) => Number(candidate.history?.maximum_age_hours || 0))), orderCodes, orderEvidence, structuredOutboundResponses }, first.recipients.map((member) => ({ displayName: member.display_name, username: member.username })));
     const inlineKeyboard = structuredOutboundResponses ? followupInlineKeyboard(reminders[0].id, true) : undefined;
     try {
       const waitMs = Math.max(0, TELEGRAM_MESSAGE_INTERVAL_MS - (Date.now() - lastTelegramMessageAt));

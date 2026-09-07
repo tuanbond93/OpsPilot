@@ -1,5 +1,4 @@
 import { describe, expect, it, vi } from "vitest";
-import { GhnOrderTrackingClient, GhnTrackingError } from "@/connectors/ghn-order-tracking";
 import { assessOperationalCohort, nextCot, checkpointKey, type OrderEvidence, type OperationalCohort } from "@/domain/operational-learning/checkpoint-policy";
 import { verifyOutcomeObservation } from "@/domain/decision/outcome-verifier";
 import { FollowupEngine } from "@/engine/followup/followup-engine";
@@ -17,29 +16,24 @@ function assess(previous: OperationalCohort | null, incoming: OrderEvidence[], c
 }
 
 describe("approved operational checkpoints", () => {
-  it("uses GHN over unchanged Rillnet and suppresses reminders after credential expiry", async () => {
+  it("uses fresh Rillnet at routine checkpoints even when legacy GHN-required flag is set", async () => {
     vi.stubEnv("GHN_CHECKPOINT_EVIDENCE", "required");
     const clock = vi.spyOn(Date, "now").mockReturnValue(Date.parse(time(8)));
-    const lookup = vi.spyOn(GhnOrderTrackingClient.prototype, "fetchOrderLogs").mockResolvedValue([
-      { created_at: time(6), new_data: { client_id: "C", current_warehouse_id: "20121005", status: "storing" } },
-    ]);
     try {
       const repo = new MockFollowupRepository();
       const engine = new FollowupEngine(repo);
       const order: NormalizedRillnetOrder = { id: "GHN1", orderCode: "GHN1", status: "storing", taskCategory: "", warehouseId: "20121005", warehouseName: "(LCH) Nậm Mạ", customerId: "C", customerName: "C", customerCode: "C", createdAt: time(6), deliverWarehouseId: "20121005", fetchedAt: time(8) };
       await engine.processIncidentFollowups(aggregateIncidents([order]), undefined, undefined, Date.now(), [order]);
       clock.mockReturnValue(Date.parse(time(10)));
-      lookup.mockResolvedValue([{ created_at: time(10), new_data: { client_id: "C", current_warehouse_id: "20121005", status: "delivering" } }]);
-      await engine.processIncidentFollowups([], undefined, undefined, Date.now(), [order]);
+      await engine.processIncidentFollowups([], undefined, undefined, Date.now(), [{ ...order, status: "delivering", fetchedAt: time(10) }]);
       expect((await repo.getAllCases())[0]).toMatchObject({ current_state: "FOLLOWING_UP", current_progress_percent: 100 });
       clock.mockReturnValue(Date.parse(time(20)));
-      lookup.mockRejectedValue(new GhnTrackingError("expired", "UNAUTHORIZED"));
-      await engine.processIncidentFollowups([], undefined, undefined, Date.now(), [order]);
+      await engine.processIncidentFollowups([], undefined, undefined, Date.now(), [{ ...order, fetchedAt: time(20) }]);
       const saved = (await repo.getAllCases())[0];
-      expect(saved.current_state).toBe("FOLLOWING_UP");
-      expect(saved.operational_cohort?.verification?.failures.GHN1).toBe("UNAUTHORIZED");
+      expect(saved.current_state).toBe("FIRST_PUSH_PENDING");
+      expect(saved.operational_cohort?.members[0].source).toBe("rillnet");
     } finally {
-      clock.mockRestore(); lookup.mockRestore(); vi.unstubAllEnvs();
+      clock.mockRestore(); vi.unstubAllEnvs();
     }
   });
   it("keeps a later checkpoint reminder distinct from an earlier pending push", async () => {

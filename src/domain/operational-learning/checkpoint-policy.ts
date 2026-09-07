@@ -27,7 +27,7 @@ export type OrderStage = "DELIVERY" | "TRANSIT" | "OUTBOUND" | "UNKNOWN";
 export type OrderEvidence = {
   orderCode: string; customerId: string; warehouseId: string; stage: OrderStage;
   status: string; observedAt: string; readyAt: string | null;
-  source?: "ghn_internal_order_logs";
+  source?: "rillnet" | "ghn_internal_order_logs";
   eventAt?: string;
   observedWarehouseId?: string;
 };
@@ -78,7 +78,7 @@ export function evidenceFromOrder(order: NormalizedRillnetOrder): OrderEvidence 
     ? new Date(Math.max(Date.parse(order.endPickAt), arrival ? Date.parse(arrival) : 0)).toISOString() : arrival;
   return { orderCode: order.orderCode, customerId: order.customerId, warehouseId: order.warehouseId,
     stage, status: order.status.toLowerCase().trim(), observedAt: order.fetchedAt,
-    readyAt: readyAt || (order.status ? order.fetchedAt : null) };
+    readyAt: readyAt || (order.status ? order.fetchedAt : null), source: "rillnet" };
 }
 
 function dueAt(order: OrderEvidence, now: number): string | null {
@@ -116,7 +116,7 @@ export function assessOperationalCohort(previous: OperationalCohort | null | und
   for (const member of cohort.members) {
     const observation = observations.get(member.orderCode);
     const fresh = observation && Date.parse(observation.observedAt) >= atHour(day, localHour(now)) && Date.parse(observation.observedAt) <= now;
-    if (fresh && observation.source === "ghn_internal_order_logs" && observation.customerId === member.customerId) {
+    if (fresh && observation.customerId === member.customerId) {
       member.source = observation.source; member.eventAt = observation.eventAt;
       member.status = observation.status; member.observedAt = observation.observedAt;
       member.observedWarehouseId = observation.warehouseId;

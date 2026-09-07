@@ -24,7 +24,6 @@ import type { ActionQueueMetrics, IActionQueue } from "../action-queue/IActionQu
 import { logRuntimeError, logRuntimeMessage, serializedPayloadBytes } from "@/observability/runtimeDiagnostics";
 import { logger } from "@/observability/logger";
 import type { NormalizedRillnetOrder } from "@/connectors/rillnet";
-import { collectGhnCheckpointObservations, prioritizePilotCheckpointCandidates, requiresGhnCheckpointEvidence } from "@/services/ghn-checkpoint-observations";
 import { assessOperationalCohort, evidenceFromOrder, checkpointKey, localHour, localDay, atHour, nextCheckpoint, OPERATIONAL_CHECKPOINT_POLICY_VERSION } from "@/domain/operational-learning/checkpoint-policy";
 
 function formatRillnetStatusSignature(signature: string | null | undefined): string {
@@ -150,38 +149,19 @@ export class FollowupEngine {
   private async processOrderCohorts(incidents: Incident[], orders: NormalizedRillnetOrder[], now: number, metrics: MutableFollowupRunMetrics): Promise<ProcessedFollowupItem[]> {
     const checkpoint = checkpointKey(now);
     if (!checkpoint) return [];
-    const requireGhn = requiresGhnCheckpointEvidence();
     const isBaseline = localHour(now) === 8;
     // 08h is an immutable baseline checkpoint. It must be persisted even when
-    // Rillnet's fetchedAt lags the wall clock and before GHN evidence is ready;
-    // later checkpoints use GHN to verify progress against this snapshot.
-    if (!isBaseline && !requireGhn && !orders.some(order => Date.parse(order.fetchedAt) >= atHour(localDay(now), localHour(now)) && Date.parse(order.fetchedAt) <= now)) return [];
+    // Rillnet's fetchedAt lags the wall clock; later routine checkpoints use
+    // fresh Rillnet observations to evaluate progress against this snapshot.
+    if (!isBaseline && !orders.some(order => Date.parse(order.fetchedAt) >= atHour(localDay(now), localHour(now)) && Date.parse(order.fetchedAt) <= now)) return [];
     // A failed read must abort; replacing an unavailable baseline would erase old work.
     metrics.caseReads++;
     const existing = this.followupRepo ? await this.followupRepo.getAllCases() : [];
     const byKey = new Map(existing.map(item => [item.incident_key, item]));
     const membership = new Map(orders.map(order => [order.orderCode, evidenceFromOrder(order)]));
-    const cached = new Map<string, ReturnType<typeof evidenceFromOrder>>();
-    const candidates = new Map<string, ReturnType<typeof evidenceFromOrder>>();
-    for (const item of existing) for (const member of item.operational_cohort?.members || []) {
-      const failed = item.operational_cohort?.verification?.failures?.[member.orderCode];
-      if (!member.completedAt && member.source === "ghn_internal_order_logs" && !failed
-        && checkpointKey(Date.parse(member.observedAt)) === checkpoint) cached.set(member.orderCode, member);
-      else if (!member.completedAt) candidates.set(member.orderCode, member);
-    }
-    for (const incident of incidents) for (const code of incident.affectedOrders || []) {
-      const order = membership.get(code);
-      if (order && !candidates.has(code)) candidates.set(code, order);
-    }
-    const prioritized = prioritizePilotCheckpointCandidates([...candidates.values()], now);
-    // Do not spend the bounded GHN lookup budget at 08h. The baseline records
-    // the source snapshot only; operational evidence starts at 10h.
-    const verified = requireGhn && !isBaseline ? await collectGhnCheckpointObservations(prioritized) : null;
-    if (verified) {
-      now = Date.parse(verified.checkedAt);
-      if (checkpointKey(now) !== checkpoint) return [];
-    }
-    const observations = verified ? new Map([...cached, ...verified.observations]) : membership;
+    // Routine operational checkpoints are Rillnet-first. GHN enrichment is
+    // deliberately outside this synchronous checkpoint path.
+    const observations = membership;
     const work = new Map(incidents.map(incident => [incident.incidentKey, incident]));
     for (const item of existing) {
       if (work.has(item.incident_key) || !item.operational_cohort || item.current_state === "CLOSED") continue;
@@ -205,10 +185,6 @@ export class FollowupEngine {
       ]);
       const incoming = [...codes].flatMap(code => { const order = membership.get(code); return order ? [order] : []; });
       const assessment = assessOperationalCohort(prior?.operational_cohort, incoming, observations, now);
-      if (verified) assessment.cohort.verification = {
-        source: "ghn_internal_order_logs", checkedAt: verified.checkedAt,
-        failures: Object.fromEntries([...codes].filter(code => verified.failures[code]).map(code => [code, verified.failures[code]])),
-      };
       const oldState = prior?.current_state || "NEW";
       const shouldRemind = !isBaseline && assessment.reminderCodes.length > 0;
       const resolved = !isBaseline && assessment.due > 0 && assessment.completed === assessment.due && !assessment.unknown;
