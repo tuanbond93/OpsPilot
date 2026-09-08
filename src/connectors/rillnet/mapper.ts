@@ -98,6 +98,14 @@ export function mapRawOrderToNormalized(raw: RawRillnetOrder, fetchedAt: string)
   const warehouseId = String(raw.current_warehouse_id || "").trim();
   const warehouseName = String(raw.current_warehouse_name || raw.deliver_warehouse_name || "Chưa xác định").trim();
   const customerId = String(raw.client_id || "").trim();
+  const optionalString = (value: unknown): string | null => {
+    if (value === null || value === undefined) return null;
+    const normalized = String(value).trim();
+    return normalized || null;
+  };
+  const weightGrams = typeof raw.max_weight === "number" && Number.isFinite(raw.max_weight) && raw.max_weight >= 0
+    ? raw.max_weight
+    : null;
   
   const clientMeta = RILLNET_CLIENTS_BY_ID[customerId];
   const customerName = clientMeta?.name || String(raw.client_order_code || customerId).trim();
@@ -128,6 +136,13 @@ export function mapRawOrderToNormalized(raw: RawRillnetOrder, fetchedAt: string)
     createdAt,
     pickWarehouseId: raw.pick_warehouse_id == null ? null : String(raw.pick_warehouse_id),
     deliverWarehouseId: raw.deliver_warehouse_id == null ? null : String(raw.deliver_warehouse_id),
+    deliverWarehouseName: optionalString(raw.deliver_warehouse_name),
+    destinationProvinceId: optionalString(raw.to_province_id_v2),
+    destinationDistrictId: optionalString(raw.to_district_id),
+    weightGrams,
+    weightKg: weightGrams === null ? null : weightGrams / 1000,
+    sortCode: optionalString(raw.sort_code),
+    isB2b: typeof raw.is_b2b === "boolean" ? raw.is_b2b : null,
     serviceTypeId: raw.service_type_id == null ? null : String(raw.service_type_id),
     endPickAt: timestamp(raw.end_pick_time),
     endDeliveryAt: timestamp(raw.end_delivery_time),

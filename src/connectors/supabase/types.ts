@@ -51,6 +51,13 @@ export interface OrderSnapshotRow {
   age_hours?: number | null;
   pick_warehouse_id?: string | null;
   deliver_warehouse_id?: string | null;
+  deliver_warehouse_name?: string | null;
+  destination_province_id?: string | null;
+  destination_district_id?: string | null;
+  weight_grams?: number | null;
+  weight_kg?: number | null;
+  sort_code?: string | null;
+  is_b2b?: boolean | null;
   service_type_id?: string | null;
   end_pick_at?: string | null;
   end_delivery_at?: string | null;

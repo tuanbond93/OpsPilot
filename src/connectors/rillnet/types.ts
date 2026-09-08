@@ -59,7 +59,12 @@ export interface RawRillnetOrder {
   status?: string;
   current_warehouse_id?: string | number;
   current_warehouse_name?: string;
-  deliver_warehouse_name?: string;
+  deliver_warehouse_name?: string | null;
+  max_weight?: number | string | null;
+  to_province_id_v2?: string | number | null;
+  to_district_id?: string | number | null;
+  sort_code?: string | null;
+  is_b2b?: boolean | null;
   client_id?: string | number;
   client_order_code?: string;
   created_date?: string;
@@ -97,6 +102,16 @@ export interface NormalizedRillnetOrder {
   createdAt: string | null;
   pickWarehouseId?: string | null;
   deliverWarehouseId?: string | null;
+  deliverWarehouseName?: string | null;
+  destinationProvinceId?: string | null;
+  destinationDistrictId?: string | null;
+  /** Owner-verified operational displayed weight from Rillnet max_weight, in grams. */
+  weightGrams?: number | null;
+  /** Owner-verified operational displayed weight converted from grams to kilograms. */
+  weightKg?: number | null;
+  /** Evidence only; not a governed route identifier. */
+  sortCode?: string | null;
+  isB2b?: boolean | null;
   serviceTypeId?: string | null;
   endPickAt?: string | null;
   endDeliveryAt?: string | null;
