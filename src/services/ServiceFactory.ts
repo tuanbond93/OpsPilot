@@ -42,6 +42,7 @@ import type { IDecisionPilotService } from './interfaces/IDecisionPilotService';
 import { DecisionPilotService } from './impl/DecisionPilotService';
 import { ExecutionWorkOrderService } from "./impl/ExecutionWorkOrderService";
 import { DecisionTelegramRequestService } from "./decision-telegram-shadow";
+import { SupabaseLaneObservationRepository } from "@/repositories/supabase/SupabaseLaneObservationRepository";
 
 export class ServiceFactory {
   public static getDecisionService(client?: SupabaseClient): IDecisionService {
@@ -113,7 +114,8 @@ export class ServiceFactory {
       actionQueue,
       syncLockRepo,
       triageAuditRepo,
-      playbookDirectiveRepo
+      playbookDirectiveRepo,
+      client ? new SupabaseLaneObservationRepository(client) : null
     );
   }
   public static getPlannerService(client?: SupabaseClient): IPlannerService {

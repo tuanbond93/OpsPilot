@@ -21,6 +21,8 @@ import { logger } from "@/observability/logger";
 import { getRoutePromotion, routeIncident, shouldEnqueueAiJob, type TriageResult } from "@/engine/rules/triage";
 import { hasConflictingActions, selectApplicablePlaybookDirectives } from "@/engine/rules/conflict-detector";
 import warehouseAssignments from "@/data/warehouse-assignments.generated.json";
+import { LaneObservationService } from "@/domain/lane-observation";
+import type { LaneObservationRepository } from "@/domain/lane-observation";
 
 type WarehouseAssignment = { warehouseId: string; warehouseName: string; zone: string };
 const warehouseZoneById = new Map((warehouseAssignments.warehouses as WarehouseAssignment[]).map((warehouse) => [warehouse.warehouseId, warehouse.zone]));
@@ -75,7 +77,8 @@ export class SyncService implements ISyncService {
     private actionQueue: ActionQueue | null = null,
     private syncLockRepo: ISyncLockRepository | null = null,
     private triageAuditRepo: ITriageAuditRepository | null = null,
-    private playbookDirectiveRepo: IPlaybookDirectiveRepository | null = null
+    private playbookDirectiveRepo: IPlaybookDirectiveRepository | null = null,
+    private laneObservationRepo: LaneObservationRepository | null = null
   ) {}
 
   async runSync(_options?: SyncOptions): Promise<SyncSummary> {
@@ -593,6 +596,19 @@ export class SyncService implements ISyncService {
               await this.orderSnapshotRepo.insertBatch(snapshotRows, 500);
             } catch {
               // Fallback
+            }
+          }
+          // Passive observation inspects the full normalized population and is
+          // intentionally independent from incident-selected order_snapshots.
+          if (this.laneObservationRepo && syncRunId && !syncRunId.startsWith("local-sync") && snapshotResult.orders) {
+            try {
+              await new LaneObservationService(this.laneObservationRepo).observe(
+                syncRunId,
+                sourceUpdatedAt || snapshotResult.fetchedAt || startedAt,
+                snapshotResult.orders
+              );
+            } catch (error) {
+              logger.info({ component: "SyncService", operation: "laneObservation", status: "error", message: "Passive lane observation failed without blocking Rillnet-first sync.", metadata: { error: error instanceof Error ? error.message : String(error) } });
             }
           }
           const snapDuration = performance.now() - tSnapStart;
