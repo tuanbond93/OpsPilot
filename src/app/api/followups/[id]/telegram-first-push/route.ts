@@ -3,6 +3,7 @@ import { createAdminClient } from "@/connectors/supabase";
 import { TelegramClient } from "@/integrations/telegram";
 import { buildCanonicalTelegramReminderContext, formatTelegramFollowupFirstPush } from "@/integrations/telegram/followup-first-push";
 import { followupInlineKeyboard, supportsStructuredOutboundResponses } from "@/integrations/telegram/followup-actions";
+import { governedWarehouseContext } from "@/integrations/telegram/team-lead-action";
 import { readJsonBody, resolveActor } from "@/security/api-security";
 import { authorizeLinkedIncidentScope } from "@/security/scope-guard";
 import warehouseAssignments from "@/data/warehouse-assignments.generated.json";
@@ -37,7 +38,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     if (!followupCase) return NextResponse.json({ error: "FOLLOWUP_CASE_NOT_FOUND" }, { status: 404 });
     if (followupCase.current_state !== "FIRST_PUSH_PENDING") return NextResponse.json({ error: "FIRST_PUSH_NOT_PENDING", message: "Chỉ gửi được khi case đang chờ nhắc lần 1." }, { status: 409 });
 
-    const { data: incident, error: incidentError } = await client.from("incidents").select("id, incident_key, warehouse_name, reason_code, reason_name, priority_score").eq("id", followupCase.incident_id).maybeSingle();
+    const { data: incident, error: incidentError } = await client.from("incidents").select("id, incident_key, warehouse_id, warehouse_name, reason_code, reason_name, priority_score").eq("id", followupCase.incident_id).maybeSingle();
     if (incidentError) throw incidentError;
     if (!incident) return NextResponse.json({ error: "INCIDENT_NOT_FOUND" }, { status: 404 });
     const warehouseName = String(incident.warehouse_name || "Kho chưa xác định");
@@ -66,6 +67,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
 
     const history = histories?.[0] as { maximum_age_hours?: number | null } | undefined;
     const structuredOutboundResponses = supportsStructuredOutboundResponses(incident.reason_code);
+    const warehouseContext = governedWarehouseContext(String(incident.warehouse_id || ""), warehouseName);
     const messageContext = buildCanonicalTelegramReminderContext({
       incidentKey: String(incident.incident_key || followupCase.incident_key),
       warehouseName,
@@ -74,6 +76,8 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       affectedOrderCount: Number(followupCase.latest_affected_order_count || 0),
       maximumAgeHours: history?.maximum_age_hours,
       structuredOutboundResponses,
+      provinceName: warehouseContext.province,
+      warehouseClass: warehouseContext.warehouseClass,
       targets: [{ operationalCohort: followupCase.operational_cohort, actionMarker: followupCase.last_action_requested_at }],
     });
     if (!messageContext.orderCodes?.length) return NextResponse.json({ error: "REMINDER_TARGET_NOT_FOUND", message: "Không tìm thấy logical reminder target trong operational cohort." }, { status: 409 });
@@ -100,7 +104,9 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     await client.from("telegram_followup_reminder_events").insert({ reminder_id: reminder.id, event_type: "REMINDER_REQUESTED", actor, metadata: { followupCaseId: followupCase.id, incidentId: incident.id, recipientMemberIds: recipients.map((member) => member.id) } });
 
     const message = formatTelegramFollowupFirstPush(messageContext, recipients.map((member) => ({ displayName: member.display_name, username: member.username })));
-    const inlineKeyboard = structuredOutboundResponses ? followupInlineKeyboard(reminder.id, true) : undefined;
+    const inlineKeyboard = structuredOutboundResponses
+      ? followupInlineKeyboard(reminder.id, true, String(incident.reason_code || ""), warehouseContext.warehouseClass)
+      : undefined;
     try {
       let sent: { messageId: string | number; response?: any };
       if (FEATURE_FLAGS.notificationGateway) {

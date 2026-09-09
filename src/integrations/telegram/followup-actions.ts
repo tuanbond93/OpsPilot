@@ -1,5 +1,7 @@
 export type TelegramFollowupSignal = "ACKNOWLEDGED" | "NEEDS_SUPPORT" | "PROGRESS_UPDATED";
-export type TelegramFollowupStructuredReason = "OUTBOUND_SCHEDULED" | "WAITING_VEHICLE" | "BEFORE_COT" | "OTHER";
+import { TEAM_LEAD_RESPONSE_LABELS, isTeamLeadActionReason, responseOptions, type TeamLeadResponseCode, type TeamLeadWarehouseClass } from "./team-lead-action";
+
+export type TelegramFollowupStructuredReason = "OUTBOUND_SCHEDULED" | "WAITING_VEHICLE" | "BEFORE_COT" | TeamLeadResponseCode;
 export type TelegramFollowupResponse = TelegramFollowupSignal | TelegramFollowupStructuredReason;
 
 const responses: TelegramFollowupResponse[] = [
@@ -10,13 +12,21 @@ const responses: TelegramFollowupResponse[] = [
   "WAITING_VEHICLE",
   "BEFORE_COT",
   "OTHER",
+  "DELIVERY_ASSIGNED",
+  "DELIVERY_WAITING",
+  "DELIVERY_COT_PENDING",
+  "COT_PENDING",
+  "TRANSIT_MISSED",
+  "SENT_UNRECEIVED",
+  "IN_TRANSIT",
+  "WAREHOUSE_LOST",
 ];
 
-const structuredReasonLabels: Record<TelegramFollowupStructuredReason, string> = {
+export const structuredReasonLabels: Record<TelegramFollowupStructuredReason, string> = {
   OUTBOUND_SCHEDULED: "Đã có lịch xuất/chuyển",
   WAITING_VEHICLE: "Đang chờ xe/chuyến",
   BEFORE_COT: "Chưa tới COT xuất",
-  OTHER: "Khác",
+  ...TEAM_LEAD_RESPONSE_LABELS,
 };
 
 export function buildFollowupCallbackData(reminderId: string, response: TelegramFollowupResponse) {
@@ -36,17 +46,19 @@ export function isStructuredFollowupReason(value: TelegramFollowupResponse): val
 }
 
 export function supportsStructuredOutboundResponses(reasonCode: string | null | undefined) {
-  return reasonCode === "KHO_TON" || reasonCode === "KHO_CHU_A_LUAN_CHUYEN";
+  return isTeamLeadActionReason(reasonCode);
 }
 
-export function followupInlineKeyboard(reminderId: string, structuredOutbound = false) {
-  if (structuredOutbound) {
-    return [
-      [{ text: structuredReasonLabels.OUTBOUND_SCHEDULED, callbackData: buildFollowupCallbackData(reminderId, "OUTBOUND_SCHEDULED") }],
-      [{ text: structuredReasonLabels.WAITING_VEHICLE, callbackData: buildFollowupCallbackData(reminderId, "WAITING_VEHICLE") }],
-      [{ text: structuredReasonLabels.BEFORE_COT, callbackData: buildFollowupCallbackData(reminderId, "BEFORE_COT") }],
-      [{ text: structuredReasonLabels.OTHER, callbackData: buildFollowupCallbackData(reminderId, "OTHER") }],
-    ];
+export function followupInlineKeyboard(reminderId: string, structuredOutbound = false, reasonCode = "", warehouseClass: TeamLeadWarehouseClass = "UNKNOWN") {
+  const options = structuredOutbound ? responseOptions(reasonCode, warehouseClass) : null;
+  if (options) {
+    return options.map((response) => [{ text: structuredReasonLabels[response], callbackData: buildFollowupCallbackData(reminderId, response) }]);
+  }
+  if (structuredOutbound && !reasonCode) {
+    return ["OUTBOUND_SCHEDULED", "WAITING_VEHICLE", "BEFORE_COT", "OTHER"].map((response) => [{
+      text: structuredReasonLabels[response as TelegramFollowupStructuredReason],
+      callbackData: buildFollowupCallbackData(reminderId, response as TelegramFollowupResponse),
+    }]);
   }
   return [[
     { text: "Đã nhận việc", callbackData: buildFollowupCallbackData(reminderId, "ACKNOWLEDGED") },
@@ -62,6 +74,10 @@ export function followupResponseAcknowledgment(response: TelegramFollowupRespons
     : response === "NEEDS_SUPPORT"
       ? "Đã ghi nhận cần hỗ trợ. Hãy Reply nêu rõ vướng mắc."
       : "Đã ghi nhận cập nhật tiến độ. Hãy Reply nêu nội dung mới.";
+}
+
+export function followupResponseLabel(response: TelegramFollowupResponse) {
+  return isStructuredFollowupReason(response) ? structuredReasonLabels[response] : followupResponseAcknowledgment(response);
 }
 
 type RelatedReminder = { id: string; followup_case_id: string; reminder_stage: string };

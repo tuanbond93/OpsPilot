@@ -1,4 +1,5 @@
 import type { OperationalCohort } from "@/domain/operational-learning/checkpoint-policy";
+import { formatTeamLeadActionMessage, type TeamLeadWarehouseClass } from "./team-lead-action";
 
 type TelegramRecipient = { displayName: string; username?: string | null };
 
@@ -11,6 +12,9 @@ export type FirstPushTelegramContext = {
   orderCodes?: string[];
   reasonCode?: string;
   structuredOutboundResponses?: boolean;
+  provinceName?: string;
+  warehouseClass?: TeamLeadWarehouseClass;
+  previousResponseLabel?: string | null;
   orderEvidence?: Array<{ orderCode: string; status?: string | null; observedAt?: string | null; source: "RILLNET_OBSERVED" | "GHN_VERIFIED" | "HUMAN_VERIFICATION_REQUIRED"; ghnStatus?: string | null; ghnVerifiedAt?: string | null }>;
 };
 
@@ -37,6 +41,9 @@ export function buildCanonicalTelegramReminderContext(input: {
   affectedOrderCount: number;
   maximumAgeHours?: number | null;
   structuredOutboundResponses?: boolean;
+  provinceName?: string;
+  warehouseClass?: TeamLeadWarehouseClass;
+  previousResponseLabel?: string | null;
   reminderOrderCodes?: string[];
   targets: Array<{ operationalCohort?: OperationalCohort | null; actionMarker?: string | null }>;
 }): FirstPushTelegramContext {
@@ -54,6 +61,9 @@ export function buildCanonicalTelegramReminderContext(input: {
     affectedOrderCount: input.affectedOrderCount,
     maximumAgeHours: input.maximumAgeHours,
     structuredOutboundResponses: input.structuredOutboundResponses,
+    provinceName: input.provinceName,
+    warehouseClass: input.warehouseClass,
+    previousResponseLabel: input.previousResponseLabel,
     orderCodes,
     orderEvidence: buildRillnetOrderEvidence(orderCodes, members),
   };
@@ -87,6 +97,9 @@ export function formatTelegramFollowupReminder(
   context: FirstPushTelegramContext,
   _recipients: TelegramRecipient[]
 ) {
+  if (context.structuredOutboundResponses && context.warehouseClass && context.warehouseClass !== "UNKNOWN") {
+    return formatTeamLeadActionMessage({ stage, province: context.provinceName || "Chưa xác định", warehouseName: context.warehouseName, warehouseClass: context.warehouseClass, reasonCode: context.reasonCode || "", orderCodes: context.orderCodes || [], previousResponseLabel: context.previousResponseLabel });
+  }
   const allOrders = [...new Set(context.orderCodes || [])];
   const orders = allOrders.slice(0, 30);
   const needsManager = stage === "ESCALATION";

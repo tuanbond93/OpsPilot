@@ -4,6 +4,7 @@ import type { IncidentReasonCode } from "@/engine/incident";
 import { TelegramClient } from "@/integrations/telegram";
 import { buildCanonicalTelegramReminderContext, formatTelegramFollowupReminder, logicalReminderOrderCodes, type FollowupReminderStage } from "@/integrations/telegram/followup-first-push";
 import { followupInlineKeyboard, supportsStructuredOutboundResponses } from "@/integrations/telegram/followup-actions";
+import { governedWarehouseContext } from "@/integrations/telegram/team-lead-action";
 import { ServiceFactory } from "@/services/ServiceFactory";
 import { NotificationGateway, type DeliveryRequest } from "@/notifications/gateway";
 import { FEATURE_FLAGS } from "@/config/feature-flags";
@@ -15,7 +16,7 @@ import { needsGhnVerification } from "@/services/evidence-policy";
 
 type PilotMember = { id: string; group_id: string; display_name: string; username: string | null; warehouse_name: string | null; warehouse_names: unknown; zone_names: unknown };
 type PilotGroup = { id: string; telegram_chat_id: string; title: string };
-type WarehouseAssignment = { warehouseName: string; zone: string; province: string };
+type WarehouseAssignment = { warehouseId: string; warehouseName: string; warehouseType: string; zone: string; province: string };
 type PilotTopic = { id: string; group_id: string; message_thread_id: number; topic_title: string; province_name: string | null; is_escalation: boolean; status: string };
 type PendingCase = { id: string; incident_id: string; incident_key: string; current_state: string; first_detected_at: string; latest_affected_order_count: number; last_action_requested_at: string | null; operational_cohort?: OperationalCohort | null };
 type ActionRequestEvent = { followup_case_id: string; event_type: string; event_time: string };
@@ -176,6 +177,13 @@ export async function runTelegramFollowupPilotDispatch(client: SupabaseClient, a
     }
     if (!reminders.length) continue;
     const structuredOutboundResponses = supportsStructuredOutboundResponses(first.incident.reason_code);
+    const warehouseContext = governedWarehouseContext(first.incident.warehouse_id, String(first.incident.warehouse_name || ""));
+    const { data: previousResponses } = await client.from("telegram_followup_reminders")
+      .select("response_label,responded_at")
+      .in("followup_case_id", batch.map((candidate) => candidate.followupCase.id))
+      .not("responded_at", "is", null)
+      .order("responded_at", { ascending: false })
+      .limit(1);
     const messageContext = buildCanonicalTelegramReminderContext({
       incidentKey: first.incident.incident_key || first.followupCase.incident_key,
       warehouseName: String(first.incident.warehouse_name || ""),
@@ -184,11 +192,16 @@ export async function runTelegramFollowupPilotDispatch(client: SupabaseClient, a
       affectedOrderCount: batch.reduce((total, candidate) => total + Number(candidate.followupCase.latest_affected_order_count || 0), 0),
       maximumAgeHours: Math.max(...batch.map((candidate) => Number(candidate.history?.maximum_age_hours || 0))),
       structuredOutboundResponses,
+      provinceName: warehouseContext.province,
+      warehouseClass: warehouseContext.warehouseClass,
+      previousResponseLabel: previousResponses?.[0]?.response_label || null,
       reminderOrderCodes: batch.flatMap((candidate) => candidate.reminderOrderCodes),
       targets: batch.map((candidate) => ({ operationalCohort: candidate.followupCase.operational_cohort, actionMarker: candidate.followupCase.last_action_requested_at })),
     });
     const message = formatTelegramFollowupReminder(first.stage, messageContext, first.recipients.map((member) => ({ displayName: member.display_name, username: member.username })));
-    const inlineKeyboard = structuredOutboundResponses ? followupInlineKeyboard(reminders[0].id, true) : undefined;
+    const inlineKeyboard = structuredOutboundResponses
+      ? followupInlineKeyboard(reminders[0].id, true, first.incident.reason_code, warehouseContext.warehouseClass)
+      : undefined;
     try {
       const waitMs = Math.max(0, TELEGRAM_MESSAGE_INTERVAL_MS - (Date.now() - lastTelegramMessageAt));
       if (waitMs) await new Promise<void>((resolve) => setTimeout(resolve, waitMs));
