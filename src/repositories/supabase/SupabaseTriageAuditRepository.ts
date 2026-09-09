@@ -1,6 +1,12 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { ITriageAuditRepository, TriageAuditInsert, TriageAuditRecord } from "../interfaces/ITriageAuditRepository";
 
+const POSTGRES_UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+export function canonicalIncidentIds(incidentIds: string[]): string[] {
+  return [...new Set(incidentIds.filter((incidentId) => POSTGRES_UUID_PATTERN.test(incidentId)))];
+}
+
 export class SupabaseTriageAuditRepository implements ITriageAuditRepository {
   constructor(private client: SupabaseClient) {}
 
@@ -26,11 +32,12 @@ export class SupabaseTriageAuditRepository implements ITriageAuditRepository {
   }
 
   async getLatestByIncidentIds(incidentIds: string[]): Promise<TriageAuditRecord[]> {
-    if (!incidentIds.length) return [];
+    const canonicalIds = canonicalIncidentIds(incidentIds);
+    if (!canonicalIds.length) return [];
     const { data, error } = await this.client
       .from("incident_triage_evaluations")
       .select("id, incident_id, sync_run_id, route, reason_code, severity, decision_complexity, triage_reason, routing_version, evidence, created_at")
-      .in("incident_id", incidentIds)
+      .in("incident_id", canonicalIds)
       .order("created_at", { ascending: false });
     if (error) throw new Error(`Triage audit lookup failed: ${error.message}`);
 
