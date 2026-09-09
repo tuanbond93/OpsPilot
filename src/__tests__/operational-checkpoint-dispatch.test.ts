@@ -33,7 +33,7 @@ describe("operational checkpoint notification dispatch", () => {
     expect((await queue.getActionById(action!.id))?.status).toBe("CANCELLED");
   });
 
-  it("defers a current-policy push to the next checkpoint outside the schedule", async () => {
+  it("cancels a stale current-policy push at the later governed 16:00 checkpoint", async () => {
     const queue = new ActionQueue(null);
     const result = await queue.enqueueAction({
       actionType: "FIRST_PUSH",
@@ -55,8 +55,8 @@ describe("operational checkpoint notification dispatch", () => {
 
     expect(summary.sentCount).toBe(0);
     expect(send).not.toHaveBeenCalled();
-    expect(updated?.status).toBe("PENDING");
-    expect(updated?.scheduled_at).toBe("2026-09-05T11:00:00.000Z"); // 18:00 VN
+    expect(updated?.status).toBe("CANCELLED");
+    expect(updated?.last_error).toBe("STALE_PUSH_BLOCKED_BY_OPERATIONAL_CHECKPOINT");
   });
 
   it("delivers only the action generated for the current checkpoint", async () => {

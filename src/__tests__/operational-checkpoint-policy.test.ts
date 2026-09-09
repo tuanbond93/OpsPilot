@@ -27,8 +27,8 @@ describe("approved operational checkpoints", () => {
       clock.mockReturnValue(Date.parse(time(10)));
       await engine.processIncidentFollowups([], undefined, undefined, Date.now(), [{ ...order, status: "delivering", fetchedAt: time(10) }]);
       expect((await repo.getAllCases())[0]).toMatchObject({ current_state: "FOLLOWING_UP", current_progress_percent: 100 });
-      clock.mockReturnValue(Date.parse(time(20)));
-      await engine.processIncidentFollowups([], undefined, undefined, Date.now(), [{ ...order, fetchedAt: time(20) }]);
+      clock.mockReturnValue(Date.parse(time(18)));
+      await engine.processIncidentFollowups([], undefined, undefined, Date.now(), [{ ...order, fetchedAt: time(18) }]);
       const saved = (await repo.getAllCases())[0];
       expect(saved.current_state).toBe("FIRST_PUSH_PENDING");
       expect(saved.operational_cohort?.members[0].source).toBe("rillnet");
@@ -42,18 +42,18 @@ describe("approved operational checkpoints", () => {
     const queue = new ActionQueue(null);
     const engine = new FollowupEngine(repo, queue);
     const order: NormalizedRillnetOrder = { id: "checkpoint-A", orderCode: "checkpoint-A", status: "storing", taskCategory: "", warehouseId: "W", warehouseName: "Kho GHN", customerId: "C", customerName: "C", customerCode: "C", createdAt: time(6), deliverWarehouseId: "W", fetchedAt: time(8) };
-    for (const hour of [8, 10, 20]) {
+    for (const hour of [8, 10, 18]) {
       const current = { ...order, fetchedAt: time(hour) };
       await engine.processIncidentFollowups(aggregateIncidents([current]), undefined, undefined, Date.parse(time(hour)), [current]);
     }
     const actions = await queue.getAllActions();
     expect(actions).toHaveLength(2);
     expect(new Set(actions.map(action => action.deduplication_key)).size).toBe(2);
-    expect(actions.map(action => action.payload.operationalCheckpoint).sort()).toEqual(["2026-09-05:10", "2026-09-05:20"]);
+    expect(actions.map(action => action.payload.operationalCheckpoint).sort()).toEqual(["2026-09-05:10", "2026-09-05:18"]);
   });
-  it("uses 8/10/14/18/20 local hours and waits for the next COT after departure", () => {
-    expect(checkpointKey(Date.parse(time(12)))).toBeNull();
-    expect(checkpointKey(Date.parse(time(20)))).toBe("2026-09-05:20");
+  it("uses exactly the governed 08/10/12/14/16/18 local checkpoint hours and waits for the next COT after departure", () => {
+    for (const hour of [8, 10, 12, 14, 16, 18]) expect(checkpointKey(Date.parse(time(hour)))).toBe(`2026-09-05:${hour}`);
+    expect(checkpointKey(Date.parse(time(20)))).toBeNull();
     expect(nextCot(time(6), 7)).toBe(Date.parse(time(7)));
     expect(nextCot(time(7), 7)).toBe(Date.parse(time(7, "2026-09-06")));
     expect(nextCot(time(19), 18)).toBe(Date.parse(time(18, "2026-09-06")));
@@ -65,8 +65,18 @@ describe("approved operational checkpoints", () => {
     expect(baseline.assessment).toBe("insufficient_data");
     const progress = assess(baseline.cohort, [], orders.map(order => ({ ...order, status: "delivering", observedAt: time(10) })), 10);
     expect(progress).toMatchObject({ progressed: 2, completed: 0, progressPercent: 100, reminderCodes: [] });
-    for (const hour of [14, 18]) expect(assess(progress.cohort, [], orders.map(order => ({ ...order, status: "delivering", observedAt: time(hour) })), hour).reminderCodes).toEqual([]);
-    expect(assess(progress.cohort, [], orders.map(order => ({ ...order, status: "delivering", observedAt: time(20) })), 20).reminderCodes).toEqual(["A", "B"]);
+    for (const hour of [12, 14, 16]) expect(assess(progress.cohort, [], orders.map(order => ({ ...order, status: "delivering", observedAt: time(hour) })), hour).reminderCodes).toEqual([]);
+    expect(assess(progress.cohort, [], orders.map(order => ({ ...order, status: "delivering", observedAt: time(18) })), 18).reminderCodes).toEqual(["A", "B"]);
+  });
+
+  it.each([12, 16])("processes a normal scheduled cohort at %ih", async (hour) => {
+    const repo = new MockFollowupRepository();
+    const engine = new FollowupEngine(repo);
+    const order: NormalizedRillnetOrder = { id: `checkpoint-${hour}`, orderCode: `checkpoint-${hour}`, status: "storing", taskCategory: "Kho tồn", warehouseId: "W", warehouseName: "Kho GHN", customerId: "C", customerName: "C", customerCode: "C", createdAt: time(6), deliverWarehouseId: "W", fetchedAt: time(8) };
+    await engine.processIncidentFollowups(aggregateIncidents([order]), undefined, undefined, Date.parse(time(8)), [order]);
+    const result = await engine.processIncidentFollowups(aggregateIncidents([{ ...order, fetchedAt: time(hour) }]), undefined, undefined, Date.parse(time(hour)), [{ ...order, fetchedAt: time(hour) }]);
+    expect(result).toHaveLength(1);
+    expect((await repo.getAllCases())[0].operational_cohort?.lastCheckpoint).toBe(`2026-09-05:${hour}`);
   });
 
   it("persists the 08h baseline when the source fetchedAt is slightly stale", async () => {
@@ -135,7 +145,7 @@ describe("approved operational checkpoints", () => {
     expect(baseline.operational_cohort?.baselineCodes).toEqual(["A"]);
     await engine.processIncidentFollowups([], undefined, undefined, Date.parse(time(10)), [{ ...order, status: "delivering", fetchedAt: time(10) }]);
     expect((await repo.getAllCases())[0]).toMatchObject({ current_state: "FOLLOWING_UP", current_progress_percent: 100 });
-    await engine.processIncidentFollowups([], undefined, undefined, Date.parse(time(20)), [{ ...order, status: "delivered", fetchedAt: time(20) }]);
+    await engine.processIncidentFollowups([], undefined, undefined, Date.parse(time(18)), [{ ...order, status: "delivered", fetchedAt: time(18) }]);
     expect((await repo.getAllCases())[0].current_state).toBe("RESOLVED");
   });
 });

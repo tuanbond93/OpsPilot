@@ -1,7 +1,8 @@
 import type { NormalizedRillnetOrder } from "@/connectors/rillnet";
 import { canonicalWarehouseType } from "@/connectors/ghn-order-tracking/warehouse-directory";
 
-export const CHECKPOINT_HOURS = [8, 10, 14, 18, 20] as const;
+export const CHECKPOINT_HOURS = [8, 10, 12, 14, 16, 18] as const;
+const FINAL_CHECKPOINT_HOUR = CHECKPOINT_HOURS[CHECKPOINT_HOURS.length - 1];
 export const OPERATIONAL_CHECKPOINT_POLICY_VERSION = "2026-09-06.1" as const;
 const DAY = 86_400_000;
 export const localDay = (time: number) => new Date(time + 7 * 3_600_000).toISOString().slice(0, 10);
@@ -144,10 +145,10 @@ export function assessOperationalCohort(previous: OperationalCohort | null | und
     if (progress) result.progressed++;
     if (!done) result.pending++;
     const actionable = !done && sameWarehouse && (["storing", "picked"].includes(status)
-      || member.stage === "DELIVERY" && (failed(status) && localHour(now) >= 14 || delivering(status) && localHour(now) === 20));
+      || member.stage === "DELIVERY" && (failed(status) && localHour(now) >= 14 || delivering(status) && localHour(now) === FINAL_CHECKPOINT_HOUR));
     const changed = member.lastReminderStatus && member.lastReminderStatus !== status;
     // Unchanged work is reminded only at the final checkpoint or on a later day.
-    const repeatDue = !member.lastReminderAt || localDay(Date.parse(member.lastReminderAt)) !== day || localHour(now) === 20 || changed;
+    const repeatDue = !member.lastReminderAt || localDay(Date.parse(member.lastReminderAt)) !== day || localHour(now) === FINAL_CHECKPOINT_HOUR || changed;
     if (checkpoint && localHour(now) !== 8 && cohort.lastCheckpoint !== checkpoint && actionable && repeatDue) result.reminderCodes.push(member.orderCode);
     member.status = status; member.observedAt = observation.observedAt;
     member.source = observation.source; member.eventAt = observation.eventAt;
