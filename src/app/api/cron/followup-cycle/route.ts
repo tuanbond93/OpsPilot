@@ -9,6 +9,15 @@ import { sendIncidentSyncStatus } from "@/services/telegram-incident-status";
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
 
+function describeError(error: unknown) {
+  if (error instanceof Error) return error.message;
+  if (error && typeof error === "object") {
+    const value = error as Record<string, unknown>;
+    return String(value.message || value.details || value.hint || JSON.stringify(value));
+  }
+  return String(error);
+}
+
 /**
  * One evidence-safe follow-up cycle.
  *
@@ -35,15 +44,30 @@ async function runFollowupCycle(request: NextRequest) {
     // before a deploy or transient Telegram failure. Deliver that human-review
     // request even when there is no newer operational evidence; never advance
     // the normal reminder ladder on an unchanged snapshot.
-    const rillnetReviews = await dispatchRillnetChangeReviews(createAdminClient(), "followup_cycle_no_fresh_snapshot");
-    const statusUpdates = sync.syncRunId ? await sendIncidentSyncStatus(createAdminClient(), sync.syncRunId, sync.completedAt || new Date().toISOString()) : null;
+    let rillnetReviews;
+    let rillnetReviewError: string | null = null;
+    try { rillnetReviews = await dispatchRillnetChangeReviews(createAdminClient(), "followup_cycle_no_fresh_snapshot"); }
+    catch (error) {
+      rillnetReviewError = describeError(error);
+      rillnetReviews = { scanned: 0, sent: 0, skipped: 0, failed: 1, summaries: [], details: [{ status: "FAILED", reason: rillnetReviewError }] };
+    }
+    let statusUpdates = null;
+    let statusUpdateError: string | null = null;
+    if (sync.syncRunId) {
+      try { statusUpdates = await sendIncidentSyncStatus(createAdminClient(), sync.syncRunId, sync.completedAt || new Date().toISOString()); }
+      catch (error) {
+        statusUpdateError = describeError(error);
+        statusUpdates = { active: 0, changed: 0, unchanged: 0, resolved: 0, sentBatches: 0, failed: 1, skipped: 0 };
+      }
+    }
     return NextResponse.json({
-      ok: rillnetReviews.failed === 0,
+      ok: rillnetReviews.failed === 0 && (!statusUpdates || statusUpdates.failed === 0),
       stage: "NO_FRESH_SNAPSHOT",
       sync,
       telegram: { scanned: 0, sent: 0, coveredCases: 0, skipped: 0, deferred: 0, failed: 0 },
       rillnetReviews,
       statusUpdates,
+      errors: { rillnetReviewError, statusUpdateError },
     });
   }
 

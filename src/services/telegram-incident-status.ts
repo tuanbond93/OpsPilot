@@ -13,6 +13,33 @@ const assignments = warehouseAssignments.warehouses as Assignment[];
 const assignmentById = new Map(assignments.map((item) => [String(item.warehouseId), item]));
 const assignmentByName = new Map(assignments.map((item) => [item.warehouseName, item]));
 const key = (value: string | null | undefined) => String(value || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/đ/gi, "d").trim().toLowerCase();
+const POSTGREST_ID_BATCH_SIZE = 100;
+
+function batches<T>(values: T[], size = POSTGREST_ID_BATCH_SIZE): T[][] {
+  const result: T[][] = [];
+  for (let offset = 0; offset < values.length; offset += size) result.push(values.slice(offset, offset + size));
+  return result;
+}
+
+async function loadIncidents(client: SupabaseClient, incidentIds: string[]): Promise<Incident[]> {
+  const result: Incident[] = [];
+  for (const ids of batches([...new Set(incidentIds)])) {
+    const { data, error } = await client.from("incidents").select("id,warehouse_id,warehouse_name,reason_name").in("id", ids);
+    if (error) throw error;
+    result.push(...((data || []) as Incident[]));
+  }
+  return result;
+}
+
+async function loadHistories(client: SupabaseClient, incidentIds: string[]): Promise<History[]> {
+  const result: History[] = [];
+  for (const ids of batches([...new Set(incidentIds)])) {
+    const { data, error } = await client.rpc("get_recent_incident_histories", { p_incident_ids: ids, p_limit_per_incident: 2 });
+    if (error) throw error;
+    result.push(...((data || []) as History[]));
+  }
+  return result;
+}
 
 export async function sendIncidentSyncStatus(client: SupabaseClient, syncRunId: string, completedAt: string) {
   const result = { active: 0, changed: 0, unchanged: 0, resolved: 0, sentBatches: 0, failed: 0, skipped: 0 };
@@ -23,15 +50,13 @@ export async function sendIncidentSyncStatus(client: SupabaseClient, syncRunId: 
   if (followupError || topicError) throw followupError || topicError;
   const rows = (followups || []) as Followup[];
   if (!rows.length) return result;
-  const { data: incidents, error: incidentError } = await client.from("incidents").select("id,warehouse_id,warehouse_name,reason_name").in("id", rows.map((item) => item.incident_id));
-  if (incidentError) throw incidentError;
-  const incidentById = new Map(((incidents || []) as Incident[]).map((item) => [item.id, item]));
+  const incidents = await loadIncidents(client, rows.map((item) => item.incident_id));
+  const incidentById = new Map(incidents.map((item) => [item.id, item]));
   const pilot = rows.filter((item) => {
     const incident = incidentById.get(item.incident_id); const assignment = incident && (assignmentById.get(String(incident.warehouse_id)) || assignmentByName.get(incident.warehouse_name));
     return assignment?.zone === "Miền Bắc 3";
   });
-  const { data: histories, error: historyError } = await client.rpc("get_recent_incident_histories", { p_incident_ids: pilot.map((item) => item.incident_id), p_limit_per_incident: 2 });
-  if (historyError) throw historyError;
+  const histories = await loadHistories(client, pilot.map((item) => item.incident_id));
   const historyByIncident = new Map<string, History[]>();
   for (const history of (histories || []) as History[]) historyByIncident.set(history.incident_id, [...(historyByIncident.get(history.incident_id) || []), history].sort((a, b) => b.recorded_at.localeCompare(a.recorded_at)));
   const active = pilot.filter((item) => !["RESOLVED", "CLOSED"].includes(item.current_state));
