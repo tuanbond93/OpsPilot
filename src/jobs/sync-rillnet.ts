@@ -28,6 +28,12 @@ export interface SyncJobResult {
   fetchedOrderCount: number;
   normalizedOrderCount: number;
   incidentCount: number;
+  followupEvaluation?: {
+    supportedCasesEvaluated: number;
+    khoTonEvaluated: number;
+    khoChuaLuanChuyenEvaluated: number;
+    pendingCreated: { first: number; second: number; third: number; escalation: number };
+  };
   resolvedIncidentCount?: number;
   phaseTimings: Record<string, number>;
   dbInstrumentation: {

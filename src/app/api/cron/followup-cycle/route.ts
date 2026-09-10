@@ -5,9 +5,16 @@ import { authorizeApiRequest, isCronAuthorized } from "@/security/api-security";
 import { runTelegramFollowupPilotDispatch } from "@/services/telegram-followup-pilot";
 import { dispatchRillnetChangeReviews } from "@/services/telegram-rillnet-review";
 import { sendIncidentSyncStatus } from "@/services/telegram-incident-status";
+import { atHour, localDay, localHour } from "@/domain/operational-learning/checkpoint-policy";
+import { persistCheckpointDispatchAudit } from "@/services/checkpoint-dispatch-audit";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
+
+async function writeCheckpointAudit(input: Parameters<typeof persistCheckpointDispatchAudit>[1]) {
+  try { await persistCheckpointDispatchAudit(createAdminClient(), input); }
+  catch (error) { console.error(JSON.stringify({ category: "OBSERVABILITY_FAILURE", component: "checkpoint_dispatch_audits", message: describeError(error) })); }
+}
 
 function describeError(error: unknown) {
   if (error instanceof Error) return error.message;
@@ -32,9 +39,12 @@ async function runFollowupCycle(request: NextRequest) {
     if (!access.ok) return access.response;
   }
 
+  const nowMs = Date.now();
+  const checkpointAt = new Date(atHour(localDay(nowMs), localHour(nowMs))).toISOString();
   const sync = await syncRillnet();
   if (!sync.ok) {
     const status = sync.error?.code === "SYNC_ALREADY_RUNNING" ? 409 : 500;
+    await writeCheckpointAudit({ checkpointAt, startedAt: sync.startedAt, completedAt: sync.completedAt, syncRunId: sync.syncRunId, executionStatus: "FAILED", httpStatus: status, errorCode: sync.error?.code, errorMessageSafe: sync.error?.message });
     return NextResponse.json({ ok: false, stage: "SYNC", sync }, { status });
   }
 
@@ -60,6 +70,7 @@ async function runFollowupCycle(request: NextRequest) {
         statusUpdates = { active: 0, changed: 0, unchanged: 0, resolved: 0, sentBatches: 0, failed: 1, skipped: 0 };
       }
     }
+    await writeCheckpointAudit({ checkpointAt, startedAt: sync.startedAt, completedAt: sync.completedAt, syncRunId: sync.syncRunId, executionStatus: "SUCCESS", httpStatus: 200, exclusionCounts: { NO_FRESH_EVIDENCE: 1 } });
     return NextResponse.json({
       ok: rillnetReviews.failed === 0 && (!statusUpdates || statusUpdates.failed === 0),
       stage: "NO_FRESH_SNAPSHOT",
@@ -73,6 +84,24 @@ async function runFollowupCycle(request: NextRequest) {
 
   const telegram = await runTelegramFollowupPilotDispatch(createAdminClient(), "followup_cycle");
   const statusUpdates = await sendIncidentSyncStatus(createAdminClient(), sync.syncRunId, sync.completedAt || new Date().toISOString());
+  const evaluation = sync.followupEvaluation;
+  await writeCheckpointAudit({
+    checkpointAt, startedAt: sync.startedAt, completedAt: sync.completedAt, syncRunId: sync.syncRunId, executionStatus: "SUCCESS", httpStatus: 200,
+    supportedCasesEvaluated: evaluation?.supportedCasesEvaluated,
+    khoTonEvaluated: evaluation?.khoTonEvaluated,
+    khoChuaLuanChuyenEvaluated: evaluation?.khoChuaLuanChuyenEvaluated,
+    firstPushPendingCreated: evaluation?.pendingCreated.first,
+    secondPushPendingCreated: evaluation?.pendingCreated.second,
+    thirdPushPendingCreated: evaluation?.pendingCreated.third,
+    escalationPendingCreated: evaluation?.pendingCreated.escalation,
+    totalDispatchEligiblePending: Object.values(evaluation?.pendingCreated || {}).reduce((sum, value) => sum + value, 0),
+    telegramScanned: telegram.scanned,
+    recipientsResolved: telegram.recipientsResolved,
+    interactionsCreated: telegram.interactionsCreated,
+    sendAttempts: telegram.sendAttempts,
+    sendSuccess: telegram.sent,
+    sendFailed: telegram.failed,
+  });
   return NextResponse.json({
     ok: telegram.failed === 0,
     stage: "COMPLETE",

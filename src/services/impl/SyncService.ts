@@ -983,6 +983,18 @@ export class SyncService implements ISyncService {
           fetchedOrderCount,
           normalizedOrderCount,
           incidentCount,
+          followupEvaluation: {
+            supportedCasesEvaluated: incidents.filter((item: any) => ["KHO_TON", "KHO_CHUA_LUAN_CHUYEN"].includes(item.reason_code)).length,
+            khoTonEvaluated: incidents.filter((item: any) => item.reason_code === "KHO_TON").length,
+            khoChuaLuanChuyenEvaluated: incidents.filter((item: any) => item.reason_code === "KHO_CHUA_LUAN_CHUYEN").length,
+            pendingCreated: followupResults.reduce((counts: { first: number; second: number; third: number; escalation: number }, item: any) => {
+              if (item.newState === "FIRST_PUSH_PENDING") counts.first++;
+              if (item.newState === "SECOND_PUSH_PENDING") counts.second++;
+              if (item.newState === "THIRD_PUSH_PENDING") counts.third++;
+              if (item.newState === "ESCALATION_PENDING") counts.escalation++;
+              return counts;
+            }, { first: 0, second: 0, third: 0, escalation: 0 }),
+          },
           resolvedIncidentCount,
           phaseTimings,
           dbInstrumentation: {

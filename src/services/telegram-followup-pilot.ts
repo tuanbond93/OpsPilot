@@ -49,14 +49,14 @@ function isEligible(member: PilotMember, warehouseName: string, zoneName: string
   return warehouses.includes(warehouseName) || Boolean(zoneName && list(member.zone_names).includes(zoneName));
 }
 
-export type TelegramFollowupPilotResult = { scanned: number; sent: number; coveredCases: number; skipped: number; deferred: number; failed: number; stateConfirmationsFailed: number; evidenceSourceCounts: Record<"RILLNET_OBSERVED" | "GHN_VERIFIED" | "HUMAN_VERIFICATION_REQUIRED", number>; ghnVerification: Record<"requested" | "succeeded" | "failed" | "skipped", number>; reminderEligibility: Record<"selected_from_rillnet" | "selected_with_ghn" | "suppressed_waiting_verification" | "other", number>; rillnetReviews: { scanned: number; sent: number; skipped: number; failed: number }; details: Array<{ followupCaseId: string; status: string; reason?: string }> };
+export type TelegramFollowupPilotResult = { scanned: number; sent: number; coveredCases: number; skipped: number; deferred: number; failed: number; stateConfirmationsFailed: number; recipientsResolved: number; interactionsCreated: number; sendAttempts: number; evidenceSourceCounts: Record<"RILLNET_OBSERVED" | "GHN_VERIFIED" | "HUMAN_VERIFICATION_REQUIRED", number>; ghnVerification: Record<"requested" | "succeeded" | "failed" | "skipped", number>; reminderEligibility: Record<"selected_from_rillnet" | "selected_with_ghn" | "suppressed_waiting_verification" | "other", number>; rillnetReviews: { scanned: number; sent: number; skipped: number; failed: number }; details: Array<{ followupCaseId: string; status: string; reason?: string }> };
 
 /**
  * Sends only deterministic, roster-mapped Miền Bắc 3 follow-up messages.
  * It never runs an operational action and is idempotent per case + ladder stage.
  */
 export async function runTelegramFollowupPilotDispatch(client: SupabaseClient, actor = "telegram_followup_pilot", nowMs = Date.now()): Promise<TelegramFollowupPilotResult> {
-  const result: TelegramFollowupPilotResult = { scanned: 0, sent: 0, coveredCases: 0, skipped: 0, deferred: 0, failed: 0, stateConfirmationsFailed: 0, evidenceSourceCounts: { RILLNET_OBSERVED: 0, GHN_VERIFIED: 0, HUMAN_VERIFICATION_REQUIRED: 0 }, ghnVerification: { requested: 0, succeeded: 0, failed: 0, skipped: 0 }, reminderEligibility: { selected_from_rillnet: 0, selected_with_ghn: 0, suppressed_waiting_verification: 0, other: 0 }, rillnetReviews: { scanned: 0, sent: 0, skipped: 0, failed: 0 }, details: [] };
+  const result: TelegramFollowupPilotResult = { scanned: 0, sent: 0, coveredCases: 0, skipped: 0, deferred: 0, failed: 0, stateConfirmationsFailed: 0, recipientsResolved: 0, interactionsCreated: 0, sendAttempts: 0, evidenceSourceCounts: { RILLNET_OBSERVED: 0, GHN_VERIFIED: 0, HUMAN_VERIFICATION_REQUIRED: 0 }, ghnVerification: { requested: 0, succeeded: 0, failed: 0, skipped: 0 }, reminderEligibility: { selected_from_rillnet: 0, selected_with_ghn: 0, suppressed_waiting_verification: 0, other: 0 }, rillnetReviews: { scanned: 0, sent: 0, skipped: 0, failed: 0 }, details: [] };
   if (!checkpointKey(nowMs) || localHour(nowMs) === 8) return result;
   const reviewResult = await dispatchRillnetChangeReviews(client, actor);
   result.rillnetReviews = { scanned: reviewResult.scanned, sent: reviewResult.sent, skipped: reviewResult.skipped, failed: reviewResult.failed };
@@ -142,6 +142,7 @@ export async function runTelegramFollowupPilotDispatch(client: SupabaseClient, a
     result.ghnVerification.skipped += hasGhn ? 0 : reminderCodes.length;
     result.evidenceSourceCounts[hasGhn ? "GHN_VERIFIED" : "RILLNET_OBSERVED"] += reminderCodes.length;
     result.reminderEligibility[hasGhn ? "selected_with_ghn" : "selected_from_rillnet"]++;
+    result.recipientsResolved += recipients.length;
     candidates.push({ followupCase: { ...followupCase, latest_affected_order_count: reminderCodes.length }, incident, stage: stageInfo.stage, action: stageInfo.action, attemptMarker, reminderOrderCodes: reminderCodes, group, topic, recipients, history: histories?.[0] });
   }
 
@@ -173,6 +174,7 @@ export async function runTelegramFollowupPilotDispatch(client: SupabaseClient, a
         continue;
       }
       reminders.push({ id: reminder.id, candidate });
+      result.interactionsCreated++;
       await client.from("telegram_followup_reminder_events").insert({ reminder_id: reminder.id, event_type: "REMINDER_REQUESTED", actor, metadata: { stage: candidate.stage, followupCaseId: candidate.followupCase.id, incidentId: candidate.incident.id, recipientMemberIds: candidate.recipients.map((member) => member.id), pilotZone: PILOT_ZONE, aggregateSize: batch.length } });
     }
     if (!reminders.length) continue;
@@ -202,6 +204,7 @@ export async function runTelegramFollowupPilotDispatch(client: SupabaseClient, a
     const inlineKeyboard = structuredOutboundResponses
       ? followupInlineKeyboard(reminders[0].id, true, first.incident.reason_code, warehouseContext.warehouseClass)
       : undefined;
+    result.sendAttempts++;
     try {
       const waitMs = Math.max(0, TELEGRAM_MESSAGE_INTERVAL_MS - (Date.now() - lastTelegramMessageAt));
       if (waitMs) await new Promise<void>((resolve) => setTimeout(resolve, waitMs));
