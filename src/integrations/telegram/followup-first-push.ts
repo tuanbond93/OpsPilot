@@ -20,8 +20,14 @@ export type FirstPushTelegramContext = {
 
 type CohortEvidenceMember = { orderCode: string; status?: string | null; observedAt?: string | null; source?: string | null };
 
+function isSameInstant(left: string | null | undefined, right: string | null | undefined) {
+  const leftMs = Date.parse(left || "");
+  const rightMs = Date.parse(right || "");
+  return Number.isFinite(leftMs) && Number.isFinite(rightMs) && leftMs === rightMs;
+}
+
 export function logicalReminderOrderCodes(members: Array<CohortEvidenceMember & { lastReminderAt?: string | null }>, attemptMarker: string | null | undefined) {
-  return [...new Set(members.filter((member) => Boolean(attemptMarker) && member.lastReminderAt === attemptMarker).map((member) => member.orderCode))];
+  return [...new Set(members.filter((member) => isSameInstant(member.lastReminderAt, attemptMarker)).map((member) => member.orderCode))];
 }
 
 export function buildRillnetOrderEvidence(orderCodes: string[], members: CohortEvidenceMember[]) {

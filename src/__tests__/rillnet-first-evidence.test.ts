@@ -61,6 +61,26 @@ describe("Rillnet-first evidence boundary", () => {
     expect(message).not.toContain("delivering");
   });
 
+  it("matches reminder timestamps by UTC instant and rejects missing, invalid, or different instants", () => {
+    const members = [
+      { orderCode: "Z", lastReminderAt: "2026-09-10T11:00:00.000Z" },
+      { orderCode: "PLUS_7", lastReminderAt: "2026-09-10T18:00:00.000+07:00" },
+      { orderCode: "OTHER", lastReminderAt: "2026-09-10T11:00:00.001Z" },
+      { orderCode: "MISSING", lastReminderAt: null },
+      { orderCode: "INVALID", lastReminderAt: "not-a-timestamp" },
+    ];
+    expect(logicalReminderOrderCodes(members, "2026-09-10T11:00:00.000+00:00")).toEqual(["Z", "PLUS_7"]);
+    expect(logicalReminderOrderCodes(members, "2026-09-10T11:00:00.000Z")).toEqual(["Z", "PLUS_7"]);
+    expect(logicalReminderOrderCodes(members, null)).toEqual([]);
+    expect(logicalReminderOrderCodes(members, "invalid")).toEqual([]);
+  });
+
+  it("selects the real 18h reminder instant when Supabase returns +00", () => {
+    expect(logicalReminderOrderCodes([
+      { orderCode: "REAL_18H", lastReminderAt: "2026-09-10T11:00:01.556Z" },
+    ], "2026-09-10T11:00:01.556+00:00")).toEqual(["REAL_18H"]);
+  });
+
   it("attaches status only from the exact Rillnet member", () => {
     expect(buildRillnetOrderEvidence(["TARGET"], [
       { orderCode: "OTHER", status: "storing", observedAt: at(10), source: "rillnet" },
