@@ -67,10 +67,16 @@ async function runFollowupCycle(request: NextRequest) {
       try { statusUpdates = await sendIncidentSyncStatus(createAdminClient(), sync.syncRunId, sync.completedAt || new Date().toISOString()); }
       catch (error) {
         statusUpdateError = describeError(error);
-        statusUpdates = { active: 0, changed: 0, unchanged: 0, resolved: 0, sentBatches: 0, failed: 1, skipped: 0 };
+        statusUpdates = { active: null, changed: null, unchanged: null, resolved: null, sentBatches: null, failed: 1, skipped: null };
       }
     }
-    await writeCheckpointAudit({ checkpointAt, startedAt: sync.startedAt, completedAt: sync.completedAt, syncRunId: sync.syncRunId, executionStatus: "SUCCESS", httpStatus: 200, exclusionCounts: { NO_FRESH_EVIDENCE: 1 } });
+    await writeCheckpointAudit({
+      checkpointAt, startedAt: sync.startedAt, completedAt: sync.completedAt, syncRunId: sync.syncRunId, executionStatus: "SUCCESS", httpStatus: 200,
+      telegramScanned: 0, recipientsResolved: 0, interactionsCreated: 0, sendAttempts: 0, sendSuccess: 0, sendFailed: 0,
+      statusUpdatesActive: statusUpdates?.active, statusUpdatesResolved: statusUpdates?.resolved,
+      statusUpdateBatchesSent: statusUpdates?.sentBatches, statusUpdateBatchesFailed: statusUpdates?.failed,
+      exclusionCounts: { NO_FRESH_EVIDENCE: 1 },
+    });
     return NextResponse.json({
       ok: rillnetReviews.failed === 0 && (!statusUpdates || statusUpdates.failed === 0),
       stage: "NO_FRESH_SNAPSHOT",
@@ -82,9 +88,27 @@ async function runFollowupCycle(request: NextRequest) {
     });
   }
 
-  const telegram = await runTelegramFollowupPilotDispatch(createAdminClient(), "followup_cycle");
-  const statusUpdates = await sendIncidentSyncStatus(createAdminClient(), sync.syncRunId, sync.completedAt || new Date().toISOString());
   const evaluation = sync.followupEvaluation;
+  let telegram: Awaited<ReturnType<typeof runTelegramFollowupPilotDispatch>> | null = null;
+  let statusUpdates: Awaited<ReturnType<typeof sendIncidentSyncStatus>> | null = null;
+  try {
+    telegram = await runTelegramFollowupPilotDispatch(createAdminClient(), "followup_cycle");
+    statusUpdates = await sendIncidentSyncStatus(createAdminClient(), sync.syncRunId, sync.completedAt || new Date().toISOString());
+  } catch (error) {
+    await writeCheckpointAudit({
+      checkpointAt, startedAt: sync.startedAt, completedAt: new Date().toISOString(), syncRunId: sync.syncRunId, executionStatus: "FAILED", httpStatus: 500,
+      supportedCasesEvaluated: evaluation?.supportedCasesEvaluated, khoTonEvaluated: evaluation?.khoTonEvaluated, khoChuaLuanChuyenEvaluated: evaluation?.khoChuaLuanChuyenEvaluated,
+      firstPushPendingCreated: evaluation?.pendingCreated.first, secondPushPendingCreated: evaluation?.pendingCreated.second,
+      thirdPushPendingCreated: evaluation?.pendingCreated.third, escalationPendingCreated: evaluation?.pendingCreated.escalation,
+      totalDispatchEligiblePending: evaluation ? Object.values(evaluation.pendingCreated).reduce((sum, value) => sum + value, 0) : null,
+      telegramScanned: telegram?.scanned, recipientsResolved: telegram?.recipientsResolved, interactionsCreated: telegram?.interactionsCreated,
+      sendAttempts: telegram?.sendAttempts, sendSuccess: telegram?.sent, sendFailed: telegram?.failed,
+      statusUpdatesActive: statusUpdates?.active, statusUpdatesResolved: statusUpdates?.resolved,
+      statusUpdateBatchesSent: statusUpdates?.sentBatches, statusUpdateBatchesFailed: statusUpdates?.failed,
+      errorCode: "FOLLOWUP_CYCLE_DISPATCH_FAILED", errorMessageSafe: describeError(error),
+    });
+    throw error;
+  }
   await writeCheckpointAudit({
     checkpointAt, startedAt: sync.startedAt, completedAt: sync.completedAt, syncRunId: sync.syncRunId, executionStatus: "SUCCESS", httpStatus: 200,
     supportedCasesEvaluated: evaluation?.supportedCasesEvaluated,
@@ -94,13 +118,11 @@ async function runFollowupCycle(request: NextRequest) {
     secondPushPendingCreated: evaluation?.pendingCreated.second,
     thirdPushPendingCreated: evaluation?.pendingCreated.third,
     escalationPendingCreated: evaluation?.pendingCreated.escalation,
-    totalDispatchEligiblePending: Object.values(evaluation?.pendingCreated || {}).reduce((sum, value) => sum + value, 0),
-    telegramScanned: telegram.scanned,
-    recipientsResolved: telegram.recipientsResolved,
-    interactionsCreated: telegram.interactionsCreated,
-    sendAttempts: telegram.sendAttempts,
-    sendSuccess: telegram.sent,
-    sendFailed: telegram.failed,
+    totalDispatchEligiblePending: evaluation ? Object.values(evaluation.pendingCreated).reduce((sum, value) => sum + value, 0) : null,
+    telegramScanned: telegram.scanned, recipientsResolved: telegram.recipientsResolved, interactionsCreated: telegram.interactionsCreated,
+    sendAttempts: telegram.sendAttempts, sendSuccess: telegram.sent, sendFailed: telegram.failed,
+    statusUpdatesActive: statusUpdates.active, statusUpdatesResolved: statusUpdates.resolved,
+    statusUpdateBatchesSent: statusUpdates.sentBatches, statusUpdateBatchesFailed: statusUpdates.failed,
   });
   return NextResponse.json({
     ok: telegram.failed === 0,

@@ -7,26 +7,30 @@ export type CheckpointDispatchAuditInput = {
   completedAt: string;
   executionStatus: "SUCCESS" | "FAILED";
   httpStatus?: number | null;
-  supportedCasesEvaluated?: number;
-  khoTonEvaluated?: number;
-  khoChuaLuanChuyenEvaluated?: number;
-  firstPushPendingCreated?: number;
-  secondPushPendingCreated?: number;
-  thirdPushPendingCreated?: number;
-  escalationPendingCreated?: number;
-  totalDispatchEligiblePending?: number;
-  telegramScanned?: number;
-  recipientsResolved?: number;
-  interactionsCreated?: number;
-  sendAttempts?: number;
-  sendSuccess?: number;
-  sendFailed?: number;
+  supportedCasesEvaluated?: number | null;
+  khoTonEvaluated?: number | null;
+  khoChuaLuanChuyenEvaluated?: number | null;
+  firstPushPendingCreated?: number | null;
+  secondPushPendingCreated?: number | null;
+  thirdPushPendingCreated?: number | null;
+  escalationPendingCreated?: number | null;
+  totalDispatchEligiblePending?: number | null;
+  telegramScanned?: number | null;
+  recipientsResolved?: number | null;
+  interactionsCreated?: number | null;
+  sendAttempts?: number | null;
+  sendSuccess?: number | null;
+  sendFailed?: number | null;
+  statusUpdatesActive?: number | null;
+  statusUpdatesResolved?: number | null;
+  statusUpdateBatchesSent?: number | null;
+  statusUpdateBatchesFailed?: number | null;
   exclusionCounts?: Record<string, number> | null;
   errorCode?: string | null;
   errorMessageSafe?: string | null;
 };
 
-const count = (value?: number) => Number.isFinite(value) ? Math.max(0, Math.trunc(value as number)) : 0;
+const count = (value?: number | null) => value == null || !Number.isFinite(value) ? null : Math.max(0, Math.trunc(value));
 
 export async function persistCheckpointDispatchAudit(client: SupabaseClient, input: CheckpointDispatchAuditInput): Promise<void> {
   const { error } = await client.from("checkpoint_dispatch_audits").insert({
@@ -50,6 +54,10 @@ export async function persistCheckpointDispatchAudit(client: SupabaseClient, inp
     send_attempts: count(input.sendAttempts),
     send_success: count(input.sendSuccess),
     send_failed: count(input.sendFailed),
+    status_updates_active: count(input.statusUpdatesActive),
+    status_updates_resolved: count(input.statusUpdatesResolved),
+    status_update_batches_sent: count(input.statusUpdateBatchesSent),
+    status_update_batches_failed: count(input.statusUpdateBatchesFailed),
     exclusion_counts: input.exclusionCounts || null,
     error_code: input.errorCode || null,
     error_message_safe: input.errorMessageSafe || null,
