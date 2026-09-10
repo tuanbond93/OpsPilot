@@ -13,6 +13,8 @@ import { ServiceFactory } from "@/services/ServiceFactory";
 import { ManagerMirrorService } from "@/notifications/gateway/mirror";
 import { isMirrorEnabled } from "@/config/feature-flags";
 import { resolveProvince } from "@/notifications/gateway/scope-resolver";
+import { parseNearTermFactCallbackData } from "@/integrations/telegram/near-term-capacity-message";
+import { NearTermCapacityRuntimeService } from "@/services/near-term-capacity-runtime";
 import {
   parseMb03CancelCommand,
   parseMb03OutcomeCommand,
@@ -373,6 +375,14 @@ export async function POST(request: NextRequest) {
     }
   }
   if (update.callback_query?.id && member.status === "ACTIVE") {
+    const nearTermFact = parseNearTermFactCallbackData(update.callback_query.data);
+    if (nearTermFact) {
+      try {
+        const result = await new NearTermCapacityRuntimeService(client).consumeInitialAnswer(nearTermFact.caseId, nearTermFact.answer, member.id, String(chat.id), Number(message.message_id), Number(update.update_id));
+        const text = result.status === "DETAIL_REQUESTED" ? "Đã ghi nhận. Hãy reply đúng định dạng facts được yêu cầu." : result.status === "ALREADY_RESPONDED" ? ALREADY_RESPONDED_USER_MESSAGE : result.status === "INVALID_TARGET" ? "Phản hồi không hợp lệ hoặc đã hết hiệu lực." : "Đã ghi nhận facts; OpsPilot đang kiểm tra an toàn.";
+        return NextResponse.json({ method: "answerCallbackQuery", callback_query_id: update.callback_query.id, text, show_alert: result.status === "INVALID_TARGET" });
+      } catch (error) { return NextResponse.json({ method: "answerCallbackQuery", callback_query_id: update.callback_query.id, text: `Chưa thể ghi nhận facts: ${error instanceof Error ? error.message : String(error)}`.slice(0, 190), show_alert: true }); }
+    }
     const rillnetReview = parseRillnetReviewCallbackData(update.callback_query.data);
     if (rillnetReview) {
       if (!canManageTelegramDecision({ role: member.role, pilotRole: member.pilot_role })) {
@@ -499,6 +509,15 @@ export async function POST(request: NextRequest) {
       const text = followupCallback.signal === "OTHER" ? formatOtherPrompt(orderCodes) : formatRecordedResponse(orderCodes, label);
       return NextResponse.json({ method: "editMessageText", chat_id: chat.id, message_id: message.message_id, text, reply_markup: { inline_keyboard: [] } });
     }
+  }
+  if (eventType === "FREE_TEXT_FEEDBACK" && text && message.reply_to_message?.message_id && member.status === "ACTIVE") {
+    try {
+      const result = await new NearTermCapacityRuntimeService(client).consumeDetailFromTelegramReply(member.id, Number(message.reply_to_message.message_id), text);
+      if (result.handled && "status" in result) {
+        const reply = result.status === "INVALID_DETAIL" ? "Facts chưa đúng định dạng. Reply lại: KG=<số>; ETA=<ISO-8601>; TYPE=B2B|ECOM|MIXED." : result.status === "HUMAN_INVESTIGATION_REQUIRED" ? "Đã ghi nhận facts; cần kiểm tra thêm bằng chứng trước khi tạo quyết định." : result.status === "DECISION_READY" ? "Đã ghi nhận facts và tạo shadow decision để Owner review." : "Facts đã được ghi nhận trước đó.";
+        return NextResponse.json({ method: "sendMessage", chat_id: chat.id, reply_to_message_id: message.message_id, ...(threadId ? { message_thread_id: threadId } : {}), text: reply });
+      }
+    } catch (error) { return NextResponse.json({ error: "NEAR_TERM_CAPACITY_FACT_RESUME_FAILED", message: error instanceof Error ? error.message : String(error) }, { status: 503 }); }
   }
   if (eventType === "FREE_TEXT_FEEDBACK" && text && message.reply_to_message?.message_id && member.status === "ACTIVE") {
     const { data: dispatch, error: dispatchError } = await client.from("telegram_work_order_dispatches").select("id, recipient_member_ids").eq("group_id", group.id).eq("status", "SENT").eq("telegram_message_id", message.reply_to_message.message_id).maybeSingle();

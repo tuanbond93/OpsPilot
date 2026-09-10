@@ -7,6 +7,7 @@ import { dispatchRillnetChangeReviews } from "@/services/telegram-rillnet-review
 import { sendIncidentSyncStatus } from "@/services/telegram-incident-status";
 import { atHour, localDay, localHour } from "@/domain/operational-learning/checkpoint-policy";
 import { persistCheckpointDispatchAudit } from "@/services/checkpoint-dispatch-audit";
+import { NearTermCapacityRuntimeService } from "@/services/near-term-capacity-runtime";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
@@ -109,6 +110,11 @@ async function runFollowupCycle(request: NextRequest) {
     });
     throw error;
   }
+  // This shadow adapter is additive. A Phase 2 failure is logged but can never
+  // turn a successful Phase 1 checkpoint into a failed checkpoint.
+  let nearTermCapacity: Awaited<ReturnType<NearTermCapacityRuntimeService["runCheckpoint"]>> | null = null;
+  try { nearTermCapacity = await new NearTermCapacityRuntimeService(createAdminClient()).runCheckpoint("followup_cycle"); }
+  catch (error) { console.error(JSON.stringify({ category: "PHASE2_SHADOW_FAILURE", component: "near_term_capacity", message: describeError(error) })); }
   await writeCheckpointAudit({
     checkpointAt, startedAt: sync.startedAt, completedAt: sync.completedAt, syncRunId: sync.syncRunId, executionStatus: "SUCCESS", httpStatus: 200,
     supportedCasesEvaluated: evaluation?.supportedCasesEvaluated,
@@ -135,6 +141,7 @@ async function runFollowupCycle(request: NextRequest) {
     },
     telegram,
     statusUpdates,
+    nearTermCapacity,
   });
 }
 
