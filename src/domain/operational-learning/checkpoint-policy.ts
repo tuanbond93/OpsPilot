@@ -5,6 +5,8 @@ export const CHECKPOINT_HOURS = [8, 10, 12, 14, 16, 18] as const;
 const FINAL_CHECKPOINT_HOUR = CHECKPOINT_HOURS[CHECKPOINT_HOURS.length - 1];
 export const OPERATIONAL_CHECKPOINT_POLICY_VERSION = "2026-09-06.1" as const;
 const DAY = 86_400_000;
+/** Rillnet snapshot updatedAt may lag a checkpoint, but cannot be arbitrarily old. */
+export const RILLNET_SNAPSHOT_FRESHNESS_TOLERANCE_MS = 60 * 60 * 1000;
 export const localDay = (time: number) => new Date(time + 7 * 3_600_000).toISOString().slice(0, 10);
 export const localHour = (time: number) => new Date(time + 7 * 3_600_000).getUTCHours();
 export const atHour = (day: string, hour: number) => Date.parse(`${day}T${String(hour).padStart(2, "0")}:00:00+07:00`);
@@ -18,6 +20,10 @@ export function nextCot(readyAt: string, hour: number): number {
 export function checkpointKey(now: number): string | null {
   const hour = localHour(now);
   return CHECKPOINT_HOURS.includes(hour as typeof CHECKPOINT_HOURS[number]) ? `${localDay(now)}:${hour}` : null;
+}
+export function isFreshRillnetSnapshot(snapshotAt: string | null | undefined, now: number): boolean {
+  const timestamp = Date.parse(snapshotAt || "");
+  return Number.isFinite(timestamp) && timestamp <= now && now - timestamp <= RILLNET_SNAPSHOT_FRESHNESS_TOLERANCE_MS;
 }
 export function nextCheckpoint(now: number): string {
   const day = localDay(now);
@@ -116,7 +122,8 @@ export function assessOperationalCohort(previous: OperationalCohort | null | und
   const checkpoint = checkpointKey(now);
   for (const member of cohort.members) {
     const observation = observations.get(member.orderCode);
-    const fresh = observation && Date.parse(observation.observedAt) >= atHour(day, localHour(now)) && Date.parse(observation.observedAt) <= now;
+    // observedAt is the current Rillnet snapshot's updatedAt, not an order event time.
+    const fresh = observation && isFreshRillnetSnapshot(observation.observedAt, now);
     if (fresh && observation.customerId === member.customerId) {
       member.source = observation.source; member.eventAt = observation.eventAt;
       member.status = observation.status; member.observedAt = observation.observedAt;
@@ -158,7 +165,7 @@ export function assessOperationalCohort(previous: OperationalCohort | null | und
     if (!member.dueAt || Date.parse(member.dueAt) > now) continue;
     if (!baselineCodes.has(member.orderCode)) { result.newDue++; continue; }
     result.baselineDue++;
-    const fresh = Date.parse(member.observedAt) >= atHour(day, localHour(now)) && Date.parse(member.observedAt) <= now;
+    const fresh = isFreshRillnetSnapshot(member.observedAt, now);
     if (member.completedAt || fresh && member.stage === "DELIVERY" && delivering(member.status)) result.baselineProgressed++;
     if (!member.completedAt) result.baselinePending++;
   }

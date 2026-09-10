@@ -24,7 +24,7 @@ import type { ActionQueueMetrics, IActionQueue } from "../action-queue/IActionQu
 import { logRuntimeError, logRuntimeMessage, serializedPayloadBytes } from "@/observability/runtimeDiagnostics";
 import { logger } from "@/observability/logger";
 import type { NormalizedRillnetOrder } from "@/connectors/rillnet";
-import { assessOperationalCohort, evidenceFromOrder, checkpointKey, localHour, localDay, atHour, nextCheckpoint, OPERATIONAL_CHECKPOINT_POLICY_VERSION } from "@/domain/operational-learning/checkpoint-policy";
+import { assessOperationalCohort, evidenceFromOrder, checkpointKey, localHour, isFreshRillnetSnapshot, nextCheckpoint, OPERATIONAL_CHECKPOINT_POLICY_VERSION } from "@/domain/operational-learning/checkpoint-policy";
 
 function formatRillnetStatusSignature(signature: string | null | undefined): string {
   try {
@@ -151,9 +151,9 @@ export class FollowupEngine {
     if (!checkpoint) return [];
     const isBaseline = localHour(now) === 8;
     // 08h is an immutable baseline checkpoint. It must be persisted even when
-    // Rillnet's fetchedAt lags the wall clock; later routine checkpoints use
-    // fresh Rillnet observations to evaluate progress against this snapshot.
-    if (!isBaseline && !orders.some(order => Date.parse(order.fetchedAt) >= atHour(localDay(now), localHour(now)) && Date.parse(order.fetchedAt) <= now)) return [];
+    // fetchedAt is the Rillnet snapshot updatedAt. The current successful
+    // snapshot is accepted only within the governed freshness window.
+    if (!isBaseline && !orders.some(order => isFreshRillnetSnapshot(order.fetchedAt, now))) return [];
     // A failed read must abort; replacing an unavailable baseline would erase old work.
     metrics.caseReads++;
     const existing = this.followupRepo ? await this.followupRepo.getAllCases() : [];

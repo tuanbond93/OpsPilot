@@ -65,6 +65,25 @@ export function getSafeResumePhase(
   return { safePhase: "FETCHING_SNAPSHOT", reason: "INCIDENT_STATE_NOT_REHYDRATABLE" };
 }
 
+/** The checkpoint audit consumes runtime Incident objects, which are camelCase. */
+export function summarizeFollowupEvaluation(
+  incidents: Array<{ reasonCode: string }>,
+  followupResults: Array<{ newState: string }>
+) {
+  return {
+    supportedCasesEvaluated: incidents.filter((item) => ["KHO_TON", "KHO_CHU_A_LUAN_CHUYEN"].includes(item.reasonCode)).length,
+    khoTonEvaluated: incidents.filter((item) => item.reasonCode === "KHO_TON").length,
+    khoChuaLuanChuyenEvaluated: incidents.filter((item) => item.reasonCode === "KHO_CHU_A_LUAN_CHUYEN").length,
+    pendingCreated: followupResults.reduce((counts: { first: number; second: number; third: number; escalation: number }, item) => {
+      if (item.newState === "FIRST_PUSH_PENDING") counts.first++;
+      if (item.newState === "SECOND_PUSH_PENDING") counts.second++;
+      if (item.newState === "THIRD_PUSH_PENDING") counts.third++;
+      if (item.newState === "ESCALATION_PENDING") counts.escalation++;
+      return counts;
+    }, { first: 0, second: 0, third: 0, escalation: 0 }),
+  };
+}
+
 export class SyncService implements ISyncService {
   constructor(
     private syncRunRepo: ISyncRunRepository | null = null,
@@ -983,18 +1002,7 @@ export class SyncService implements ISyncService {
           fetchedOrderCount,
           normalizedOrderCount,
           incidentCount,
-          followupEvaluation: {
-            supportedCasesEvaluated: incidents.filter((item: any) => ["KHO_TON", "KHO_CHUA_LUAN_CHUYEN"].includes(item.reason_code)).length,
-            khoTonEvaluated: incidents.filter((item: any) => item.reason_code === "KHO_TON").length,
-            khoChuaLuanChuyenEvaluated: incidents.filter((item: any) => item.reason_code === "KHO_CHUA_LUAN_CHUYEN").length,
-            pendingCreated: followupResults.reduce((counts: { first: number; second: number; third: number; escalation: number }, item: any) => {
-              if (item.newState === "FIRST_PUSH_PENDING") counts.first++;
-              if (item.newState === "SECOND_PUSH_PENDING") counts.second++;
-              if (item.newState === "THIRD_PUSH_PENDING") counts.third++;
-              if (item.newState === "ESCALATION_PENDING") counts.escalation++;
-              return counts;
-            }, { first: 0, second: 0, third: 0, escalation: 0 }),
-          },
+          followupEvaluation: summarizeFollowupEvaluation(incidents, followupResults),
           resolvedIncidentCount,
           phaseTimings,
           dbInstrumentation: {
