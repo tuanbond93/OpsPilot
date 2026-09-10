@@ -68,13 +68,16 @@ export function getSafeResumePhase(
 /** The checkpoint audit consumes runtime Incident objects, which are camelCase. */
 export function summarizeFollowupEvaluation(
   incidents: Array<{ reasonCode: string }>,
-  followupResults: Array<{ newState: string }>
+  followupResults: Array<{ newState: string; oldState?: string }>
 ) {
   return {
     supportedCasesEvaluated: incidents.filter((item) => ["KHO_TON", "KHO_CHU_A_LUAN_CHUYEN"].includes(item.reasonCode)).length,
     khoTonEvaluated: incidents.filter((item) => item.reasonCode === "KHO_TON").length,
     khoChuaLuanChuyenEvaluated: incidents.filter((item) => item.reasonCode === "KHO_CHU_A_LUAN_CHUYEN").length,
     pendingCreated: followupResults.reduce((counts: { first: number; second: number; third: number; escalation: number }, item) => {
+      // A persisted pending state is not a newly created stage.  Keep
+      // backwards compatibility for callers that do not provide oldState.
+      if (item.oldState && item.oldState === item.newState) return counts;
       if (item.newState === "FIRST_PUSH_PENDING") counts.first++;
       if (item.newState === "SECOND_PUSH_PENDING") counts.second++;
       if (item.newState === "THIRD_PUSH_PENDING") counts.third++;

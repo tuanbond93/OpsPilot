@@ -187,19 +187,58 @@ export class FollowupEngine {
       const assessment = assessOperationalCohort(prior?.operational_cohort, incoming, observations, now);
       const oldState = prior?.current_state || "NEW";
       const shouldRemind = !isBaseline && assessment.reminderCodes.length > 0;
+      const currentCount = assessment.pending + assessment.unknown;
       const resolved = !isBaseline && assessment.due > 0 && assessment.completed === assessment.due && !assessment.unknown;
-      const newState: FollowupState = shouldRemind ? "FIRST_PUSH_PENDING" : resolved ? "RESOLVED" : "FOLLOWING_UP";
+      const lastActionAt = prior?.last_action_requested_at ? Date.parse(prior.last_action_requested_at) : NaN;
+      const resolvedAt = prior?.resolved_at ? Date.parse(prior.resolved_at) : NaN;
+      const timeSinceLastActionHours = Number.isFinite(lastActionAt) ? Math.max(0, (now - lastActionAt) / 3_600_000) : 0;
+      const timeSinceResolvedHours = Number.isFinite(resolvedAt) ? Math.max(0, (now - resolvedAt) / 3_600_000) : 0;
+      const hasFreshSnapshotAfterLastAction = !Number.isFinite(lastActionAt) || orders.some(order =>
+        isFreshRillnetSnapshot(order.fetchedAt, now) && Date.parse(order.fetchedAt) >= lastActionAt
+      );
       const notes = `Baseline 8h: ${assessment.baselineDue} đơn đến hạn, ${assessment.baselineProgressed} có tiến triển, ${assessment.baselinePending} chưa hoàn tất. Phát sinh mới đến hạn: ${assessment.newDue}. Tổng đến hạn: ${assessment.due}; hoàn tất chặng: ${assessment.completed}; còn xử lý: ${assessment.pending}; chưa xác minh: ${assessment.unknown}; chưa đến hạn: ${assessment.waiting}. ${isBaseline ? "Snapshot đầu ngày, chưa đánh giá kết quả." : "Tiến triển sau action không chứng minh quan hệ nhân quả."}`;
-      const transitionResult: ReturnType<typeof evaluateNextState> = { oldState, newState, assessment: assessment.assessment,
-        eventType: shouldRemind ? "PUSH_REQUESTED" : resolved ? "INCIDENT_RESOLVED" : "ASSESSMENT_CHECKED", notes,
-        nextActionAt: nextCheckpoint(now), ...(shouldRemind ? { actionRequestedAt: new Date(now).toISOString() } : {}) };
+      // Cohort assessment owns evidence and checkpoint eligibility.  State progression
+      // remains exclusively governed by the shared state machine.
+      const mustEvaluateTransition = resolved || oldState === "RESOLVED" || (oldState === "CLOSED" && currentCount === 0) || shouldRemind;
+      // The 08h baseline intentionally creates no action.  Its historical
+      // FOLLOWING_UP marker therefore represents an unpushed case, which must
+      // enter the shared machine as NEW when it first becomes checkpoint-due.
+      const transitionState: FollowupState = oldState === "FOLLOWING_UP" && !prior?.last_action_requested_at
+        ? "NEW"
+        : oldState;
+      const transitionResult: ReturnType<typeof evaluateNextState> = mustEvaluateTransition
+        ? evaluateNextState(transitionState, {
+          incidentId: incident.incidentId,
+          incidentKey: incident.incidentKey,
+          currentCount,
+          baselineCount: assessment.due,
+          previousCount: prior?.latest_affected_order_count || 0,
+          countChangePercent: assessment.progressPercent,
+          progressPercent: assessment.progressPercent,
+          progressAssessment: assessment.assessment,
+          incidentDurationHours: Math.max(0, (now - Date.parse(prior?.first_detected_at || incident.firstDetectedAt)) / 3_600_000),
+          isIncidentActive: currentCount > 0,
+          timeSinceLastActionHours,
+          timeSinceResolvedHours,
+          hasFreshSnapshotAfterLastAction,
+        }, DEFAULT_FOLLOWUP_CONFIG, now)
+        : {
+          oldState,
+          newState: oldState === "NEW" ? "FOLLOWING_UP" : oldState,
+          assessment: assessment.assessment,
+          eventType: "ASSESSMENT_CHECKED",
+          notes,
+          nextActionAt: nextCheckpoint(now),
+        };
+      if (transitionState !== oldState) transitionResult.oldState = oldState;
+      const newState = transitionResult.newState;
       assessment.cohort.lastCheckpoint = checkpoint;
       for (const member of assessment.cohort.members) if (assessment.reminderCodes.includes(member.orderCode)) {
         member.lastReminderAt = new Date(now).toISOString(); member.lastReminderStatus = member.status;
       }
       const processParams: ProcessTransitionParams = { incidentId: incident.incidentId, incidentKey: incident.incidentKey,
         firstDetectedAt: prior?.first_detected_at || incident.firstDetectedAt, baselineCount: assessment.due,
-        latestCount: assessment.pending + assessment.unknown, changePercent: assessment.progressPercent,
+        latestCount: currentCount, changePercent: assessment.progressPercent,
         assessment: assessment.assessment, transitionResult, referenceTimeMs: now };
       const mutation = buildCaseMutation(processParams);
       mutation.operational_cohort = assessment.cohort;
@@ -211,9 +250,16 @@ export class FollowupEngine {
         riskLevel: "medium", rootCauseSummary: notes, state: newState, nextActionAt: transitionResult.nextActionAt || null,
         lastActionRequestedAt: transitionResult.actionRequestedAt || prior?.last_action_requested_at || null,
         lastActionConfirmedAt: prior?.last_action_confirmed_at || null });
-      if (this.actionQueue && shouldRemind) {
+      const actionTypeByState: Partial<Record<FollowupState, ActionType>> = {
+        FIRST_PUSH_PENDING: "FIRST_PUSH",
+        SECOND_PUSH_PENDING: "SECOND_PUSH",
+        THIRD_PUSH_PENDING: "THIRD_PUSH",
+        ESCALATION_PENDING: "ESCALATION",
+      };
+      const actionType = actionTypeByState[newState];
+      if (this.actionQueue && actionType && transitionResult.actionRequestedAt) {
         actions.push({
-          actionType: "FIRST_PUSH",
+          actionType,
           provider: "console",
           targetType: "WAREHOUSE",
           targetId: incident.warehouseId || incident.warehouseName,
@@ -224,8 +270,8 @@ export class FollowupEngine {
             operationalCheckpointVersion: OPERATIONAL_CHECKPOINT_POLICY_VERSION,
             operationalCheckpoint: checkpoint,
           },
-          deduplicationKey: Deduplicator.generateKey(incident.incidentKey, "FIRST_PUSH", `${OPERATIONAL_CHECKPOINT_POLICY_VERSION}:${checkpoint}`),
-          priority: "high",
+          deduplicationKey: Deduplicator.generateKey(incident.incidentKey, actionType, `${OPERATIONAL_CHECKPOINT_POLICY_VERSION}:${checkpoint}`),
+          priority: actionType === "ESCALATION" ? "urgent" : "high",
         });
       }
       results.push({ incidentId: incident.incidentId, incidentKey: incident.incidentKey, warehouseName: incident.warehouseName,

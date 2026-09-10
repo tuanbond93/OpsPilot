@@ -12,6 +12,79 @@ const at = (hour: number) => `2026-09-05T${String(hour).padStart(2, "0")}:00:00+
 const order = (taskCategory: string, code: string): NormalizedRillnetOrder => ({ id: code, orderCode: code, status: "storing", taskCategory, warehouseId: "W", warehouseName: "Kho GHN", customerId: "C", customerName: "C", customerCode: "C", createdAt: at(6), deliverWarehouseId: "W", fetchedAt: at(8), warehouseLog: [{ current_warehouse_id: "W", updated_date: { $date: at(6) } }] });
 
 describe("Rillnet-first evidence boundary", () => {
+  function cohortCase(state: import("@/connectors/supabase").FollowupState, lastActionAt: string | null, lastCheckpoint: string, resolvedAt: string | null = null) {
+    return {
+      id: `case-${state}`,
+      incident_id: "W:KHO_TON",
+      incident_key: "W:KHO_TON",
+      current_state: state,
+      first_detected_at: at(6),
+      last_checked_at: at(8),
+      last_action_requested_at: lastActionAt,
+      resolved_at: resolvedAt,
+      baseline_affected_order_count: 1,
+      latest_affected_order_count: 1,
+      current_progress_percent: 0,
+      current_assessment: "no_progress" as const,
+      current_rillnet_status_signature: "",
+      operational_cohort: {
+        version: 1 as const,
+        day: "2026-09-05",
+        capturedAt: at(8),
+        baselineCodes: ["LADDER"],
+        lastCheckpoint,
+        members: [{
+          orderCode: "LADDER", customerId: "C", warehouseId: "W", stage: "DELIVERY" as const,
+          status: "storing", observedAt: at(16), readyAt: at(6), baselineStatus: "storing",
+          dueAt: at(10), firstSeenAt: at(8), lastReminderAt: lastActionAt || undefined,
+          lastReminderStatus: lastActionAt ? "storing" : undefined,
+        }],
+      },
+    };
+  }
+
+  async function runCohortTransition(state: import("@/connectors/supabase").FollowupState, checkpointHour: number, lastActionHour: number | null, options: { delivered?: boolean; resolvedAt?: string | null } = {}) {
+    const repo = new MockFollowupRepository();
+    repo.seed([cohortCase(state, lastActionHour === null ? null : at(lastActionHour), `2026-09-05:${checkpointHour - 2}`, options.resolvedAt || null)], []);
+    const current = { ...order("Kho tồn", "LADDER"), status: options.delivered ? "delivered" : "storing", fetchedAt: at(checkpointHour) };
+    const engine = new FollowupEngine(repo);
+    const results = await engine.processIncidentFollowups(aggregateIncidents([current]), undefined, undefined, Date.parse(at(checkpointHour)), [current]);
+    return { repo, current, engine, results };
+  }
+
+  it.each([
+    ["FIRST_PUSH_SENT", "SECOND_PUSH_PENDING"],
+    ["SECOND_PUSH_SENT", "THIRD_PUSH_PENDING"],
+    ["THIRD_PUSH_SENT", "ESCALATION_PENDING"],
+  ] as const)("uses the shared ladder for %s at a due cohort checkpoint", async (state, expected) => {
+    const { results } = await runCohortTransition(state, 18, 16);
+    expect(results[0]).toMatchObject({ oldState: state, newState: expected });
+  });
+
+  it.each(["FIRST_PUSH_SENT", "SECOND_PUSH_SENT"] as const)("does not reset an unresolved %s before the next due checkpoint", async (state) => {
+    const { results } = await runCohortTransition(state, 16, 14);
+    expect(results[0]).toMatchObject({ oldState: state, newState: state });
+  });
+
+  it("resolves, closes after the governed delay, and reopens a recurring cohort through the shared machine", async () => {
+    const resolved = await runCohortTransition("FIRST_PUSH_SENT", 18, 16, { delivered: true });
+    expect(resolved.results[0]).toMatchObject({ newState: "RESOLVED" });
+
+    const closed = await runCohortTransition("RESOLVED", 18, 16, { delivered: true, resolvedAt: "2026-09-04T18:00:00+07:00" });
+    expect(closed.results[0]).toMatchObject({ newState: "CLOSED" });
+
+    const recurring = await runCohortTransition("CLOSED", 18, 16);
+    expect(recurring.results[0]).toMatchObject({ newState: "FIRST_PUSH_PENDING" });
+  });
+
+  it("does not duplicate a stage transition when the same checkpoint is replayed", async () => {
+    const { repo, current, engine } = await runCohortTransition("FIRST_PUSH_SENT", 18, 16);
+    const replay = await engine.processIncidentFollowups(aggregateIncidents([current]), undefined, undefined, Date.parse(at(18)), [current]);
+    expect(replay).toEqual([]);
+    const events = await repo.getEventsByCaseId((await repo.getAllCases())[0].id);
+    expect(events.filter((event) => event.new_state === "SECOND_PUSH_PENDING")).toHaveLength(1);
+  });
+
   it.each(["Kho tồn", "Kho chưa luân chuyển"])("creates routine eligibility from Rillnet for %s without GHN", async (taskCategory) => {
     vi.stubEnv("GHN_CHECKPOINT_EVIDENCE", "required");
     const lookup = vi.spyOn(GhnOrderTrackingClient.prototype, "fetchOrderLogs");

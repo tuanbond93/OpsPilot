@@ -36,7 +36,7 @@ describe("approved operational checkpoints", () => {
       clock.mockRestore(); vi.unstubAllEnvs();
     }
   });
-  it("keeps a later checkpoint reminder distinct from an earlier pending push", async () => {
+  it("does not enqueue a duplicate reminder while the same stage is still pending", async () => {
     Deduplicator.clearMemory();
     const repo = new MockFollowupRepository();
     const queue = new ActionQueue(null);
@@ -47,9 +47,8 @@ describe("approved operational checkpoints", () => {
       await engine.processIncidentFollowups(aggregateIncidents([current]), undefined, undefined, Date.parse(time(hour)), [current]);
     }
     const actions = await queue.getAllActions();
-    expect(actions).toHaveLength(2);
-    expect(new Set(actions.map(action => action.deduplication_key)).size).toBe(2);
-    expect(actions.map(action => action.payload.operationalCheckpoint).sort()).toEqual(["2026-09-05:10", "2026-09-05:18"]);
+    expect(actions).toHaveLength(1);
+    expect(actions[0].payload.operationalCheckpoint).toBe("2026-09-05:10");
   });
   it("uses exactly the governed 08/10/12/14/16/18 local checkpoint hours and waits for the next COT after departure", () => {
     for (const hour of [8, 10, 12, 14, 16, 18]) expect(checkpointKey(Date.parse(time(hour)))).toBe(`2026-09-05:${hour}`);

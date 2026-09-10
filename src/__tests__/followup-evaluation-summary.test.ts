@@ -12,4 +12,9 @@ describe("follow-up audit evaluation summary", () => {
       pendingCreated: { first: 1, second: 0, third: 0, escalation: 0 },
     });
   });
+
+  it("does not count an already-pending stage as a new first push", () => {
+    expect(summarizeFollowupEvaluation([{ reasonCode: "KHO_TON" }], [{ oldState: "FIRST_PUSH_PENDING", newState: "FIRST_PUSH_PENDING" }]).pendingCreated)
+      .toEqual({ first: 0, second: 0, third: 0, escalation: 0 });
+  });
 });
