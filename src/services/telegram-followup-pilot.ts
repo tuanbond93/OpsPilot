@@ -4,7 +4,7 @@ import type { IncidentReasonCode } from "@/engine/incident";
 import { TelegramClient } from "@/integrations/telegram";
 import { buildCanonicalTelegramReminderContext, formatTelegramFollowupReminder, logicalReminderOrderCodes, type FollowupReminderStage } from "@/integrations/telegram/followup-first-push";
 import { followupInlineKeyboard, supportsStructuredOutboundResponses } from "@/integrations/telegram/followup-actions";
-import { governedWarehouseContext } from "@/integrations/telegram/team-lead-action";
+import { governedWarehouseContext, isTeamLeadActionReason } from "@/integrations/telegram/team-lead-action";
 import { ServiceFactory } from "@/services/ServiceFactory";
 import { NotificationGateway, type DeliveryRequest } from "@/notifications/gateway";
 import { FEATURE_FLAGS } from "@/config/feature-flags";
@@ -109,6 +109,14 @@ export async function runTelegramFollowupPilotDispatch(client: SupabaseClient, a
     const stageInfo = stageByState[followupCase.current_state];
     const incident = incidentByKey.get(followupCase.incident_key);
     if (!stageInfo || !incident) { result.skipped++; result.details.push({ followupCaseId: followupCase.id, status: "SKIPPED", reason: "incident_or_stage_missing" }); continue; }
+    // Team Lead actionable interactions are governed by the approved button
+    // contracts only. Other reason codes retain their separate legacy paths,
+    // but must not create an actionable Team Lead pilot reminder here.
+    if (!isTeamLeadActionReason(incident.reason_code)) {
+      result.skipped++;
+      result.details.push({ followupCaseId: followupCase.id, status: "SKIPPED", reason: `unsupported_team_lead_reason:${incident.reason_code || "unknown"}` });
+      continue;
+    }
     const warehouseName = String(incident.warehouse_name || "");
     const zoneName = zoneByWarehouseId.get(String(incident.warehouse_id)) || zoneByWarehouseName.get(warehouseName) || null;
     const route = "AUTO_HANDLE";

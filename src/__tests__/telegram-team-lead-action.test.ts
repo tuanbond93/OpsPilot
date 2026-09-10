@@ -5,11 +5,25 @@ import {
   formatRecordedResponse,
   formatTeamLeadActionMessage,
   governedWarehouseContext,
+  isTeamLeadActionReason,
 } from "@/integrations/telegram/team-lead-action";
+import { readFileSync } from "node:fs";
 
 const reminderId = "f2f62f64-2748-4fcb-a51d-26df6be6a22f";
 
 describe("Team Lead Telegram action contracts", () => {
+  it("limits Team Lead pilot interactions to approved button contracts", () => {
+    expect(isTeamLeadActionReason("KHO_TON")).toBe(true);
+    expect(isTeamLeadActionReason("KHO_CHU_A_LUAN_CHUYEN")).toBe(true);
+    expect(isTeamLeadActionReason("THIEU_SHIPPER")).toBe(false);
+
+    const dispatcher = readFileSync("src/services/telegram-followup-pilot.ts", "utf8");
+    const scopeGate = dispatcher.indexOf("if (!isTeamLeadActionReason(incident.reason_code))");
+    const interactionInsert = dispatcher.indexOf('client.from("telegram_followup_reminders").insert(payload)');
+    expect(scopeGate).toBeGreaterThan(-1);
+    expect(scopeGate).toBeLessThan(interactionInsert);
+  });
+
   it("renders Contract A with exact delivery labels", () => {
     const context = governedWarehouseContext("21712000", "Kho Giao Hàng Nặng - Tân Bình - HCM");
     expect(context.warehouseClass).toBe("DELIVERY");
