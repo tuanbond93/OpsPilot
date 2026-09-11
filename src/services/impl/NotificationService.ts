@@ -73,7 +73,10 @@ export class NotificationService implements INotificationService {
     summary.claimedCount = claimedActions.length;
 
     const checkpoint = checkpointKey(referenceTimeMs);
-    const pushDispatchAllowed = checkpoint !== null && localHour(referenceTimeMs) !== 8;
+    // 08:00 is the first operating checkpoint: dispatch only the governed
+    // first push created for that same checkpoint.  Later pushes stay blocked.
+    const pushDispatchAllowed = (actionType: string) => checkpoint !== null
+      && (localHour(referenceTimeMs) !== 8 || actionType === "FIRST_PUSH");
     const pushActionTypes = new Set(["FIRST_PUSH", "SECOND_PUSH", "THIRD_PUSH", "ESCALATION"]);
 
     for (const action of claimedActions) {
@@ -110,7 +113,7 @@ export class NotificationService implements INotificationService {
         // A push is meaningful only at the defined checkpoints. Put a current
         // action back into the queue for the next checkpoint instead of sending
         // it at an arbitrary worker tick such as 16:00.
-        if (!pushDispatchAllowed) {
+        if (!pushDispatchAllowed(action.action_type)) {
           await this.queue.updateActionStatus(action.id, "PENDING", {
             scheduled_at: nextCheckpoint(referenceTimeMs),
             started_at: null,

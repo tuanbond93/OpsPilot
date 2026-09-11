@@ -156,7 +156,10 @@ export function assessOperationalCohort(previous: OperationalCohort | null | und
     const changed = member.lastReminderStatus && member.lastReminderStatus !== status;
     // Unchanged work is reminded only at the final checkpoint or on a later day.
     const repeatDue = !member.lastReminderAt || localDay(Date.parse(member.lastReminderAt)) !== day || localHour(now) === FINAL_CHECKPOINT_HOUR || changed;
-    if (checkpoint && localHour(now) !== 8 && cohort.lastCheckpoint !== checkpoint && actionable && repeatDue) result.reminderCodes.push(member.orderCode);
+    // The 08:00 checkpoint may identify a genuinely due first push.  The
+    // follow-up engine limits that baseline eligibility to cases entering the
+    // first-push workflow; later ladder stages remain suppressed at 08:00.
+    if (checkpoint && cohort.lastCheckpoint !== checkpoint && actionable && repeatDue) result.reminderCodes.push(member.orderCode);
     member.status = status; member.observedAt = observation.observedAt;
     member.source = observation.source; member.eventAt = observation.eventAt;
   }

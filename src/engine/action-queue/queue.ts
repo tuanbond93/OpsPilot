@@ -305,6 +305,22 @@ export class ActionQueue implements IActionQueue {
     return map.get(dedupKey) || null;
   }
 
+  async getActionsByIncidentId(incidentId: string): Promise<NotificationActionRow[] | null> {
+    if (this.client) {
+      try {
+        const { data, error } = await this.client
+          .from("notification_actions")
+          .select("*")
+          .contains("payload", { incidentId });
+        if (error) return null;
+        return data || [];
+      } catch {
+        return null;
+      }
+    }
+    return this.inMemoryQueue.filter(action => String(action.payload?.incidentId || action.payload?.incident_id || "") === incidentId);
+  }
+
   /**
    * Database-backed atomic claim mechanism.
    * Prevents concurrent workers from processing the same action.

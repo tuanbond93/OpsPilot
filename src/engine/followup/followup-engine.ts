@@ -97,6 +97,31 @@ export class FollowupEngine {
   }
 
   /**
+   * A FOLLOWING_UP case is normally evidence that Push 1 already happened.
+   * The narrow legacy recovery is allowed only after every durable source says
+   * no Push 1 was delivered.  An unreadable history is deliberately unsafe.
+   */
+  private async canRecoverLegacyUnpushedCase(prior: FollowupCaseRow | undefined): Promise<boolean> {
+    if (!prior || prior.current_state !== "FOLLOWING_UP" || !this.followupRepo || !this.actionQueue?.getActionsByIncidentId) return false;
+    if (prior.last_action_confirmed_at) return false;
+    try {
+      const [events, actions] = await Promise.all([
+        this.followupRepo.getEventsByCaseId(prior.id),
+        this.actionQueue.getActionsByIncidentId(prior.incident_id),
+      ]);
+      if (actions === null) return false;
+      const confirmedInEvents = events.some(event => event.event_type === "PUSH_CONFIRMED" || event.new_state === "FIRST_PUSH_SENT");
+      const deliveredOrOpenFirstPush = actions.some(action => action.action_type === "FIRST_PUSH" && (
+        action.status === "SENT" || action.status === "PENDING" || action.status === "PROCESSING"
+        || action.outcome === "DELIVERED" || Boolean(action.provider_message_id)
+      ));
+      return !confirmedInEvents && !deliveredOrOpenFirstPush;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
    * Processes all current operational incidents through the Follow-up State Machine.
    * State transitions and escalation decisions are 100% deterministic.
    * NEVER invokes AI directly during sync.
@@ -186,7 +211,17 @@ export class FollowupEngine {
       const incoming = [...codes].flatMap(code => { const order = membership.get(code); return order ? [order] : []; });
       const assessment = assessOperationalCohort(prior?.operational_cohort, incoming, observations, now);
       const oldState = prior?.current_state || "NEW";
-      const shouldRemind = !isBaseline && assessment.reminderCodes.length > 0;
+      const mayRecoverLegacyUnpushed = await this.canRecoverLegacyUnpushedCase(prior);
+      // A pre-policy 08h baseline was recorded as FOLLOWING_UP without ever
+      // requesting Push 1. Recover only when durable action and Event Store
+      // history positively show no delivered or open first-push workflow.
+      const transitionState: FollowupState = mayRecoverLegacyUnpushed
+        ? "NEW"
+        : oldState;
+      // 08h remains a baseline for every existing ladder stage.  Its sole
+      // action exception is a due case entering the first-push workflow.
+      const shouldRemind = assessment.reminderCodes.length > 0
+        && (!isBaseline || transitionState === "NEW");
       const currentCount = assessment.pending + assessment.unknown;
       const resolved = !isBaseline && assessment.due > 0 && assessment.completed === assessment.due && !assessment.unknown;
       const lastActionAt = prior?.last_action_requested_at ? Date.parse(prior.last_action_requested_at) : NaN;
@@ -199,13 +234,7 @@ export class FollowupEngine {
       const notes = `Baseline 8h: ${assessment.baselineDue} đơn đến hạn, ${assessment.baselineProgressed} có tiến triển, ${assessment.baselinePending} chưa hoàn tất. Phát sinh mới đến hạn: ${assessment.newDue}. Tổng đến hạn: ${assessment.due}; hoàn tất chặng: ${assessment.completed}; còn xử lý: ${assessment.pending}; chưa xác minh: ${assessment.unknown}; chưa đến hạn: ${assessment.waiting}. ${isBaseline ? "Snapshot đầu ngày, chưa đánh giá kết quả." : "Tiến triển sau action không chứng minh quan hệ nhân quả."}`;
       // Cohort assessment owns evidence and checkpoint eligibility.  State progression
       // remains exclusively governed by the shared state machine.
-      const mustEvaluateTransition = resolved || oldState === "RESOLVED" || (oldState === "CLOSED" && currentCount === 0) || shouldRemind;
-      // The 08h baseline intentionally creates no action.  Its historical
-      // FOLLOWING_UP marker therefore represents an unpushed case, which must
-      // enter the shared machine as NEW when it first becomes checkpoint-due.
-      const transitionState: FollowupState = oldState === "FOLLOWING_UP" && !prior?.last_action_requested_at
-        ? "NEW"
-        : oldState;
+      const mustEvaluateTransition = resolved || (!isBaseline && oldState === "RESOLVED") || (oldState === "CLOSED" && currentCount === 0) || shouldRemind;
       const transitionResult: ReturnType<typeof evaluateNextState> = mustEvaluateTransition
         ? evaluateNextState(transitionState, {
           incidentId: incident.incidentId,
@@ -233,7 +262,9 @@ export class FollowupEngine {
       if (transitionState !== oldState) transitionResult.oldState = oldState;
       const newState = transitionResult.newState;
       assessment.cohort.lastCheckpoint = checkpoint;
-      for (const member of assessment.cohort.members) if (assessment.reminderCodes.includes(member.orderCode)) {
+      // Only record a reminder marker when this run actually requested an
+      // action.  At 08h later-stage candidates are deliberately not sent.
+      for (const member of assessment.cohort.members) if (shouldRemind && assessment.reminderCodes.includes(member.orderCode)) {
         member.lastReminderAt = new Date(now).toISOString(); member.lastReminderStatus = member.status;
       }
       const processParams: ProcessTransitionParams = { incidentId: incident.incidentId, incidentKey: incident.incidentKey,

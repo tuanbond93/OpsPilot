@@ -49,4 +49,6 @@ export interface IActionQueue {
   appendEvent(
     eventData: Omit<NotificationActionEventRow, "id" | "created_at">
   ): Promise<NotificationActionEventRow>;
+  /** Returns null when durable action history cannot be read safely. */
+  getActionsByIncidentId?(incidentId: string): Promise<NotificationActionRow[] | null>;
 }

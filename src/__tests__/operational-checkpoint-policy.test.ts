@@ -21,7 +21,7 @@ describe("approved operational checkpoints", () => {
     const clock = vi.spyOn(Date, "now").mockReturnValue(Date.parse(time(8)));
     try {
       const repo = new MockFollowupRepository();
-      const engine = new FollowupEngine(repo);
+      const engine = new FollowupEngine(repo, new ActionQueue(null));
       const order: NormalizedRillnetOrder = { id: "GHN1", orderCode: "GHN1", status: "storing", taskCategory: "", warehouseId: "20121005", warehouseName: "(LCH) Nậm Mạ", customerId: "C", customerName: "C", customerCode: "C", createdAt: time(6), deliverWarehouseId: "20121005", fetchedAt: time(8) };
       await engine.processIncidentFollowups(aggregateIncidents([order]), undefined, undefined, Date.now(), [order]);
       clock.mockReturnValue(Date.parse(time(10)));
@@ -49,6 +49,125 @@ describe("approved operational checkpoints", () => {
     const actions = await queue.getAllActions();
     expect(actions).toHaveLength(1);
     expect(actions[0].payload.operationalCheckpoint).toBe("2026-09-05:10");
+  });
+  it("creates one first push at 08h for a new actionable due cohort while preserving its baseline", async () => {
+    Deduplicator.clearMemory();
+    const repo = new MockFollowupRepository();
+    const queue = new ActionQueue(null);
+    const engine = new FollowupEngine(repo, queue);
+    const order: NormalizedRillnetOrder = { id: "08-first", orderCode: "08-first", status: "storing", taskCategory: "Kho tồn", warehouseId: "W", warehouseName: "Kho trung chuyển", customerId: "C", customerName: "C", customerCode: "C", createdAt: time(6), deliverWarehouseId: "D", fetchedAt: time(8), warehouseLog: [{ current_warehouse_id: "W", updated_date: { $date: time(6) } }] };
+
+    await engine.processIncidentFollowups(aggregateIncidents([order]), undefined, undefined, Date.parse(time(8)), [order]);
+    await engine.processIncidentFollowups(aggregateIncidents([order]), undefined, undefined, Date.parse(time(8)), [order]);
+
+    const [saved] = await repo.getAllCases();
+    const actions = await queue.getAllActions();
+    expect(saved).toMatchObject({ current_state: "FIRST_PUSH_PENDING" });
+    expect(saved.operational_cohort?.baselineCodes).toEqual(["08-first"]);
+    expect(actions).toHaveLength(1);
+    expect(actions[0]).toMatchObject({ action_type: "FIRST_PUSH", payload: { operationalCheckpoint: "2026-09-05:8" } });
+  });
+
+  it("keeps an 08h non-actionable exception traceable without a first push", async () => {
+    const repo = new MockFollowupRepository();
+    const queue = new ActionQueue(null);
+    const engine = new FollowupEngine(repo, queue);
+    const order: NormalizedRillnetOrder = { id: "08-exception", orderCode: "08-exception", status: "transporting", taskCategory: "Kho tồn", warehouseId: "W", warehouseName: "Kho trung chuyển", customerId: "C", customerName: "C", customerCode: "C", createdAt: time(6), deliverWarehouseId: "D", fetchedAt: time(8), warehouseLog: [{ current_warehouse_id: "W", updated_date: { $date: time(6) } }] };
+
+    await engine.processIncidentFollowups(aggregateIncidents([order]), undefined, undefined, Date.parse(time(8)), [order]);
+
+    expect((await repo.getAllCases())[0]).toMatchObject({ current_state: "FOLLOWING_UP" });
+    expect((await queue.getAllActions())).toHaveLength(0);
+  });
+
+  it("moves an existing unpushed baseline cohort into exactly one first push at 08h", async () => {
+    Deduplicator.clearMemory();
+    const repo = new MockFollowupRepository();
+    const queue = new ActionQueue(null);
+    const engine = new FollowupEngine(repo, queue);
+    const cohort = assess(null, [evidence("08-existing-unpushed", "storing", "TRANSIT")], [evidence("08-existing-unpushed", "storing", "TRANSIT")], 8).cohort;
+    cohort.lastCheckpoint = "2026-09-05:18";
+    repo.seed([{
+      id: "case-08-existing-unpushed", incident_id: "warehouse:KHO_TON", incident_key: "warehouse:KHO_TON", current_state: "FOLLOWING_UP",
+      first_detected_at: time(6, "2026-09-05"), last_checked_at: time(18, "2026-09-05"), last_action_requested_at: null,
+      baseline_affected_order_count: 1, latest_affected_order_count: 1, current_progress_percent: 0, current_assessment: "insufficient_data",
+      current_rillnet_status_signature: "", operational_cohort: cohort,
+    }], []);
+    const current = { id: "08-existing-unpushed", orderCode: "08-existing-unpushed", status: "storing", taskCategory: "Kho tồn", warehouseId: "warehouse", warehouseName: "Kho trung chuyển", customerId: "customer", customerName: "C", customerCode: "C", createdAt: time(6, "2026-09-05"), deliverWarehouseId: "D", fetchedAt: time(8, "2026-09-06"), warehouseLog: [{ current_warehouse_id: "warehouse", updated_date: { $date: time(6, "2026-09-05") } }] } as NormalizedRillnetOrder;
+
+    await engine.processIncidentFollowups(aggregateIncidents([current]), undefined, undefined, Date.parse(time(8, "2026-09-06")), [current]);
+    await engine.processIncidentFollowups(aggregateIncidents([current]), undefined, undefined, Date.parse(time(8, "2026-09-06")), [current]);
+
+    expect((await repo.getAllCases())[0].current_state).toBe("FIRST_PUSH_PENDING");
+    expect((await queue.getAllActions())).toHaveLength(1);
+  });
+
+  it("never recovers FOLLOWING_UP to first push when Event Store records a historical first-push confirmation", async () => {
+    const repo = new MockFollowupRepository();
+    const queue = new ActionQueue(null);
+    const engine = new FollowupEngine(repo, queue);
+    const cohort = assess(null, [evidence("08-historical-first", "storing", "TRANSIT")], [evidence("08-historical-first", "storing", "TRANSIT")], 8).cohort;
+    cohort.lastCheckpoint = "2026-09-05:18";
+    repo.seed([{
+      id: "case-08-historical-first", incident_id: "warehouse:KHO_TON", incident_key: "warehouse:KHO_TON", current_state: "FOLLOWING_UP",
+      first_detected_at: time(6, "2026-09-05"), last_checked_at: time(18, "2026-09-05"), last_action_requested_at: null,
+      baseline_affected_order_count: 1, latest_affected_order_count: 1, current_progress_percent: 0, current_assessment: "no_progress",
+      current_rillnet_status_signature: "", operational_cohort: cohort,
+    }], [{
+      id: "event-first-sent", followup_case_id: "case-08-historical-first", event_type: "PUSH_CONFIRMED", event_time: time(18, "2026-09-05"),
+      old_state: "FIRST_PUSH_PENDING", new_state: "FIRST_PUSH_SENT", assessment: "no_progress",
+    }]);
+    const current = { id: "08-historical-first", orderCode: "08-historical-first", status: "storing", taskCategory: "Kho tồn", warehouseId: "warehouse", warehouseName: "Kho trung chuyển", customerId: "customer", customerName: "C", customerCode: "C", createdAt: time(6, "2026-09-05"), deliverWarehouseId: "D", fetchedAt: time(8, "2026-09-06"), warehouseLog: [{ current_warehouse_id: "warehouse", updated_date: { $date: time(6, "2026-09-05") } }] } as NormalizedRillnetOrder;
+
+    await engine.processIncidentFollowups(aggregateIncidents([current]), undefined, undefined, Date.parse(time(8, "2026-09-06")), [current]);
+
+    expect((await repo.getAllCases())[0].current_state).toBe("FOLLOWING_UP");
+    expect((await queue.getAllActions())).toHaveLength(0);
+  });
+
+  it("never recovers FOLLOWING_UP to first push when notification history records a delivered first push", async () => {
+    const repo = new MockFollowupRepository();
+    const queue = new ActionQueue(null);
+    const engine = new FollowupEngine(repo, queue);
+    const cohort = assess(null, [evidence("08-delivered-first", "storing", "TRANSIT")], [evidence("08-delivered-first", "storing", "TRANSIT")], 8).cohort;
+    cohort.lastCheckpoint = "2026-09-05:18";
+    repo.seed([{
+      id: "case-08-delivered-first", incident_id: "warehouse:KHO_TON", incident_key: "warehouse:KHO_TON", current_state: "FOLLOWING_UP",
+      first_detected_at: time(6, "2026-09-05"), last_checked_at: time(18, "2026-09-05"), last_action_requested_at: null,
+      baseline_affected_order_count: 1, latest_affected_order_count: 1, current_progress_percent: 0, current_assessment: "no_progress",
+      current_rillnet_status_signature: "", operational_cohort: cohort,
+    }], []);
+    const historical = await queue.enqueueAction({ actionType: "FIRST_PUSH", payload: { incidentId: "warehouse:KHO_TON" } });
+    if (!historical || !("id" in historical)) throw new Error("missing historical action");
+    await queue.updateActionStatus(historical.id, "SENT", { outcome: "DELIVERED", provider_message_id: "historical-message" });
+    const current = { id: "08-delivered-first", orderCode: "08-delivered-first", status: "storing", taskCategory: "Kho tồn", warehouseId: "warehouse", warehouseName: "Kho trung chuyển", customerId: "customer", customerName: "C", customerCode: "C", createdAt: time(6, "2026-09-05"), deliverWarehouseId: "D", fetchedAt: time(8, "2026-09-06"), warehouseLog: [{ current_warehouse_id: "warehouse", updated_date: { $date: time(6, "2026-09-05") } }] } as NormalizedRillnetOrder;
+
+    await engine.processIncidentFollowups(aggregateIncidents([current]), undefined, undefined, Date.parse(time(8, "2026-09-06")), [current]);
+
+    expect((await repo.getAllCases())[0].current_state).toBe("FOLLOWING_UP");
+    expect((await queue.getAllActions())).toHaveLength(1);
+  });
+
+  it.each(["FIRST_PUSH_SENT", "SECOND_PUSH_SENT", "ESCALATION_PENDING"] as const)("does not roll %s back to first push at the next 08h baseline", async (state) => {
+    const repo = new MockFollowupRepository();
+    const queue = new ActionQueue(null);
+    const engine = new FollowupEngine(repo, queue);
+    const cohort = assess(null, [evidence("08-existing", "storing", "TRANSIT")], [evidence("08-existing", "storing", "TRANSIT")], 8).cohort;
+    cohort.lastCheckpoint = "2026-09-05:18";
+    cohort.members[0].lastReminderAt = time(18, "2026-09-05");
+    cohort.members[0].lastReminderStatus = "storing";
+    repo.seed([{
+      id: `case-${state}`, incident_id: `incident-${state}`, incident_key: "warehouse:KHO_TON", current_state: state,
+      first_detected_at: time(6, "2026-09-05"), last_checked_at: time(18, "2026-09-05"), last_action_requested_at: time(18, "2026-09-05"),
+      baseline_affected_order_count: 1, latest_affected_order_count: 1, current_progress_percent: 0, current_assessment: "no_progress",
+      current_rillnet_status_signature: "", operational_cohort: cohort,
+    }], []);
+    const current = { id: "08-existing", orderCode: "08-existing", status: "storing", taskCategory: "Kho tồn", warehouseId: "warehouse", warehouseName: "Kho trung chuyển", customerId: "customer", customerName: "C", customerCode: "C", createdAt: time(6, "2026-09-05"), deliverWarehouseId: "D", fetchedAt: time(8, "2026-09-06"), warehouseLog: [{ current_warehouse_id: "warehouse", updated_date: { $date: time(6, "2026-09-05") } }] } as NormalizedRillnetOrder;
+
+    await engine.processIncidentFollowups(aggregateIncidents([current]), undefined, undefined, Date.parse(time(8, "2026-09-06")), [current]);
+
+    expect((await repo.getAllCases())[0].current_state).toBe(state);
+    expect((await queue.getAllActions())).toHaveLength(0);
   });
   it("uses exactly the governed 08/10/12/14/16/18 local checkpoint hours and waits for the next COT after departure", () => {
     for (const hour of [8, 10, 12, 14, 16, 18]) expect(checkpointKey(Date.parse(time(hour)))).toBe(`2026-09-05:${hour}`);

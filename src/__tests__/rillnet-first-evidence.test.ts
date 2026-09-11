@@ -7,6 +7,7 @@ import { readFileSync } from "node:fs";
 import { buildCanonicalTelegramReminderContext, buildRillnetOrderEvidence, formatTelegramFollowupReminder, logicalReminderOrderCodes } from "@/integrations/telegram/followup-first-push";
 import { needsGhnVerification } from "@/services/evidence-policy";
 import type { NormalizedRillnetOrder } from "@/connectors/rillnet";
+import { ActionQueue } from "@/engine/action-queue";
 
 const at = (hour: number) => `2026-09-05T${String(hour).padStart(2, "0")}:00:00+07:00`;
 const order = (taskCategory: string, code: string): NormalizedRillnetOrder => ({ id: code, orderCode: code, status: "storing", taskCategory, warehouseId: "W", warehouseName: "Kho GHN", customerId: "C", customerName: "C", customerCode: "C", createdAt: at(6), deliverWarehouseId: "W", fetchedAt: at(8), warehouseLog: [{ current_warehouse_id: "W", updated_date: { $date: at(6) } }] });
@@ -90,7 +91,7 @@ describe("Rillnet-first evidence boundary", () => {
     const lookup = vi.spyOn(GhnOrderTrackingClient.prototype, "fetchOrderLogs");
     try {
       const repo = new MockFollowupRepository();
-      const engine = new FollowupEngine(repo);
+      const engine = new FollowupEngine(repo, new ActionQueue(null));
       const baseline = order(taskCategory, taskCategory === "Kho tồn" ? "TON1" : "LC1");
       await engine.processIncidentFollowups(aggregateIncidents([baseline]), undefined, undefined, Date.parse(at(8)), [baseline]);
       const current = { ...baseline, fetchedAt: at(10) };
