@@ -9,13 +9,13 @@ describe("Telegram per-sync incident status", () => {
       { warehouse: "Kho B", reason: "Kho tồn", previousCount: 1, currentCount: 1, resolved: false },
       { warehouse: "Kho C", reason: "Kho tồn", previousCount: 1, currentCount: 0, resolved: true },
     ], "2026-09-02T09:01:39.416Z");
-    expect(message).toContain("Có thay đổi");
+    expect(message).toContain("Tồn tăng");
     expect(message).toContain("Không thay đổi");
-    expect(message).toContain("Sự cố đã hoàn thành");
+    expect(message).toContain("Vừa hoàn thành");
   });
 
   it("always renders a Manager heartbeat, including a zero-change cycle", () => {
-    expect(formatSyncHeartbeat({ completedAt: "2026-09-02T09:01:39.416Z", active: 18, changed: 0, unchanged: 18, resolved: 0, failed: 0 })).toContain("SYNC OPSPILOT ĐÃ HOÀN TẤT");
+    expect(formatSyncHeartbeat({ completedAt: "2026-09-02T09:01:39.416Z", active: 18, changed: 0, unchanged: 18, resolved: 0, failed: 0 })).toContain("OPSPILOT · CHECKPOINT");
   });
 
   it("persists idempotency per case/sync and only one terminal notice", () => {

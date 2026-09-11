@@ -8,7 +8,7 @@ describe("Telegram follow-up delivery summary", () => {
       { province: "Hòa Bình", warehouse: "Kho B", stage: "FIRST", coveredCases: 1, status: "FAILED", error: "timeout" },
       { province: "Sơn La", warehouse: "Kho C", stage: "SECOND", coveredCases: 3, status: "SUCCESS" },
     ], new Date("2026-09-02T01:00:00Z"));
-    expect(text).toContain("Tổng follow-up: <b>3 batch / 6 case</b>");
+    expect(text).toContain("Tổng action đã tạo: <b>6 case / 3 batch</b>");
     expect(text).toContain("Hòa Bình: 2 batch / 3 case · ✅ 1 · ❌ 1");
     expect(text).toContain("Sơn La: 1 batch / 3 case · ✅ 1 · ❌ 0");
     expect(text).toContain("Kho B · FIRST: timeout");
@@ -23,7 +23,7 @@ describe("Telegram follow-up delivery summary", () => {
 
     expect(text).toContain("1. RILLNET REVIEW MỚI");
     expect(text).toContain("✅ Lào Cai · Kho Giao Hàng Nặng - TP Lào Cai: 1 case · 5 đơn ảnh hưởng");
-    expect(text).toContain("2. FOLLOW-UP ĐÃ GỬI");
+    expect(text).toContain("2. CAN THIỆP TẠI CHECKPOINT");
     expect(text).toContain("không bao gồm Rillnet review ở mục 1");
     expect(text).toContain("Yên Bái: 1 batch / 1 case");
   });

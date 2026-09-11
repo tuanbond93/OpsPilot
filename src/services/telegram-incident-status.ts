@@ -1,7 +1,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import warehouseAssignments from "@/data/warehouse-assignments.generated.json";
 import { TelegramClient } from "@/integrations/telegram";
-import { formatIncidentStatusUpdate, formatSyncHeartbeat, type IncidentStatusLine } from "@/integrations/telegram/incident-status-message";
+import { classifyIncidentChange, emptyChangeCounts, formatIncidentStatusUpdate, formatSyncHeartbeat, type IncidentStatusLine } from "@/integrations/telegram/incident-status-message";
 
 type Assignment = { warehouseId: string; warehouseName: string; zone: string; province: string };
 type Followup = { id: string; incident_id: string; current_state: string; latest_affected_order_count: number; resolved_at: string | null };
@@ -42,7 +42,7 @@ async function loadHistories(client: SupabaseClient, incidentIds: string[]): Pro
 }
 
 export async function sendIncidentSyncStatus(client: SupabaseClient, syncRunId: string, completedAt: string) {
-  const result = { active: 0, changed: 0, unchanged: 0, resolved: 0, sentBatches: 0, failed: 0, skipped: 0 };
+  const result = { active: 0, changed: 0, unchanged: 0, resolved: 0, sentBatches: 0, failed: 0, skipped: 0, categories: emptyChangeCounts() };
   const [{ data: followups, error: followupError }, { data: topics, error: topicError }] = await Promise.all([
     client.from("followup_cases").select("id,incident_id,current_state,latest_affected_order_count,resolved_at").limit(1000),
     client.from("telegram_pilot_topics").select("group_id,message_thread_id,province_name,is_escalation,is_manager_decision,telegram_pilot_groups!inner(telegram_chat_id,status)").eq("status", "ACTIVE").eq("telegram_pilot_groups.status", "ACTIVE"),
@@ -74,9 +74,11 @@ export async function sendIncidentSyncStatus(client: SupabaseClient, syncRunId: 
     const current = Number(history[0]?.affected_order_count ?? followup.latest_affected_order_count ?? 0);
     const previous = history[1] ? Number(history[1].affected_order_count) : null;
     const resolved = ["RESOLVED", "CLOSED"].includes(followup.current_state);
-    const changed = resolved || previous === null || previous !== current;
+    const category = classifyIncidentChange(previous, resolved ? 0 : current, resolved);
+    const changed = category !== "UNCHANGED";
     const batchKey = `${topic.group_id}:${topic.message_thread_id}`;
-    const line = { warehouse: incident.warehouse_name, reason: incident.reason_name, previousCount: previous, currentCount: resolved ? 0 : current, resolved };
+    const line = { warehouse: incident.warehouse_name, reason: incident.reason_name, previousCount: previous, currentCount: resolved ? 0 : current, resolved, category };
+    result.categories[category]++;
     (batches.get(batchKey) || (batches.set(batchKey, []), batches.get(batchKey)!)).push({ followup, incident, topic, line, changed, resolved });
   }
   for (const batch of batches.values()) {
@@ -88,7 +90,7 @@ export async function sendIncidentSyncStatus(client: SupabaseClient, syncRunId: 
     if (!pending.length) continue;
     try {
       const first = pending[0]; const group = first.topic.telegram_pilot_groups;
-      const sent = await new TelegramClient().sendToChat(String(group.telegram_chat_id), formatIncidentStatusUpdate(pending.map((item) => item.line), completedAt), { parseMode: "HTML", messageThreadId: first.topic.message_thread_id });
+      const sent = await new TelegramClient().sendToChat(String(group.telegram_chat_id), formatIncidentStatusUpdate(pending.map((item) => item.line), completedAt, first.topic.province_name || "Miền Bắc 3"), { parseMode: "HTML", messageThreadId: first.topic.message_thread_id });
       const ids = pending.map((item) => item.followup.id);
       await client.from("telegram_incident_status_updates").update({ status: "SENT", telegram_message_id: Number(sent.messageId), sent_at: new Date().toISOString(), updated_at: new Date().toISOString() }).eq("sync_run_id", syncRunId).in("followup_case_id", ids);
       result.sentBatches++; result.changed += pending.filter((item) => item.changed && !item.resolved).length; result.unchanged += pending.filter((item) => !item.changed).length; result.resolved += pending.filter((item) => item.resolved).length;
@@ -101,7 +103,7 @@ export async function sendIncidentSyncStatus(client: SupabaseClient, syncRunId: 
   if (managerTopic) {
     const report = await client.from("telegram_sync_status_reports").insert({ sync_run_id: syncRunId, telegram_chat_id: managerTopic.telegram_pilot_groups.telegram_chat_id, message_thread_id: managerTopic.message_thread_id, active_cases: result.active, changed_cases: result.changed, unchanged_cases: result.unchanged, resolved_cases: result.resolved }).select("id").single();
     if (!report.error) try {
-      const sent = await new TelegramClient().sendToChat(String(managerTopic.telegram_pilot_groups.telegram_chat_id), formatSyncHeartbeat({ completedAt, ...result }), { parseMode: "HTML", messageThreadId: managerTopic.message_thread_id });
+      const sent = await new TelegramClient().sendToChat(String(managerTopic.telegram_pilot_groups.telegram_chat_id), formatSyncHeartbeat({ completedAt, ...result, scope: "Miền Bắc 3" }), { parseMode: "HTML", messageThreadId: managerTopic.message_thread_id });
       await client.from("telegram_sync_status_reports").update({ status: "SENT", telegram_message_id: Number(sent.messageId), sent_at: new Date().toISOString(), updated_at: new Date().toISOString() }).eq("id", report.data.id);
     } catch (error) { result.failed++; await client.from("telegram_sync_status_reports").update({ status: "FAILED", failure_reason: error instanceof Error ? error.message.slice(0, 1000) : String(error).slice(0, 1000), updated_at: new Date().toISOString() }).eq("id", report.data.id); }
   }

@@ -15,6 +15,8 @@ export type RillnetReviewSummaryItem = {
   error?: string;
 };
 
+const actionLabel: Record<string, string> = { FIRST: "🔔 NHẮC LẦN 1", SECOND: "🔁 NHẮC LẦN 2", THIRD: "🔂 NHẮC LẦN 3", ESCALATION: "🚨 ESCALATE" };
+
 const esc = (value: string) => value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
 export function formatFollowupDeliverySummary(items: FollowupDeliverySummaryItem[], completedAt = new Date(), reviews: RillnetReviewSummaryItem[] = []) {
@@ -31,6 +33,8 @@ export function formatFollowupDeliverySummary(items: FollowupDeliverySummaryItem
   const failed = items.length - success;
   const rows = [...provinces.entries()].sort(([a], [b]) => a.localeCompare(b, "vi"))
     .map(([province, row]) => `${esc(province)}: ${row.batches} batch / ${row.cases} case · ✅ ${row.success} · ❌ ${row.failed}`);
+  const actions = new Map<string, FollowupDeliverySummaryItem[]>(); for (const item of items) actions.set(item.stage, [...(actions.get(item.stage) || []), item]);
+  const actionRows = [...actions.entries()].flatMap(([stage, stageItems]) => ["", `<b>${actionLabel[stage] || `KHÁC · ${esc(stage)}`}</b>`, `${stageItems.reduce((sum, item) => sum + item.coveredCases, 0)} case`, ...stageItems.map(item => `• ${esc(item.province)} · ${esc(item.warehouse)} · ${item.coveredCases} case`)]);
   const failures = items.filter((item) => item.status === "FAILED").slice(0, 10)
     .map((item) => `• ${esc(item.province)} · ${esc(item.warehouse)} · ${esc(item.stage)}: ${esc(item.error || "Không rõ lỗi")}`);
   const reviewRows = reviews.map((item) =>
@@ -39,17 +43,20 @@ export function formatFollowupDeliverySummary(items: FollowupDeliverySummaryItem
   const reviewFailures = reviews.filter((item) => item.status === "FAILED" && item.error).slice(0, 10)
     .map((item) => `• ${esc(item.province)} · ${esc(item.warehouse)}: ${esc(item.error || "Không rõ lỗi")}`);
   return [
-    "<b>BÁO CÁO GỬI PUSH VẬN HÀNH</b>",
+    "<b>BÁO CÁO CAN THIỆP · MIỀN BẮC 3</b>",
     `Hoàn tất: ${completedAt.toLocaleString("vi-VN", { timeZone: "Asia/Ho_Chi_Minh" })}`,
     "",
     "<b>1. RILLNET REVIEW MỚI</b>",
     ...(reviewRows.length ? reviewRows : ["Không có review mới được gửi."]),
     "",
-    "<b>2. FOLLOW-UP ĐÃ GỬI</b>",
-    "Chỉ tính batch nhắc follow-up; không bao gồm Rillnet review ở mục 1.",
-    `Tổng follow-up: <b>${items.length} batch / ${totalCases} case</b> · ✅ ${success} · ❌ ${failed}`,
+    "<b>2. CAN THIỆP TẠI CHECKPOINT</b>",
+    "Chỉ tính action nhắc/escalate; không bao gồm Rillnet review ở mục 1.",
+    `Tổng action đã tạo: <b>${totalCases} case / ${items.length} batch</b>`,
+    `Kết quả gửi (batch): ✅ ${success} · ❌ ${failed}`,
     "",
-    ...(rows.length ? rows : ["Không có follow-up mới được gửi."]),
+    ...(actionRows.length ? actionRows : ["Không tạo action tại checkpoint này."]),
+    "",
+    ...(rows.length ? rows : ["Không có action mới được gửi."]),
     ...((failures.length || reviewFailures.length) ? ["", "<b>Lỗi cần kiểm tra</b>", ...reviewFailures, ...failures] : []),
   ].join("\n");
 }
