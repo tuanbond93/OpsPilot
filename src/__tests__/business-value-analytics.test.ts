@@ -15,7 +15,7 @@ describe("business value analytics read model", () => {
   it("attributes a resolution after a confirmed first push only", () => {
     const report = buildBusinessValueReport([{ followupCase: { ...base("a", "RESOLVED"), resolved_at: "2026-09-12T04:00:00.000Z" }, suppressionEvidenceComplete: true, actions: [action("a1", "FIRST_PUSH", "2026-09-12T02:00:00.000Z")] }]);
     expect(report.cases[0].outcome).toBe("RESOLVED_AFTER_FIRST_PUSH");
-    expect(report.metrics.firstPushResolutionRate).toBe(1);
+    expect(report.metrics.resolvedAfterFirstPushRate).toBe(1);
     expect(report.metrics.medianTimeAfterFirstPushHours).toBe(2);
   });
 
@@ -30,9 +30,9 @@ describe("business value analytics read model", () => {
       { followupCase: { ...base("c", "RESOLVED"), resolved_at: "2026-09-12T05:00:00.000Z" }, suppressionEvidenceComplete: true, actions: [action("c1", "FIRST_PUSH", "2026-09-12T02:00:00.000Z"), action("c2", "SECOND_PUSH", "2026-09-12T03:00:00.000Z")] },
       { followupCase: { ...base("d", "RESOLVED"), resolved_at: "2026-09-12T06:00:00.000Z" }, suppressionEvidenceComplete: true, actions: [action("d1", "FIRST_PUSH", "2026-09-12T02:00:00.000Z"), action("d2", "SECOND_PUSH", "2026-09-12T03:00:00.000Z"), action("d3", "ESCALATION", "2026-09-12T04:00:00.000Z")] },
     ]);
-    expect(report.metrics.secondPushResolutionCount).toBe(1);
-    expect(report.metrics.escalationResolutionCount).toBe(1);
-    expect(report.metrics.firstPushResolutionCount).toBe(0);
+    expect(report.metrics.resolvedAfterSecondPushCount).toBe(1);
+    expect(report.metrics.resolvedAfterEscalationCount).toBe(1);
+    expect(report.metrics.resolvedAfterFirstPushCount).toBe(0);
   });
 
   it("excludes suppressed cases and records deduplication events", () => {

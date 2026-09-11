@@ -64,15 +64,15 @@ export interface BusinessValueMetrics {
   totalDetected: number;
   totalActionable: number;
   firstPushConfirmed: number;
-  firstPushResolutionCount: number;
-  firstPushResolutionRate: number | null;
+  resolvedAfterFirstPushCount: number;
+  resolvedAfterFirstPushRate: number | null;
   secondPushRequired: number;
   secondPushConfirmed: number;
-  secondPushResolutionCount: number;
-  secondPushResolutionRate: number | null;
+  resolvedAfterSecondPushCount: number;
+  resolvedAfterSecondPushRate: number | null;
   escalationRequired: number;
   escalated: number;
-  escalationResolutionCount: number;
+  resolvedAfterEscalationCount: number;
   stillUnresolved: number;
   suppressedCases: number;
   duplicateActionsPrevented: number;
@@ -218,15 +218,15 @@ export function buildBusinessValueReport(evidence: BusinessValueCaseEvidence[]):
     totalDetected: traces.length,
     totalActionable: active.length,
     firstPushConfirmed: firstConfirmed.length,
-    firstPushResolutionCount: count("RESOLVED_AFTER_FIRST_PUSH"),
-    firstPushResolutionRate: firstConfirmed.length ? count("RESOLVED_AFTER_FIRST_PUSH") / firstConfirmed.length : null,
+    resolvedAfterFirstPushCount: count("RESOLVED_AFTER_FIRST_PUSH"),
+    resolvedAfterFirstPushRate: firstConfirmed.length ? count("RESOLVED_AFTER_FIRST_PUSH") / firstConfirmed.length : null,
     secondPushRequired: active.filter(trace => trace.secondPushConfirmedAt || trace.outcome === "RESOLVED_AFTER_SECOND_PUSH").length,
     secondPushConfirmed: secondConfirmed.length,
-    secondPushResolutionCount: count("RESOLVED_AFTER_SECOND_PUSH"),
-    secondPushResolutionRate: secondConfirmed.length ? count("RESOLVED_AFTER_SECOND_PUSH") / secondConfirmed.length : null,
+    resolvedAfterSecondPushCount: count("RESOLVED_AFTER_SECOND_PUSH"),
+    resolvedAfterSecondPushRate: secondConfirmed.length ? count("RESOLVED_AFTER_SECOND_PUSH") / secondConfirmed.length : null,
     escalationRequired: active.filter(trace => trace.escalatedAt || trace.outcome === "RESOLVED_AFTER_ESCALATION").length,
     escalated: active.filter(trace => trace.escalatedAt).length,
-    escalationResolutionCount: count("RESOLVED_AFTER_ESCALATION"),
+    resolvedAfterEscalationCount: count("RESOLVED_AFTER_ESCALATION"),
     stillUnresolved: count("STILL_UNRESOLVED"),
     suppressedCases: count("SUPPRESSED"),
     duplicateActionsPrevented: traces.reduce((sum, trace) => sum + trace.duplicateActionsPrevented, 0),
