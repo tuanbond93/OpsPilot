@@ -4,6 +4,10 @@ This build adds pure, versioned contracts only. It does not create a database mi
 
 The follow-on implementation branch adds an unexecuted migration (`065_adaptive_shadow_observation_store.sql`) containing only four isolated append-only tables. IDs and `created_at` are server generated; insert idempotency uses unique keys; update/delete triggers reject history mutation. The writer has insert-only methods for snapshots, population membership, decisions, and outcomes. It has no operational methods.
 
+The migration enables and forces RLS on all four tables, revokes all privileges from `PUBLIC`, `anon`, and `authenticated`, and grants only `SELECT`/`INSERT` to `service_role`. It deliberately creates no browser policies: warehouse users, managers, and admins have no direct table access. A future governed server API must enforce data scope before returning an approved read model. Service role remains privileged infrastructure, not physically immutable administration; it has no update/delete grant under this migration, while table owners and database administrators remain capable of changing database rules outside the application runtime.
+
+Release telemetry is derived from snapshots: `SNAPSHOTS_CREATED`, `SNAPSHOT_WRITE_FAILURES`, and the fractions whose SLA, ETA, progress, driver, commitment, and exception evidence are known. These are data-quality measures only, not V2-effectiveness claims.
+
 Feature matrix: both flags false = disabled; snapshot-write true/V2 false = snapshot-only; both true = full shadow; snapshot-write false/V2 true = disabled. A shadow decision is not persisted without a previously persisted snapshot. The fail-open composer returns V1 immediately and schedules bounded shadow work independently; it is not wired into V1 or cron in this change.
 
 `AdaptiveObservationSnapshot`, `CheckpointCaseSnapshot`, `AdaptiveShadowDecisionRecord`, and `ShadowOutcomeObservation` are append-only schemas. Unknown source values remain `null`/`UNKNOWN`; `appendObservation` rejects replacement of an existing snapshot ID in local fixtures. A future durable store must enforce the same unique-ID and insert-only constraints.

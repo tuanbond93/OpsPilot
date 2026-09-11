@@ -55,3 +55,23 @@ CREATE TRIGGER adaptive_observation_snapshots_immutable BEFORE UPDATE OR DELETE 
 CREATE TRIGGER checkpoint_case_snapshots_immutable BEFORE UPDATE OR DELETE ON checkpoint_case_snapshots FOR EACH ROW EXECUTE FUNCTION reject_adaptive_shadow_history_mutation();
 CREATE TRIGGER adaptive_shadow_decisions_immutable BEFORE UPDATE OR DELETE ON adaptive_shadow_decisions FOR EACH ROW EXECUTE FUNCTION reject_adaptive_shadow_history_mutation();
 CREATE TRIGGER shadow_outcome_observations_immutable BEFORE UPDATE OR DELETE ON shadow_outcome_observations FOR EACH ROW EXECUTE FUNCTION reject_adaptive_shadow_history_mutation();
+
+-- Defense in depth: browser roles have no direct access. The service role
+-- bypasses RLS but is limited to INSERT/SELECT privileges for this release;
+-- the only intended write path is a validated server-side writer.
+ALTER TABLE adaptive_observation_snapshots ENABLE ROW LEVEL SECURITY;
+ALTER TABLE checkpoint_case_snapshots ENABLE ROW LEVEL SECURITY;
+ALTER TABLE adaptive_shadow_decisions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE shadow_outcome_observations ENABLE ROW LEVEL SECURITY;
+ALTER TABLE adaptive_observation_snapshots FORCE ROW LEVEL SECURITY;
+ALTER TABLE checkpoint_case_snapshots FORCE ROW LEVEL SECURITY;
+ALTER TABLE adaptive_shadow_decisions FORCE ROW LEVEL SECURITY;
+ALTER TABLE shadow_outcome_observations FORCE ROW LEVEL SECURITY;
+
+REVOKE ALL ON TABLE adaptive_observation_snapshots, checkpoint_case_snapshots, adaptive_shadow_decisions, shadow_outcome_observations FROM PUBLIC, anon, authenticated;
+GRANT SELECT, INSERT ON TABLE adaptive_observation_snapshots, checkpoint_case_snapshots, adaptive_shadow_decisions, shadow_outcome_observations TO service_role;
+
+COMMENT ON TABLE adaptive_observation_snapshots IS 'Append-only adaptive shadow evidence. Browser roles have no direct access.';
+COMMENT ON TABLE checkpoint_case_snapshots IS 'Append-only checkpoint membership evidence. Browser roles have no direct access.';
+COMMENT ON TABLE adaptive_shadow_decisions IS 'Append-only V2 shadow decisions; requires persisted snapshot reference.';
+COMMENT ON TABLE shadow_outcome_observations IS 'Append-only later observed outcomes; never implies causal attribution.';
