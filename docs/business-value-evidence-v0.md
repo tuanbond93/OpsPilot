@@ -25,15 +25,31 @@ without a caller-supplied valid suppression. V0 intentionally does not invent
 a suppression reason when the durable record is incomplete.
 
 `FIRST_PUSH_CONFIRMED`, `SECOND_PUSH_CONFIRMED`, and `ESCALATED` require either
-`notification_actions.status = SENT` with `outcome = DELIVERED`, or the linked
-`DELIVERY_SUCCEEDED` audit event. `PENDING`, generated, cancelled, and failed
-actions never count as confirmation.
+one case-linked durable action (`payload.incidentId` equals the case incident)
+with delivered outcome and a provider message ID/audit confirmation. This is
+**Level A** evidence. A grouped Telegram delivery remains Level A only when
+each member retains its own linked durable action. A confirmed message with no
+provable case membership is Level C and never confirms a case; generated or
+pending action is Level D. `PENDING` and failed actions never count as
+confirmation. A cancellation used to close a case-specific aggregate queue row
+does not erase its delivered outcome, but still needs the case link and message
+evidence.
 
 Outcome groups are exclusive: the last confirmed governed action on or before
 `resolved_at` determines `RESOLVED_AFTER_FIRST_PUSH`,
 `RESOLVED_AFTER_SECOND_PUSH`, or `RESOLVED_AFTER_ESCALATION`. Unresolved,
 suppressed, and missing-evidence cases are separate groups. Invalid ordering is
 reported, never repaired.
+
+The ordinary funnel stages (`DETECTED`, `ACTIONABLE`, `FIRST_PUSH_CONFIRMED`,
+`SECOND_PUSH_REQUIRED`, `SECOND_PUSH_CONFIRMED`, and `ESCALATED`) may overlap:
+one case can pass through each over time. Only the terminal dimension is
+exclusive: `RESOLVED_AFTER_FIRST_PUSH`, `RESOLVED_AFTER_SECOND_PUSH`,
+`RESOLVED_AFTER_ESCALATION`, `SUPPRESSED`, `STILL_UNRESOLVED`, and
+`MISSING_EVIDENCE` partition supplied case rows. Each resolution rate uses its
+confirmed-stage count as denominator and corresponding terminal outcome as
+numerator. All metrics require the caller's explicit time window and scope;
+records outside either are excluded and missing time remains `N/A`.
 
 Durations are calculated only from valid ordered timestamps:
 `detected_at`, `first_push_confirmed_at`, `second_push_confirmed_at`,
@@ -56,6 +72,42 @@ separate claim and is never inferred from timing alone.
 For AI Revolution reporting, use Level 1 as the minimum defensible automated
 reporting level; report Level 2/3 only with linked evidence.
 
+## Suppression resolver contract
+
+`resolveSuppressionEvidence(case)` is pure and read-only. It considers active
+`order_exceptions` for supplied case order codes, the current
+`RILLNET_CHANGE_PAUSED` state, and any explicitly supplied policy observation.
+An expiry at or before the reference time is historical, not current.
+
+The resolver returns `CURRENT`, `HISTORICAL`, `NONE`, `UNKNOWN`, or
+`AMBIGUOUS`. A complete read is required before `NONE` is returned. Contradictory
+current/none or current/unknown evidence is `AMBIGUOUS`; absence of an action
+is never suppression evidence. Only `CURRENT` is excluded from actionable
+metrics; unknown and ambiguous evidence remain visible as unknown rather than
+being repaired into clean numbers.
+
+Current sources are: `order_exceptions` (`reason_code`, `expires_at`; active
+until expiry), `followup_cases.current_state = RILLNET_CHANGE_PAUSED` plus its
+persisted review fields (active until manager review/resume), and explicit
+read-adapter policy evidence. Approved-exception text in the incident builder
+filters incoming orders but does not provide a durable case-level historical
+suppression record, so it is not sufficient by itself for V0 analytics.
+
+## Owner-input value schema
+
+No value defaults are supplied. The typed owner-input contract includes:
+
+| Input | Unit | Range | Mandatory | Evidence required |
+| --- | --- | --- | --- | --- |
+| `MANUAL_REVIEW_MINUTES_PER_CASE` | minutes/case | >0 | Yes | time study |
+| `MANUAL_FOLLOWUP_MINUTES_PER_CASE` | minutes/case | >0 | Yes | time study |
+| `LABOR_COST_PER_HOUR` | currency/hour | >0 | Yes | Finance-approved rate |
+| `ESCALATION_HANDLING_MINUTES` | minutes/case | >0 | Yes | time study |
+| `OPTIONAL_SLA_COST_PARAMETER` | currency/SLA unit | >0 | No | Finance-approved loss model |
+
+Each value defaults to `null`; calculations are impossible until the owner
+supplies evidence-backed values.
+
 ## Reporting semantics and scopes
 
 The Telegram incident-status heartbeat is explicitly MB3-only: it loads all
@@ -72,6 +124,13 @@ is a UI outcome label for a non-resolved follow-up; `Sự cố đã hoàn thành
 resolved/closed status-update category. Therefore 103 vs 24 is a scope mismatch:
 the status heartbeat's tracked MB3 candidate set is not a global engine total,
 and it must not be compared directly to a dashboard-filtered active count.
+
+The changed counter is **not decision-safe**: 10→8 and 10→12 both count as
+changed, while 10→10 is unchanged; a missing prior row and a newly-created
+case are also folded into changed, and reopening is not a separate label.
+Replace it with `NEW_ACTIONABLE`, `BACKLOG_INCREASED`, `BACKLOG_DECREASED`,
+`UNCHANGED`, `RESOLVED`, and `REOPENED`, each labelled as snapshot or
+checkpoint delta and with an explicit scope.
 
 ## Proposed Control Center V2 queries
 
