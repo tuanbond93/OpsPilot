@@ -1,0 +1,34 @@
+import { describe, expect, it } from "vitest";
+import { ADAPTIVE_OBSERVATION_SCHEMA_VERSION, DEFAULT_SHADOW_FEATURE_FLAGS, type AdaptiveObservationSnapshot, type AdaptiveShadowDecisionRecord, type ShadowOutcomeObservation } from "@/domain/adaptive-observation/contracts";
+import { ADAPTIVE_OBSERVATION_SOURCE_REGISTRY } from "@/domain/adaptive-observation/registry";
+import { executeV1FailOpen, shadowExecutionMode } from "@/domain/adaptive-observation/runtime";
+import { AdaptiveObservationWriter } from "@/domain/adaptive-observation/writer";
+
+const observedAt = "2026-09-11T12:00:00.000Z";
+const baseSnapshot = (): AdaptiveObservationSnapshot => ({ snapshotId: "s1", caseId: "case-1", incidentId: "incident-1", observedAt, trigger: "12:00", schemaVersion: ADAPTIVE_OBSERVATION_SCHEMA_VERSION, scope: { region: null, province: null, warehouse: "MB3", issueType: null }, backlog: { currentAffectedOrders: null, previousAffectedOrders: null, trend: "UNKNOWN", backlogAgeMinutes: null, meaningfulProgress: null }, progress: { routeAssigned: null, driverAssigned: null, deliveryStarted: null, latestOperationalEventAt: null, progressState: "UNKNOWN" }, sla: { state: "UNKNOWN", requiredBy: null, source: null, evidenceLevel: null, confidence: "UNKNOWN" }, eta: { eta: null, source: null, evidenceLevel: "UNKNOWN", confidence: "UNKNOWN", expired: null }, exception: { state: "UNKNOWN", type: null, source: null, createdAt: null, expiresAt: null, confidence: "UNKNOWN" }, commitment: { state: "UNKNOWN", actor: null, committedAt: null, committedCompletionAt: null, source: null, confidence: "UNKNOWN" }, interventions: { lastConfirmedInterventionType: null, lastConfirmedInterventionAt: null, interventionsToday: null, lastRecipient: null, operatorRespondedAfterLastIntervention: null }, evidenceQuality: { completeness: "UNKNOWN", missingFields: ["SLA"], ambiguousFields: [], staleFields: [] } });
+const decision = (): AdaptiveShadowDecisionRecord => ({ shadowDecisionId: "d1", snapshotId: "s1", caseId: "case-1", observedAt, engineVersion: "v2", policyVersion: "v0", v1Decision: "NONE", v2Decision: "REQUEST_INFORMATION", risk: "LOW", confidence: "LOW", reasonCode: "EVIDENCE_INCOMPLETE", humanReason: "Unknown evidence", target: "TEAM_LEAD", nextCheckAt: null, evidenceCompleteness: "UNKNOWN", comparisonClass: "INSUFFICIENT_EVIDENCE" });
+const outcome = (): ShadowOutcomeObservation => ({ shadowDecisionId: "d1", observedAt, outcomeType: "UNKNOWN", evidence: [], confidence: "UNKNOWN" });
+const fakeClient = (calls: any[] = []) => ({ from: (table: string) => ({ insert: (row: any) => ({ select: () => ({ single: async () => { calls.push({ table, row }); return { data: { id: `${table}-id` }, error: null }; } }) }) }) });
+
+describe("adaptive observation append-only store and fail-open composition", () => {
+  it("1 appends snapshot", async () => expect(await new AdaptiveObservationWriter(fakeClient() as any).appendSnapshot(baseSnapshot())).toBe("adaptive_observation_snapshots-id"));
+  it("2 appends decision", async () => expect(await new AdaptiveObservationWriter(fakeClient() as any).appendShadowDecision(decision(), "persisted-s1")).toBe("adaptive_shadow_decisions-id"));
+  it("3 appends outcome", async () => expect(await new AdaptiveObservationWriter(fakeClient() as any).appendOutcomeObservation(outcome(), "persisted-d1")).toBe("shadow_outcome_observations-id"));
+  it("4 creates deterministic duplicate idempotency key", async () => { const calls: any[] = []; await new AdaptiveObservationWriter(fakeClient(calls) as any).appendSnapshot(baseSnapshot()); expect(calls[0].row.idempotency_key).toBe("snapshot:s1"); });
+  it("5 links decision to persisted snapshot", async () => { const calls: any[] = []; await new AdaptiveObservationWriter(fakeClient(calls) as any).appendShadowDecision(decision(), "db-s1"); expect(calls[0].row.snapshot_id).toBe("db-s1"); });
+  it("6 rejects decision without snapshot", async () => await expect(new AdaptiveObservationWriter(fakeClient() as any).appendShadowDecision(decision(), "")).rejects.toThrow("persistedSnapshotId"));
+  it("7 keeps V1 successful if snapshot write fails", async () => expect(await executeV1FailOpen(async () => "v1", "SNAPSHOT_ONLY", async () => { throw new Error("write"); }, () => {})).toBe("v1"));
+  it("8 keeps V1 successful if V2 throws", async () => expect(await executeV1FailOpen(async () => "v1", "FULL_SHADOW", async () => { throw new Error("v2"); }, () => {})).toBe("v1"));
+  it("9 keeps V1 successful if decision write fails", async () => expect(await executeV1FailOpen(async () => "v1", "FULL_SHADOW", async () => { throw new Error("decision"); }, () => {})).toBe("v1"));
+  it("10 disables all shadow work with both flags false", () => expect(shadowExecutionMode(DEFAULT_SHADOW_FEATURE_FLAGS)).toBe("DISABLED"));
+  it("11 supports snapshot-only mode", () => expect(shadowExecutionMode({ ADAPTIVE_V2_SHADOW_ENABLED: false, SHADOW_SNAPSHOT_WRITE_ENABLED: true })).toBe("SNAPSHOT_ONLY"));
+  it("12 supports full shadow only with persisted snapshot", () => expect(shadowExecutionMode({ ADAPTIVE_V2_SHADOW_ENABLED: true, SHADOW_SNAPSHOT_WRITE_ENABLED: true })).toBe("FULL_SHADOW"));
+  it("13 disables V2 when snapshot persistence is disabled", () => expect(shadowExecutionMode({ ADAPTIVE_V2_SHADOW_ENABLED: true, SHADOW_SNAPSHOT_WRITE_ENABLED: false })).toBe("DISABLED"));
+  it("14 exposes no notification operation", () => expect(Object.getOwnPropertyNames(AdaptiveObservationWriter.prototype)).not.toContain("enqueueNotification"));
+  it("15 exposes no incident mutation", () => expect(Object.getOwnPropertyNames(AdaptiveObservationWriter.prototype)).not.toContain("mutateIncident"));
+  it("16 exposes no follow-up transition", () => expect(Object.getOwnPropertyNames(AdaptiveObservationWriter.prototype)).not.toContain("transitionCase"));
+  it("17 preserves UNKNOWN source registry gaps", () => expect(ADAPTIVE_OBSERVATION_SOURCE_REGISTRY.find(item => item.signal === "SLA")?.availableNow).toBe(false));
+  it("18 persists schema version", async () => { const calls: any[] = []; await new AdaptiveObservationWriter(fakeClient(calls) as any).appendSnapshot(baseSnapshot()); expect(calls[0].row.schema_version).toBe("v0"); });
+  it("19 persists engine version", async () => { const calls: any[] = []; await new AdaptiveObservationWriter(fakeClient(calls) as any).appendShadowDecision(decision(), "db-s1"); expect(calls[0].row.engine_version).toBe("v2"); });
+  it("20 uses deterministic population idempotency", async () => { const calls: any[] = []; await new AdaptiveObservationWriter(fakeClient(calls) as any).appendCheckpointPopulation({ checkpointId: "cp", checkpointAt: observedAt, caseId: "case-1", engineMember: true, telegramStatusMember: false, dashboardMember: true, region: null, province: null, warehouse: "MB3", incidentState: null, affectedOrderCount: null, schemaVersion: "v0" }); expect(calls[0].row.idempotency_key).toBe("population:cp:case-1"); });
+});
