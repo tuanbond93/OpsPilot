@@ -58,3 +58,5 @@ export function qualityCounters(snapshots: AdaptiveObservationSnapshot[]): Obser
   const count = (predicate: (snapshot: AdaptiveObservationSnapshot) => boolean) => snapshots.filter(predicate).length;
   return { SNAPSHOT_ATTEMPTS: snapshots.length, SNAPSHOT_SUCCEEDED: snapshots.length, SNAPSHOT_FAILED: 0, POPULATION_SNAPSHOT_SUCCEEDED: snapshots.length, POPULATION_SNAPSHOT_FAILED: 0, BACKLOG_KNOWN: count(s => s.backlog.currentAffectedOrders !== null), EXCEPTION_KNOWN: count(s => s.exception.state !== "UNKNOWN"), INTERVENTION_HISTORY_KNOWN: count(s => s.interventions.interventionsToday !== null), OPERATOR_RESPONSE_KNOWN: count(s => s.operatorResponse.respondedAt !== null), SLA_KNOWN: 0, ETA_KNOWN: 0, PROGRESS_KNOWN: 0, DRIVER_KNOWN: 0, COMMITMENT_KNOWN: 0 };
 }
+/** Local-only fixture/read-snapshot helper. It neither writes nor dispatches. */
+export function dryRunRelease1(cases: Release1CaseEvidence[]): AdaptiveObservationSnapshot[] { const assembler = new AdaptiveObservationAssembler(); return cases.map(item => assembler.assemble(item)); }

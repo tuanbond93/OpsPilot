@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { AdaptiveObservationAssembler, qualityCounters, type Release1CaseEvidence } from "@/domain/adaptive-observation/assembler";
+import { AdaptiveObservationAssembler, dryRunRelease1, qualityCounters, type Release1CaseEvidence } from "@/domain/adaptive-observation/assembler";
 import { captureRelease1Observation, OBSERVATION_CAPTURE_TIMEOUT_MS } from "@/domain/adaptive-observation/capture-runtime";
 
 const at = "2026-09-11T04:00:00.000Z";
@@ -33,4 +33,8 @@ describe("AdaptiveObservationAssembler Release 1", () => {
   it("25 has no follow-up transition dependency", () => expect(captureRelease1Observation.toString()).not.toMatch(/transitionCase|evaluateNextState/));
   it("26 emits data-quality counters", () => expect(qualityCounters([new AdaptiveObservationAssembler().assemble(evidence())]).BACKLOG_KNOWN).toBe(1));
   it("27 declares a short capture budget", () => expect(OBSERVATION_CAPTURE_TIMEOUT_MS).toBe(500));
+  it("dry-runs six real-shaped release-one cases without operational effects", () => {
+    const snapshots = dryRunRelease1([evidence(), evidence({ caseId: "exception", exceptions: [{ reason: "CUSTOMER_APPOINTMENT", source: "order_exceptions", createdAt: at, expiresAt: "2026-09-11T06:00:00Z" }] }), evidence({ caseId: "responded", response: { respondedAt: at, responseCode: "DELIVERY_ASSIGNED", structuredReason: "DELIVERY_ASSIGNED", actor: "member", updateId: "u" } }), evidence({ caseId: "pushed", interventions: [{ type: "FIRST_PUSH", confirmedAt: at, recipient: "lead" }] }), evidence({ caseId: "resolved", currentState: "RESOLVED", resolvedAt: at }), evidence({ caseId: "missing", history: null, exceptions: null, interventions: null })]);
+    expect(snapshots).toHaveLength(6); expect(snapshots.every(item => item.sla.state === "UNKNOWN" && item.eta.evidenceLevel === "UNKNOWN" && item.progress.routeAssigned === null && item.commitment.state === "UNKNOWN")).toBe(true);
+  });
 });
