@@ -10,6 +10,10 @@ Release telemetry is derived from snapshots: `SNAPSHOTS_CREATED`, `SNAPSHOT_WRIT
 
 Feature matrix: both flags false = disabled; snapshot-write true/V2 false = snapshot-only; both true = full shadow; snapshot-write false/V2 true = disabled. A shadow decision is not persisted without a previously persisted snapshot. The fail-open composer returns V1 immediately and schedules bounded shadow work independently; it is not wired into V1 or cron in this change.
 
+Release 1 adds a server-only assembler contract for the minimum current evidence set: dated backlog history, incident state/resolution, exceptions, confirmed interventions, structured Telegram response evidence, and independently nullable population membership. The Release 1 snapshot is defined as `POST_ACTION`: captured after V1's existing operational result is preserved, without changing that result. It records no V2 decision. SLA, ETA, route, driver, and commitment deliberately remain `UNKNOWN`/`null`.
+
+`captureRelease1Observation` is a bounded server-side capture library with a 500 ms recommended budget and per-case failure counters. It is intentionally not wired into the current V1 checkpoint/cron route in this build; a separately reviewed server integration must call it after V1 completion. No notification, incident mutation, follow-up transition, or V2 import exists in this path.
+
 `AdaptiveObservationSnapshot`, `CheckpointCaseSnapshot`, `AdaptiveShadowDecisionRecord`, and `ShadowOutcomeObservation` are append-only schemas. Unknown source values remain `null`/`UNKNOWN`; `appendObservation` rejects replacement of an existing snapshot ID in local fixtures. A future durable store must enforce the same unique-ID and insert-only constraints.
 
 The source registry is in `registry.ts`. It distinguishes signals currently exposed by retained evidence from type-only aspirations: backlog, exception, confirmed intervention, and resolution are available; exact SLA, structured ETA, route, driver, commitment, and normalized operator response are not.

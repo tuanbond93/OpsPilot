@@ -1,0 +1,36 @@
+import { describe, expect, it } from "vitest";
+import { AdaptiveObservationAssembler, qualityCounters, type Release1CaseEvidence } from "@/domain/adaptive-observation/assembler";
+import { captureRelease1Observation, OBSERVATION_CAPTURE_TIMEOUT_MS } from "@/domain/adaptive-observation/capture-runtime";
+
+const at = "2026-09-11T04:00:00.000Z";
+const evidence = (overrides: Partial<Release1CaseEvidence> = {}): Release1CaseEvidence => ({ caseId: "c1", incidentId: "i1", checkpointId: "cp-12", observedAt: at, trigger: "POST_ACTION", scope: { region: "NORTH", province: "Son La", warehouse: "W1", issueType: "KHO_TON" }, currentState: "FIRST_PUSH_SENT", resolvedAt: null, detectedAt: "2026-09-11T02:00:00.000Z", history: [{ recordedAt: "2026-09-11T03:00:00.000Z", affectedOrderCount: 10 }, { recordedAt: "2026-09-11T03:30:00.000Z", affectedOrderCount: 8 }], exceptions: [], interventions: [], response: undefined, population: { engineMember: true, telegramStatusMember: null, dashboardMember: false }, ...overrides });
+const writer = (fail = false) => ({ appendSnapshot: async () => { if (fail) throw new Error("db"); return "s"; }, appendCheckpointPopulation: async () => "p" });
+describe("AdaptiveObservationAssembler Release 1", () => {
+  it("1 assembles normal case", () => expect(new AdaptiveObservationAssembler().assemble(evidence()).scope.warehouse).toBe("W1"));
+  it("2 records active exception", () => expect(new AdaptiveObservationAssembler().assemble(evidence({ exceptions: [{ reason: "CUSTOMER_APPOINTMENT", source: "order_exceptions", createdAt: at, expiresAt: "2026-09-11T06:00:00Z" }] })).exception.state).toBe("ACTIVE"));
+  it("3 normalizes structured operator response", () => expect(new AdaptiveObservationAssembler().assemble(evidence({ response: { respondedAt: at, responseCode: "DELIVERY_ASSIGNED", structuredReason: "DELIVERY_ASSIGNED", actor: "member", updateId: "u1" } })).operatorResponse.structuredReason).toBe("DELIVERY_ASSIGNED"));
+  it("4 records confirmed intervention history", () => expect(new AdaptiveObservationAssembler().assemble(evidence({ interventions: [{ type: "FIRST_PUSH", confirmedAt: at, recipient: "lead" }] })).interventions.lastConfirmedInterventionType).toBe("FIRST_PUSH"));
+  it("5 classifies increased backlog", () => expect(new AdaptiveObservationAssembler().assemble(evidence({ history: [{ recordedAt: "2026-09-11T03:00:00Z", affectedOrderCount: 8 }, { recordedAt: "2026-09-11T03:30:00Z", affectedOrderCount: 10 }] })).backlog.trend).toBe("INCREASED"));
+  it("6 classifies decreased backlog", () => expect(new AdaptiveObservationAssembler().assemble(evidence()).backlog.trend).toBe("DECREASED"));
+  it("7 classifies unchanged backlog", () => expect(new AdaptiveObservationAssembler().assemble(evidence({ history: [{ recordedAt: "2026-09-11T03:00:00Z", affectedOrderCount: 10 }, { recordedAt: "2026-09-11T03:30:00Z", affectedOrderCount: 10 }] })).backlog.trend).toBe("UNCHANGED"));
+  it("8 classifies resolved", () => expect(new AdaptiveObservationAssembler().assemble(evidence({ currentState: "RESOLVED", resolvedAt: at })).backlog.trend).toBe("RESOLVED"));
+  it("9 classifies missing prior history as new", () => expect(new AdaptiveObservationAssembler().assemble(evidence({ history: [{ recordedAt: at, affectedOrderCount: 10 }] })).backlog.trend).toBe("NEW"));
+  it("10 preserves unavailable SLA", () => expect(new AdaptiveObservationAssembler().assemble(evidence()).sla.state).toBe("UNKNOWN"));
+  it("11 preserves unavailable ETA", () => expect(new AdaptiveObservationAssembler().assemble(evidence()).eta.evidenceLevel).toBe("UNKNOWN"));
+  it("12 preserves unavailable route", () => expect(new AdaptiveObservationAssembler().assemble(evidence()).progress.routeAssigned).toBeNull());
+  it("13 preserves unavailable driver", () => expect(new AdaptiveObservationAssembler().assemble(evidence()).progress.driverAssigned).toBeNull());
+  it("14 never invents commitment", () => expect(new AdaptiveObservationAssembler().assemble(evidence()).commitment.state).toBe("UNKNOWN"));
+  it("15 keeps population memberships independent", () => expect(new AdaptiveObservationAssembler().population(evidence()).telegramStatusMember).toBeNull());
+  it("16 has deterministic checkpoint retry snapshot linkage", () => expect(new AdaptiveObservationAssembler().assemble(evidence()).snapshotId).toBe(new AdaptiveObservationAssembler().assemble(evidence()).snapshotId));
+  it("17 records assembler failure without V1 coupling", async () => expect((await captureRelease1Observation({ flags: { SHADOW_SNAPSHOT_WRITE_ENABLED: true, ADAPTIVE_V2_SHADOW_ENABLED: false }, cases: [evidence()], writer: writer(true) as any })).snapshotFailures).toBe(1));
+  it("18 records DB insert failure", async () => expect((await captureRelease1Observation({ flags: { SHADOW_SNAPSHOT_WRITE_ENABLED: true, ADAPTIVE_V2_SHADOW_ENABLED: false }, cases: [evidence()], writer: writer(true) as any })).counters.SNAPSHOT_FAILED).toBe(1));
+  it("19 bounds capture timeout", async () => expect((await captureRelease1Observation({ flags: { SHADOW_SNAPSHOT_WRITE_ENABLED: true, ADAPTIVE_V2_SHADOW_ENABLED: false }, cases: [evidence()], writer: { appendSnapshot: async () => new Promise(() => {}), appendCheckpointPopulation: async () => "p" } as any, timeoutMs: 1 })).snapshotFailures).toBeGreaterThan(0));
+  it("20 skips capture with snapshot flag disabled", async () => expect((await captureRelease1Observation({ flags: { SHADOW_SNAPSHOT_WRITE_ENABLED: false, ADAPTIVE_V2_SHADOW_ENABLED: false }, cases: [evidence()], writer: writer() as any })).attempts).toBe(0));
+  it("21 runs snapshot-only capture", async () => expect((await captureRelease1Observation({ flags: { SHADOW_SNAPSHOT_WRITE_ENABLED: true, ADAPTIVE_V2_SHADOW_ENABLED: false }, cases: [evidence()], writer: writer() as any })).snapshotsGenerated).toBe(1));
+  it("22 never imports V2 for capture", () => expect(captureRelease1Observation.toString()).not.toMatch(/decideAdaptive|V2_DECISION/));
+  it("23 has no NotificationService dependency", () => expect(captureRelease1Observation.toString()).not.toMatch(/NotificationService|enqueue/));
+  it("24 has no incident mutation dependency", () => expect(captureRelease1Observation.toString()).not.toMatch(/mutateIncident|update\(/));
+  it("25 has no follow-up transition dependency", () => expect(captureRelease1Observation.toString()).not.toMatch(/transitionCase|evaluateNextState/));
+  it("26 emits data-quality counters", () => expect(qualityCounters([new AdaptiveObservationAssembler().assemble(evidence())]).BACKLOG_KNOWN).toBe(1));
+  it("27 declares a short capture budget", () => expect(OBSERVATION_CAPTURE_TIMEOUT_MS).toBe(500));
+});

@@ -20,7 +20,7 @@ CREATE TABLE IF NOT EXISTS checkpoint_case_snapshots (
   checkpoint_id TEXT NOT NULL,
   checkpoint_at TIMESTAMPTZ NOT NULL,
   case_id UUID NOT NULL REFERENCES followup_cases(id) ON DELETE RESTRICT,
-  engine_member BOOLEAN NOT NULL, telegram_status_member BOOLEAN NOT NULL, dashboard_member BOOLEAN NOT NULL,
+  engine_member BOOLEAN NULL, telegram_status_member BOOLEAN NULL, dashboard_member BOOLEAN NULL,
   region TEXT NULL, province TEXT NULL, warehouse TEXT NULL, incident_state TEXT NULL, affected_order_count INTEGER NULL,
   schema_version TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );

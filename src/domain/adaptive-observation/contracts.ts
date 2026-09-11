@@ -11,18 +11,20 @@ export type CannotCompleteReason = "CUSTOMER_APPOINTMENT" | "MISSING_PACKAGE" | 
 export interface AdaptiveObservationSnapshot {
   snapshotId: string; caseId: string; incidentId: string; observedAt: string; trigger: string; schemaVersion: typeof ADAPTIVE_OBSERVATION_SCHEMA_VERSION;
   scope: { region: string | null; province: string | null; warehouse: string | null; issueType: string | null };
-  backlog: { currentAffectedOrders: number | null; previousAffectedOrders: number | null; trend: "INCREASING" | "DECREASING" | "STABLE" | "UNKNOWN"; backlogAgeMinutes: number | null; meaningfulProgress: boolean | null };
+  incident: { currentState: string | null; resolutionState: "ACTIVE" | "RESOLVED" | "UNKNOWN"; resolvedAt: string | null };
+  backlog: { currentAffectedOrders: number | null; previousAffectedOrders: number | null; trend: "NEW" | "INCREASED" | "DECREASED" | "UNCHANGED" | "RESOLVED" | "REOPENED" | "UNKNOWN"; backlogAgeMinutes: number | null; meaningfulProgress: boolean | null };
   progress: { routeAssigned: boolean | null; driverAssigned: boolean | null; deliveryStarted: boolean | null; latestOperationalEventAt: string | null; progressState: ProgressState };
   sla: { state: SlaState; requiredBy: string | null; source: string | null; evidenceLevel: string | null; confidence: EvidenceConfidence };
   eta: { eta: string | null; source: string | null; evidenceLevel: EtaLevel; confidence: EvidenceConfidence; expired: boolean | null };
   exception: { state: "ACTIVE" | "EXPIRED" | "NONE" | "UNKNOWN"; type: string | null; source: string | null; createdAt: string | null; expiresAt: string | null; confidence: EvidenceConfidence };
   commitment: { state: CommitmentState; actor: string | null; committedAt: string | null; committedCompletionAt: string | null; source: string | null; confidence: EvidenceConfidence };
   interventions: { lastConfirmedInterventionType: string | null; lastConfirmedInterventionAt: string | null; interventionsToday: number | null; lastRecipient: string | null; operatorRespondedAfterLastIntervention: boolean | null };
+  operatorResponse: { respondedAt: string | null; responseCode: string | null; structuredReason: string | null; actor: string | null; updateId: string | null; confidence: EvidenceConfidence };
   evidenceQuality: { completeness: EvidenceConfidence; missingFields: string[]; ambiguousFields: string[]; staleFields: string[] };
 }
 
 export interface CheckpointCaseSnapshot {
-  checkpointId: string; checkpointAt: string; caseId: string; engineMember: boolean; telegramStatusMember: boolean; dashboardMember: boolean;
+  checkpointId: string; checkpointAt: string; caseId: string; engineMember: boolean | null; telegramStatusMember: boolean | null; dashboardMember: boolean | null;
   region: string | null; province: string | null; warehouse: string | null; incidentState: string | null; affectedOrderCount: number | null; schemaVersion: typeof ADAPTIVE_OBSERVATION_SCHEMA_VERSION;
 }
 
