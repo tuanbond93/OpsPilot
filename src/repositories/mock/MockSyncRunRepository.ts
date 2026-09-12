@@ -14,7 +14,7 @@ export class MockSyncRunRepository implements ISyncRunRepository {
 
   async createSyncRun(startedAt: string = new Date().toISOString(), options: { id?: string; checkpointAt?: string } = {}): Promise<SyncRunRow> {
     const fullRow: SyncRunRow = {
-      id: options.id || `sync-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+      id: options.id || crypto.randomUUID(),
       started_at: startedAt,
       completed_at: null,
       status: "running",

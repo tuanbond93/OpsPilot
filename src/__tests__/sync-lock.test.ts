@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 import { SyncService } from "@/services/impl/SyncService";
 import { MockSyncLockRepository } from "@/repositories/mock/MockSyncLockRepository";
 import { MockSyncRunRepository } from "@/repositories/mock/MockSyncRunRepository";
+import { MockIncidentRepository } from "@/repositories/mock/MockIncidentRepository";
 import { POST as syncRouteHandler } from "@/app/api/debug/sync/route";
 import { NextRequest } from "next/server";
 import { RepositoryFactory } from "@/repositories/RepositoryFactory";
@@ -20,8 +21,8 @@ describe("Sprint 10.5 — Distributed Sync Lock Tests", { timeout: 600000 }, () 
   });
 
   it("1. First caller acquires lock, second concurrent caller is rejected", async () => {
-    const service1 = new SyncService(syncRunRepo, null, null, null, null, null, null, null, syncLockRepo);
-    const service2 = new SyncService(syncRunRepo, null, null, null, null, null, null, null, syncLockRepo);
+    const service1 = new SyncService(syncRunRepo, null, new MockIncidentRepository(), null, null, null, null, null, syncLockRepo);
+    const service2 = new SyncService(syncRunRepo, null, new MockIncidentRepository(), null, null, null, null, null, syncLockRepo);
 
     const [res1, res2] = await Promise.all([service1.runSync(), service2.runSync()]);
 
@@ -33,8 +34,8 @@ describe("Sprint 10.5 — Distributed Sync Lock Tests", { timeout: 600000 }, () 
   });
 
   it("2. No sync_runs record is created for rejected caller", async () => {
-    const service1 = new SyncService(syncRunRepo, null, null, null, null, null, null, null, syncLockRepo);
-    const service2 = new SyncService(syncRunRepo, null, null, null, null, null, null, null, syncLockRepo);
+    const service1 = new SyncService(syncRunRepo, null, new MockIncidentRepository(), null, null, null, null, null, syncLockRepo);
+    const service2 = new SyncService(syncRunRepo, null, new MockIncidentRepository(), null, null, null, null, null, syncLockRepo);
 
     await Promise.all([service1.runSync(), service2.runSync()]);
 
@@ -44,7 +45,7 @@ describe("Sprint 10.5 — Distributed Sync Lock Tests", { timeout: 600000 }, () 
   });
 
   it("3. Lock release allows next sequential caller", async () => {
-    const service = new SyncService(syncRunRepo, null, null, null, null, null, null, null, syncLockRepo);
+    const service = new SyncService(syncRunRepo, null, new MockIncidentRepository(), null, null, null, null, null, syncLockRepo);
 
     const res1 = await service.runSync();
     expect(res1.ok).toBe(true);

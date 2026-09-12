@@ -5,6 +5,24 @@ import { inspectOrderForIncident } from "./builder";
 import { calculateIncidentPriorityScore } from "../rules/priority";
 
 /**
+ * Stable in-memory identity for pure aggregation consumers. It is never a
+ * database identity: SyncService replaces it with incidents.id before any
+ * operational persistence. Keeping it UUID-shaped preserves replay grouping
+ * for non-persisting evaluators without misusing incidentKey as a UUID.
+ */
+function ephemeralIncidentUuid(incidentKey: string): string {
+  let left = 0x811c9dc5;
+  let right = 0x01000193;
+  for (let index = 0; index < incidentKey.length; index++) {
+    const code = incidentKey.charCodeAt(index);
+    left = Math.imul(left ^ code, 0x01000193) >>> 0;
+    right = Math.imul(right ^ (code + index), 0x27d4eb2d) >>> 0;
+  }
+  const hex = `${left.toString(16).padStart(8, "0")}${right.toString(16).padStart(8, "0")}`.repeat(2);
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-8${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
+}
+
+/**
  * Aggregates normalized orders into consolidated operational incidents with metrics
  */
 export function aggregateIncidents(
@@ -129,7 +147,7 @@ export function aggregateIncidents(
     );
 
     incidents.push({
-      incidentId: incidentKey, // Stable UUID / Key fallback
+      incidentId: ephemeralIncidentUuid(incidentKey),
       incidentKey,
       warehouseId: group.warehouseId,
       warehouseName: group.warehouseName,

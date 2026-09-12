@@ -31,6 +31,16 @@ const warehouseZoneByName = new Map((warehouseAssignments.warehouses as Warehous
 // Matches the current warehouse-assignment catalogue. Deployment may override this
 // with a comma-separated set through TRIAGE_PILOT_ZONES.
 const TRIAGE_PILOT_ZONES = (process.env.TRIAGE_PILOT_ZONES || "Miền Bắc 3").split(",").map((value) => value.trim()).filter(Boolean);
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+function isPersistedUuid(value: unknown): value is string {
+  return typeof value === "string" && UUID_PATTERN.test(value);
+}
+
+function safeErrorMessage(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.replace(/https?:\/\/[^\s]+/g, "[URL REDACTED]").slice(0, 500);
+}
 export const ORDERED_SYNC_PHASES: SyncPhase[] = [
   "CREATED",
   "FETCHING_SNAPSHOT",
@@ -117,14 +127,41 @@ export class SyncService implements ISyncService {
     let heartbeatTimer: NodeJS.Timeout | null = null;
     let syncLockTelemetry: TransientRetryTelemetry | null = null;
 
+    const identityUnavailable = (error: unknown): SyncSummary => ({
+      ok: false,
+      syncRunId: "",
+      startedAt,
+      completedAt: new Date().toISOString(),
+      durationMs: Date.now() - startTime,
+      fetchedOrderCount: 0,
+      normalizedOrderCount: 0,
+      incidentCount: 0,
+      phaseTimings: {},
+      dbInstrumentation: { totalQueries: 0, phases: {}, bottlenecksDetected: [] },
+      error: { code: "CHECKPOINT_IDENTITY_UNAVAILABLE", message: safeErrorMessage(error) },
+      syncLockAttempts: syncLockTelemetry?.attempts || 0,
+      syncLockRetryCount: syncLockTelemetry?.retryCount || 0,
+      syncLockFinalStatus: syncLockTelemetry?.finalStatus || "NOT_ATTEMPTED",
+    });
+
     if (_options?.checkpointAt && this.syncRunRepo) {
-      const existing = await this.syncRunRepo.getSyncRunForCheckpoint(_options.checkpointAt);
+      let existing: SyncRunRow | null;
+      try {
+        existing = (await retryTransientInfrastructure(() => this.syncRunRepo!.getSyncRunForCheckpoint(_options.checkpointAt!))).value;
+      } catch (error) {
+        logRuntimeError("SyncService.getSyncRunForCheckpoint", error);
+        return identityUnavailable(error);
+      }
       if (existing) {
         if (existing.status === "success" || existing.current_phase === "COMPLETED") {
           return { ok: true, skipped: true, skipReason: "CHECKPOINT_ALREADY_COMPLETED", syncRunId: existing.id, startedAt, completedAt: startedAt, durationMs: 0, fetchedOrderCount: existing.fetched_order_count, normalizedOrderCount: existing.normalized_order_count, incidentCount: existing.incident_count, phaseTimings: {}, dbInstrumentation: { totalQueries: 0, phases: {}, bottlenecksDetected: [] }, syncLockAttempts: 0, syncLockRetryCount: 0, syncLockFinalStatus: "NOT_ATTEMPTED" };
         }
         return { ok: false, syncRunId: existing.id, startedAt, completedAt: startedAt, durationMs: 0, fetchedOrderCount: 0, normalizedOrderCount: 0, incidentCount: 0, phaseTimings: {}, dbInstrumentation: { totalQueries: 0, phases: {}, bottlenecksDetected: [] }, error: { code: "CHECKPOINT_ALREADY_STARTED", message: "This checkpoint already has an operational sync run." }, syncLockAttempts: 0, syncLockRetryCount: 0, syncLockFinalStatus: "NOT_ATTEMPTED" };
       }
+    }
+
+    if (!this.syncRunRepo) {
+      return identityUnavailable(new Error("Persistent sync-run repository is unavailable."));
     }
 
     if (this.syncLockRepo) {
@@ -316,13 +353,15 @@ export class SyncService implements ISyncService {
       const keyToIdMap = new Map<string, string>();
 
       // 1. Resume Check & State Rehydration
-      let syncRunId = `local-sync-${Date.now()}`;
+      let syncRunId = "";
       let completedPhases: SyncPhase[] = [];
 
-      if (this.syncRunRepo) {
-        try {
-          const unfinishedRun: SyncRunRow | null = await this.syncRunRepo.getUnfinishedSyncRun();
-          if (unfinishedRun && unfinishedRun.id && !unfinishedRun.id.startsWith("local-sync")) {
+      try {
+          const unfinishedRun: SyncRunRow | null = (await retryTransientInfrastructure(() => this.syncRunRepo!.getUnfinishedSyncRun())).value;
+          if (unfinishedRun) {
+            if (!isPersistedUuid(unfinishedRun.id)) {
+              throw new Error("Persistent sync run returned a non-UUID identity.");
+            }
             syncRunId = unfinishedRun.id;
             completedPhases = Array.isArray(unfinishedRun.completed_phases) ? [...unfinishedRun.completed_phases] : ["CREATED"];
 
@@ -394,6 +433,9 @@ export class SyncService implements ISyncService {
             const newRun = (await retryTransientInfrastructure(
               () => this.syncRunRepo!.createSyncRun(startedAt, { id: newRunId, checkpointAt: _options?.checkpointAt })
             )).value;
+            if (!isPersistedUuid(newRun.id)) {
+              throw new Error("Persistent sync run creation returned a non-UUID identity.");
+            }
             syncRunId = newRun.id;
             completedPhases = ["CREATED"];
             logger.info({
@@ -403,22 +445,16 @@ export class SyncService implements ISyncService {
               message: `[SyncPhase] phase=CREATED status=completed durationMs=0`
             });
           }
-        } catch {
-          completedPhases = ["CREATED"];
-        }
-      } else {
-        completedPhases = ["CREATED"];
+      } catch (error) {
+        logRuntimeError("SyncService.acquireCheckpointIdentity", error);
+        return identityUnavailable(error);
       }
 
       const checkpointPhase = async (phase: SyncPhase) => {
         if (!completedPhases.includes(phase)) {
           completedPhases.push(phase);
-          if (this.syncRunRepo && !syncRunId.startsWith("local-sync")) {
-            try {
-              await this.syncRunRepo.updatePhase(syncRunId, phase, completedPhases);
-            } catch {
-              // Non-fatal
-            }
+          if (this.syncRunRepo) {
+            await retryTransientInfrastructure(() => this.syncRunRepo!.updatePhase(syncRunId, phase, completedPhases));
           }
         }
       };
@@ -444,9 +480,7 @@ export class SyncService implements ISyncService {
           logPhaseEnd("fetchSnapshotUrlOnly", 1);
           const fetchUrlDuration = performance.now() - tUrlStart;
 
-          const previousSuccessfulRun = this.syncRunRepo && !syncRunId.startsWith("local-sync")
-            ? await this.syncRunRepo.getPreviousSuccessfulSyncRun(syncRunId)
-            : null;
+          const previousSuccessfulRun = await this.syncRunRepo!.getPreviousSuccessfulSyncRun(syncRunId);
           const previousSourceTime = previousSuccessfulRun?.source_updated_at
             ? new Date(previousSuccessfulRun.source_updated_at).getTime()
             : Number.NaN;
@@ -471,20 +505,20 @@ export class SyncService implements ISyncService {
               0,
               Math.round(fetchUrlDuration * 100) / 100
             );
-            if (this.syncRunRepo && !syncRunId.startsWith("local-sync")) {
-              await this.syncRunRepo.updateSuccess(syncRunId, {
+            if (this.syncRunRepo) {
+              await retryTransientInfrastructure(() => this.syncRunRepo!.updateSuccess(syncRunId, {
                 completedAt,
                 fetchedOrderCount,
                 normalizedOrderCount,
                 incidentCount,
                 durationMs,
                 sourceUpdatedAt,
-              });
-              await this.syncRunRepo.updatePhase(
+              }));
+              await retryTransientInfrastructure(() => this.syncRunRepo!.updatePhase(
                 syncRunId,
                 "COMPLETED",
                 completedPhasesForNoop
-              );
+              ));
             }
 
             logger.info({
@@ -598,7 +632,7 @@ export class SyncService implements ISyncService {
           let snapRowsProcessed = 0;
           let snapBatches = 0;
 
-          if (this.orderSnapshotRepo && syncRunId && !syncRunId.startsWith("local-sync") && snapshotResult.orders) {
+          if (this.orderSnapshotRepo && snapshotResult.orders) {
             try {
               const referenceTimeMs = _options?.referenceTimeMs || (sourceUpdatedAt ? new Date(sourceUpdatedAt).getTime() : startTime);
               const snapshotRows: OrderSnapshotRow[] = [];
@@ -649,7 +683,7 @@ export class SyncService implements ISyncService {
           }
           // Passive observation inspects the full normalized population and is
           // intentionally independent from incident-selected order_snapshots.
-          if (this.laneObservationRepo && syncRunId && !syncRunId.startsWith("local-sync") && snapshotResult.orders) {
+          if (this.laneObservationRepo && snapshotResult.orders) {
             try {
               await new LaneObservationService(this.laneObservationRepo).observe(
                 syncRunId,
@@ -685,15 +719,17 @@ export class SyncService implements ISyncService {
           logPhaseStart("persistIncidents");
           let incQueries = 0;
 
-          if (this.incidentRepo && syncRunId && !syncRunId.startsWith("local-sync") && incidents.length > 0) {
-            try {
-              const savedIncidentRows = await this.incidentRepo.upsertIncidents(incidents, syncRunId);
-              incQueries = 1;
-              for (const row of savedIncidentRows) {
-                keyToIdMap.set(row.incident_key, row.id);
+          if (incidents.length > 0) {
+            if (!this.incidentRepo) throw new Error("Persistent incident repository is unavailable.");
+            const savedIncidentRows = (await retryTransientInfrastructure(
+              () => this.incidentRepo!.upsertIncidents(incidents, syncRunId)
+            )).value;
+            incQueries = 1;
+            for (const row of savedIncidentRows) {
+              if (!isPersistedUuid(row.id)) {
+                throw new Error(`Persisted incident ${row.incident_key} returned a non-UUID identity.`);
               }
-            } catch {
-              // Fallback
+              keyToIdMap.set(row.incident_key, row.id);
             }
           }
           const incDuration = performance.now() - tUpsertIncStart;
@@ -705,6 +741,16 @@ export class SyncService implements ISyncService {
               status: "info",
               message: `[SyncPhase] phase=${pInc} status=completed durationMs=${Math.round(incDuration)}`
             });
+        }
+
+        // Composite incident keys are business identifiers only. UUID foreign-key
+        // writes must use the durable ID returned by the incidents upsert.
+        for (const incident of incidents) {
+          const persistedId = keyToIdMap.get(incident.incidentKey);
+          if (!isPersistedUuid(persistedId)) {
+            throw new Error(`PERSISTED_INCIDENT_IDENTITY_UNAVAILABLE:${incident.incidentKey}`);
+          }
+          incident.incidentId = persistedId;
         }
 
         // Phase 5: PERSISTING_HISTORY
@@ -721,7 +767,7 @@ export class SyncService implements ISyncService {
           logPhaseStart("persistHistory");
           let histQueries = 0;
 
-          if (this.incidentHistoryRepo && syncRunId && !syncRunId.startsWith("local-sync") && incidents.length > 0) {
+          if (this.incidentHistoryRepo && incidents.length > 0) {
             try {
               await this.incidentHistoryRepo.insertHistoryRecords(keyToIdMap, incidents, syncRunId, startedAt);
               histQueries = 1;
@@ -732,7 +778,7 @@ export class SyncService implements ISyncService {
           const histDuration = performance.now() - tHistStart;
           recordPhase("persistHistory", histDuration, incidents.length, 1, incidents.length, histQueries, "Inserted incident_history snapshot rows");
 
-          if (this.incidentRepo && syncRunId && !syncRunId.startsWith("local-sync")) {
+          if (this.incidentRepo) {
             try {
               const activeKeys = incidents.map((inc) => inc.incidentKey);
               resolvedIncidentCount = await this.incidentRepo.resolveAbsentIncidents(activeKeys, syncRunId, startedAt);
@@ -755,11 +801,8 @@ export class SyncService implements ISyncService {
         if (this.incidentHistoryRepo && incidents.length > 0) {
           try {
             for (const inc of incidents) {
-              const dbId = keyToIdMap.get(inc.incidentKey) || inc.incidentId;
-              if (dbId) {
-                inc.incidentId = dbId;
-                incidentDbIds.push(dbId);
-              }
+              const dbId = keyToIdMap.get(inc.incidentKey);
+              if (isPersistedUuid(dbId)) incidentDbIds.push(dbId);
             }
             if (incidentDbIds.length > 0) {
               historyMap = await this.incidentHistoryRepo.getHistoriesByIncidentIds(incidentDbIds);
@@ -856,7 +899,7 @@ export class SyncService implements ISyncService {
             }
           }
           for (const inc of incidents) {
-            const dbId = keyToIdMap.get(inc.incidentKey) || inc.incidentId;
+            const dbId = keyToIdMap.get(inc.incidentKey)!;
             const zoneName = warehouseZoneById.get(inc.warehouseId) || warehouseZoneByName.get(inc.warehouseName) || null;
             const followupState = followupStateByIncidentId.get(dbId) || "NEW";
             const directiveCandidates = selectApplicablePlaybookDirectives(activeDirectives, {
@@ -890,7 +933,7 @@ export class SyncService implements ISyncService {
               .map((triage) => [triage.incidentId, triage]))
             : new Map();
 
-          if (this.triageAuditRepo && syncRunId && !syncRunId.startsWith("local-sync")) {
+          if (this.triageAuditRepo) {
             await this.triageAuditRepo.recordBatch([...triageByIncidentId.entries()].map(([incidentId, triage]) => ({
               incidentId,
               syncRunId,
@@ -923,7 +966,7 @@ export class SyncService implements ISyncService {
             // available after the Promise boundary.
             const aiJobRepo = this.aiJobRepo;
             const eligibleIncidents = incidents.filter((inc) => {
-              const dbId = keyToIdMap.get(inc.incidentKey) || inc.incidentId;
+              const dbId = keyToIdMap.get(inc.incidentKey)!;
               const triage = triageByIncidentId.get(dbId);
               return Boolean(dbId && triage && shouldEnqueueAiJob(triage));
             });
@@ -937,7 +980,7 @@ export class SyncService implements ISyncService {
             for (let offset = 0; offset < eligibleIncidents.length; offset += enqueueConcurrency) {
               const batch = eligibleIncidents.slice(offset, offset + enqueueConcurrency);
               await Promise.all(batch.map(async (inc) => {
-                const dbId = keyToIdMap.get(inc.incidentKey) || inc.incidentId;
+                const dbId = keyToIdMap.get(inc.incidentKey)!;
                 const triage = triageByIncidentId.get(dbId);
                 if (dbId && triage && shouldEnqueueAiJob(triage)) {
                 const priority = inc.priorityScore >= 75 ? "urgent" : inc.priorityScore >= 50 ? "high" : "medium";
@@ -1000,19 +1043,15 @@ export class SyncService implements ISyncService {
         const completedAt = new Date().toISOString();
         const durationMs = Date.now() - startTime;
 
-        if (this.syncRunRepo && !syncRunId.startsWith("local-sync")) {
-          try {
-            await this.syncRunRepo.updateSuccess(syncRunId, {
+        if (this.syncRunRepo) {
+          await retryTransientInfrastructure(() => this.syncRunRepo!.updateSuccess(syncRunId, {
               completedAt,
               fetchedOrderCount,
               normalizedOrderCount,
               incidentCount,
               durationMs,
               sourceUpdatedAt,
-            });
-          } catch {
-            // Fallback
-          }
+          }));
         }
         await checkpointPhase("COMPLETED" as SyncPhase);
         logger.info({
@@ -1059,14 +1098,14 @@ export class SyncService implements ISyncService {
           message: `[SyncPhase] phase=${completedPhases[completedPhases.length - 1] || "FAILED"} status=failed durationMs=${durationMs}`
         });
 
-        if (this.syncRunRepo && !syncRunId.startsWith("local-sync")) {
+        if (this.syncRunRepo && isPersistedUuid(syncRunId)) {
           try {
-            await this.syncRunRepo.updateFailed(syncRunId, {
+            await retryTransientInfrastructure(() => this.syncRunRepo!.updateFailed(syncRunId, {
               completedAt,
               durationMs,
               errorCode,
               errorMessage: sanitizedMessage,
-            });
+            }));
           } catch {
             // Fallback
           }

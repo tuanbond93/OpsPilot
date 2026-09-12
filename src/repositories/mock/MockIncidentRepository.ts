@@ -22,7 +22,7 @@ export class MockIncidentRepository implements IIncidentRepository {
       const idx = this.inMemoryIncidents.findIndex((item) => item.incident_key === inc.incidentKey);
       
       const row: IncidentRow = {
-        id: idx >= 0 ? this.inMemoryIncidents[idx].id : `inc-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+        id: idx >= 0 ? this.inMemoryIncidents[idx].id : crypto.randomUUID(),
         incident_key: inc.incidentKey,
         warehouse_id: inc.warehouseId,
         warehouse_name: inc.warehouseName,

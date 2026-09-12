@@ -39,7 +39,9 @@ export class MockFollowupRepository implements IFollowupRepository {
 
   async upsertCase(caseData: FollowupCaseUpsert): Promise<FollowupCaseRow> {
     const now = new Date().toISOString();
-    const existingIndex = this.inMemoryCases.findIndex((c) => c.incident_id === caseData.incident_id);
+    // Mirrors the production upsert conflict target: incident_key is the
+    // composite business identity, while incident_id is the persisted UUID FK.
+    const existingIndex = this.inMemoryCases.findIndex((c) => c.incident_key === caseData.incident_key);
 
     const fullRow: FollowupCaseRow = {
       ...(caseData.operational_cohort !== undefined ? { operational_cohort: caseData.operational_cohort } : {}),

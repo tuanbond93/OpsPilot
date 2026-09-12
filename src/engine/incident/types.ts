@@ -63,7 +63,8 @@ export type IncidentStatus = "open" | "monitoring" | "resolved" | "ignored";
  * Updated Incident Model representing consolidated operational issues
  */
 export interface Incident {
-  incidentId: string; // Internal UUID or unique ID
+  /** Runtime UUID; SyncService replaces it with incidents.id before operational persistence. */
+  incidentId: string;
   incidentKey: string; // Stable key: warehouseId + ":" + reasonCode
   warehouseId: string;
   warehouseName: string;

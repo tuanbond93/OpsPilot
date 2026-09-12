@@ -15,7 +15,7 @@ describe("Sprint 10.4 — Idempotent Sync Recovery & Resume Tests", { timeout: 2
     await syncRunRepo.updatePhase(seedRun.id, "CREATED", ["CREATED"]);
 
     const consoleSpy = vi.spyOn(console, "log");
-    const service = new SyncService(syncRunRepo);
+    const service = new SyncService(syncRunRepo, null, new MockIncidentRepository());
     const result = await service.runSync();
 
     expect(result.ok).toBe(true);
@@ -68,7 +68,7 @@ describe("Sprint 10.4 — Idempotent Sync Recovery & Resume Tests", { timeout: 2
     const completedBefore: SyncPhase[] = ["CREATED", "FETCHING_SNAPSHOT", "PERSISTING_SNAPSHOTS", "PERSISTING_INCIDENTS", "PERSISTING_HISTORY"];
     await syncRunRepo.updatePhase(seedRun.id, "PERSISTING_HISTORY", completedBefore);
 
-    const service = new SyncService(syncRunRepo);
+    const service = new SyncService(syncRunRepo, null, new MockIncidentRepository());
     const result = await service.runSync();
 
     expect(result.ok).toBe(true);
@@ -81,7 +81,7 @@ describe("Sprint 10.4 — Idempotent Sync Recovery & Resume Tests", { timeout: 2
     const completedBefore: SyncPhase[] = ["CREATED", "FETCHING_SNAPSHOT", "PERSISTING_SNAPSHOTS", "PERSISTING_INCIDENTS", "PERSISTING_HISTORY", "PROCESSING_FOLLOWUPS"];
     await syncRunRepo.updatePhase(seedRun.id, "PROCESSING_FOLLOWUPS", completedBefore);
 
-    const service = new SyncService(syncRunRepo);
+    const service = new SyncService(syncRunRepo, null, new MockIncidentRepository());
     const result = await service.runSync();
 
     expect(result.ok).toBe(true);
@@ -93,7 +93,7 @@ describe("Sprint 10.4 — Idempotent Sync Recovery & Resume Tests", { timeout: 2
     const completedBefore: SyncPhase[] = ["CREATED", "FETCHING_SNAPSHOT", "PERSISTING_SNAPSHOTS", "PERSISTING_INCIDENTS", "PERSISTING_HISTORY", "PROCESSING_FOLLOWUPS", "ENQUEUE_NOTIFICATIONS"];
     await syncRunRepo.updatePhase(seedRun.id, "ENQUEUE_NOTIFICATIONS", completedBefore);
 
-    const service = new SyncService(syncRunRepo);
+    const service = new SyncService(syncRunRepo, null, new MockIncidentRepository());
     const result = await service.runSync();
 
     expect(result.ok).toBe(true);
@@ -105,7 +105,7 @@ describe("Sprint 10.4 — Idempotent Sync Recovery & Resume Tests", { timeout: 2
     const completedBefore: SyncPhase[] = ["CREATED", "FETCHING_SNAPSHOT", "PERSISTING_SNAPSHOTS", "PERSISTING_INCIDENTS", "PERSISTING_HISTORY", "PROCESSING_FOLLOWUPS", "ENQUEUE_NOTIFICATIONS", "ENQUEUE_AI"];
     await syncRunRepo.updatePhase(seedRun.id, "ENQUEUE_AI", completedBefore);
 
-    const service = new SyncService(syncRunRepo);
+    const service = new SyncService(syncRunRepo, null, new MockIncidentRepository());
     const result = await service.runSync();
 
     expect(result.ok).toBe(true);
@@ -117,7 +117,7 @@ describe("Sprint 10.4 — Idempotent Sync Recovery & Resume Tests", { timeout: 2
     const completedBefore: SyncPhase[] = ["CREATED", "FETCHING_SNAPSHOT", "PERSISTING_SNAPSHOTS", "PERSISTING_INCIDENTS", "PERSISTING_HISTORY", "PROCESSING_FOLLOWUPS", "ENQUEUE_NOTIFICATIONS", "ENQUEUE_AI", "REFRESHING_PROJECTIONS"];
     await syncRunRepo.updatePhase(seedRun.id, "REFRESHING_PROJECTIONS", completedBefore);
 
-    const service = new SyncService(syncRunRepo);
+    const service = new SyncService(syncRunRepo, null, new MockIncidentRepository());
     const result = await service.runSync();
 
     expect(result.ok).toBe(true);
@@ -134,7 +134,7 @@ describe("Sprint 10.4 — Idempotent Sync Recovery & Resume Tests", { timeout: 2
       durationMs: 500,
     });
 
-    const service = new SyncService(syncRunRepo);
+    const service = new SyncService(syncRunRepo, null, new MockIncidentRepository());
     const result = await service.runSync();
 
     expect(result.ok).toBe(true);
@@ -152,7 +152,7 @@ describe("Sprint 10.4 — Idempotent Sync Recovery & Resume Tests", { timeout: 2
     });
     await syncRunRepo.updatePhase(seedRun.id, "PERSISTING_SNAPSHOTS", ["CREATED", "FETCHING_SNAPSHOT", "PERSISTING_SNAPSHOTS"]);
 
-    const service = new SyncService(syncRunRepo);
+    const service = new SyncService(syncRunRepo, null, new MockIncidentRepository());
     const result = await service.runSync();
 
     expect(result.ok).toBe(true);

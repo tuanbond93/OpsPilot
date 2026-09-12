@@ -17,9 +17,13 @@ export const dynamic = "force-dynamic";
 export const maxDuration = 300;
 
 async function writeCheckpointAudit(input: Parameters<typeof persistCheckpointDispatchAudit>[1]) {
-  try { await persistCheckpointDispatchAudit(createAdminClient(), input); }
+  try {
+    await persistCheckpointDispatchAudit(createAdminClient(), input);
+    return true;
+  }
   catch (error) {
     logger.error({ category: "OBSERVABILITY_FAILURE", component: "checkpoint_dispatch_audits", message: getRuntimeErrorDetails(error).message });
+    return false;
   }
 }
 
@@ -42,13 +46,14 @@ async function hasActiveSyncLock() {
   return Boolean(data?.expires_at && new Date(data.expires_at).getTime() > Date.now());
 }
 
-function attention(checkpointAt: string, failureStage: string, attemptCount: number, error: unknown) {
+function attention(checkpointAt: string, failureStage: string, failureClass: string, attemptCount: number, error: unknown) {
   logger.error({
     category: "CHECKPOINT_FAILED_REQUIRES_ATTENTION",
-    checkpointAt,
-    failureStage,
-    attemptCount,
-    lastSafeError: getRuntimeErrorDetails(error).message.slice(0, 500),
+    checkpoint_at: checkpointAt,
+    failure_stage: failureStage,
+    failure_class: failureClass,
+    attempt_count: attemptCount,
+    safe_error: getRuntimeErrorDetails(error).message.slice(0, 500),
   });
 }
 
@@ -80,10 +85,12 @@ async function runFollowupCycle(request: NextRequest) {
   const sync = await syncRillnet({ checkpointAt });
   if (!sync.ok) {
     const status = sync.error?.code === "SYNC_ALREADY_RUNNING" ? 409 : 500;
-    await writeCheckpointAudit({ checkpointAt, startedAt: sync.startedAt, completedAt: sync.completedAt, syncRunId: sync.syncRunId, executionStatus: "FAILED", httpStatus: status, errorCode: sync.error?.code, errorMessageSafe: sync.error?.message });
+    const auditPersisted = await writeCheckpointAudit({ checkpointAt, startedAt: sync.startedAt, completedAt: sync.completedAt, syncRunId: sync.syncRunId, executionStatus: "FAILED", httpStatus: status, errorCode: sync.error?.code, errorMessageSafe: sync.error?.message });
+    if (!auditPersisted) {
+      attention(checkpointAt, "SYNC", sync.error?.code || "SYNC_FAILURE", sync.syncLockAttempts || 1, sync.error?.message || "Sync failed");
+    }
     if (recovery) {
       await finishCheckpointRecovery(client, checkpointAt, recovery.recoveryToken, { status: "FAILED", failureStage: "SYNC", lastSafeError: sync.error?.message || "Recovery sync failed" });
-      attention(checkpointAt, "SYNC", 2, sync.error?.message || "Recovery sync failed");
     } else if (!sync.syncRunId && sync.error && isTransientInfrastructureError(sync.error)) {
       try {
         const activeLock = await retryTransientInfrastructure(hasActiveSyncLock);
@@ -97,7 +104,7 @@ async function runFollowupCycle(request: NextRequest) {
           logger.info({ category: "CHECKPOINT_RECOVERY_QUEUED", checkpointAt, recoveryAttempt: 1 });
         }
       } catch (error) {
-        attention(checkpointAt, "RECOVERY_QUEUE", 1, error);
+        attention(checkpointAt, "RECOVERY_QUEUE", "RECOVERY_QUEUE_FAILURE", 1, error);
       }
     }
     return NextResponse.json({ ok: false, stage: "SYNC", sync }, { status });

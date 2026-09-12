@@ -6,6 +6,7 @@ const queue = vi.fn();
 const claim = vi.fn();
 const finish = vi.fn();
 const persist = vi.fn();
+const logError = vi.fn();
 
 vi.mock("@/security/api-security", () => ({ isCronAuthorized: () => true, authorizeApiRequest: vi.fn() }));
 vi.mock("@/connectors/supabase", () => ({
@@ -23,6 +24,7 @@ vi.mock("@/services/checkpoint-dispatch-audit", () => ({ persistCheckpointDispat
 vi.mock("@/services/telegram-followup-pilot", () => ({ runTelegramFollowupPilotDispatch: vi.fn() }));
 vi.mock("@/services/telegram-rillnet-review", () => ({ dispatchRillnetChangeReviews: vi.fn() }));
 vi.mock("@/services/telegram-incident-status", () => ({ sendIncidentSyncStatus: vi.fn() }));
+vi.mock("@/observability/logger", () => ({ logger: { error: logError, info: vi.fn() } }));
 
 const failedBeforeSync = { ok: false, syncRunId: "", startedAt: "2026-09-12T01:00:00.000Z", completedAt: "2026-09-12T01:00:01.000Z", durationMs: 1, fetchedOrderCount: 0, normalizedOrderCount: 0, incidentCount: 0, phaseTimings: {}, dbInstrumentation: { totalQueries: 0, phases: {}, bottlenecksDetected: [] }, error: { code: "GatewayTimeout", message: "Gateway Timeout" } };
 
@@ -36,6 +38,28 @@ describe("checkpoint recovery wiring", () => {
     expect(response.status).toBe(500);
     expect(queue).toHaveBeenCalledTimes(1);
     expect(queue).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ failureStage: "SYNC_LOCK_ACQUISITION" }));
+  });
+
+  it("7a. treats unavailable checkpoint identity as eligible only before Phase 1", async () => {
+    syncRillnet.mockResolvedValue({ ...failedBeforeSync, error: { code: "CHECKPOINT_IDENTITY_UNAVAILABLE", message: "Gateway Timeout" } });
+    const { GET } = await import("@/app/api/cron/followup-cycle/route");
+    await GET(new NextRequest("https://opspilot.test/api/cron/followup-cycle"));
+    expect(queue).toHaveBeenCalledTimes(1);
+    expect(queue).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ failureStage: "SYNC_LOCK_ACQUISITION" }));
+  });
+
+  it("7b. emits structured terminal visibility when audit persistence is unavailable", async () => {
+    persist.mockRejectedValueOnce(new Error("Gateway Timeout"));
+    syncRillnet.mockResolvedValue({ ...failedBeforeSync, error: { code: "CHECKPOINT_IDENTITY_UNAVAILABLE", message: "Gateway Timeout" }, syncLockAttempts: 3 });
+    const { GET } = await import("@/app/api/cron/followup-cycle/route");
+    await GET(new NextRequest("https://opspilot.test/api/cron/followup-cycle"));
+    expect(logError).toHaveBeenCalledWith(expect.objectContaining({
+      category: "CHECKPOINT_FAILED_REQUIRES_ATTENTION",
+      failure_stage: "SYNC",
+      failure_class: "CHECKPOINT_IDENTITY_UNAVAILABLE",
+      attempt_count: 3,
+      safe_error: "Gateway Timeout",
+    }));
   });
 
   it("8. completes a claimed recovery after one effective sync", async () => {
