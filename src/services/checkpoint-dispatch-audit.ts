@@ -1,4 +1,5 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { retryTransientInfrastructure } from "@/services/transient-infrastructure";
 
 export type CheckpointDispatchAuditInput = {
   syncRunId?: string | null;
@@ -33,7 +34,7 @@ export type CheckpointDispatchAuditInput = {
 const count = (value?: number | null) => value == null || !Number.isFinite(value) ? null : Math.max(0, Math.trunc(value));
 
 export async function persistCheckpointDispatchAudit(client: SupabaseClient, input: CheckpointDispatchAuditInput): Promise<void> {
-  const { error } = await client.from("checkpoint_dispatch_audits").insert({
+  const row = {
     sync_run_id: input.syncRunId || null,
     checkpoint_at: input.checkpointAt,
     started_at: input.startedAt,
@@ -61,6 +62,11 @@ export async function persistCheckpointDispatchAudit(client: SupabaseClient, inp
     exclusion_counts: input.exclusionCounts || null,
     error_code: input.errorCode || null,
     error_message_safe: input.errorMessageSafe || null,
+  };
+  await retryTransientInfrastructure(async () => {
+    const { error } = await client.from("checkpoint_dispatch_audits").insert(row);
+    // checkpoint_at is unique. A committed write followed by a lost response
+    // is therefore safely idempotent on retry.
+    if (error && error.code !== "23505") throw error;
   });
-  if (error && error.code !== "23505") throw error;
 }

@@ -8,22 +8,48 @@ import { sendIncidentSyncStatus } from "@/services/telegram-incident-status";
 import { atHour, localDay, localHour } from "@/domain/operational-learning/checkpoint-policy";
 import { persistCheckpointDispatchAudit } from "@/services/checkpoint-dispatch-audit";
 import { NearTermCapacityRuntimeService } from "@/services/near-term-capacity-runtime";
+import { getRuntimeErrorDetails } from "@/observability/runtimeDiagnostics";
+import { logger } from "@/observability/logger";
+import { claimCheckpointRecovery, finishCheckpointRecovery, queueCheckpointRecovery } from "@/services/checkpoint-recovery";
+import { isTransientInfrastructureError, retryTransientInfrastructure } from "@/services/transient-infrastructure";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
 
 async function writeCheckpointAudit(input: Parameters<typeof persistCheckpointDispatchAudit>[1]) {
   try { await persistCheckpointDispatchAudit(createAdminClient(), input); }
-  catch (error) { console.error(JSON.stringify({ category: "OBSERVABILITY_FAILURE", component: "checkpoint_dispatch_audits", message: describeError(error) })); }
+  catch (error) {
+    logger.error({ category: "OBSERVABILITY_FAILURE", component: "checkpoint_dispatch_audits", message: getRuntimeErrorDetails(error).message });
+  }
 }
 
-function describeError(error: unknown) {
-  if (error instanceof Error) return error.message;
-  if (error && typeof error === "object") {
-    const value = error as Record<string, unknown>;
-    return String(value.message || value.details || value.hint || JSON.stringify(value));
-  }
-  return String(error);
+function recoveryRequest(request: NextRequest): { checkpointAt: string; recoveryToken: string } | null {
+  const checkpointAt = request.nextUrl.searchParams.get("checkpoint_at");
+  const recoveryAttempt = request.nextUrl.searchParams.get("recovery_attempt");
+  const recoveryToken = request.headers.get("x-opspilot-recovery-token");
+  if (!checkpointAt && !recoveryAttempt && !recoveryToken) return null;
+  if (recoveryAttempt !== "1" || !checkpointAt || !recoveryToken) return null;
+  try {
+    const normalizedCheckpointAt = new Date(checkpointAt).toISOString();
+    return { checkpointAt: normalizedCheckpointAt, recoveryToken };
+  } catch { return null; }
+}
+
+async function hasActiveSyncLock() {
+  const { data, error } = await createAdminClient().from("sync_locks")
+    .select("expires_at").eq("lock_key", "global:rillnet-sync").maybeSingle();
+  if (error) throw error;
+  return Boolean(data?.expires_at && new Date(data.expires_at).getTime() > Date.now());
+}
+
+function attention(checkpointAt: string, failureStage: string, attemptCount: number, error: unknown) {
+  logger.error({
+    category: "CHECKPOINT_FAILED_REQUIRES_ATTENTION",
+    checkpointAt,
+    failureStage,
+    attemptCount,
+    lastSafeError: getRuntimeErrorDetails(error).message.slice(0, 500),
+  });
 }
 
 /**
@@ -40,13 +66,49 @@ async function runFollowupCycle(request: NextRequest) {
     if (!access.ok) return access.response;
   }
 
+  const recovery = recoveryRequest(request);
+  if (request.nextUrl.searchParams.has("recovery_attempt") && !recovery) {
+    return NextResponse.json({ ok: false, error: "INVALID_RECOVERY_REQUEST" }, { status: 400 });
+  }
   const nowMs = Date.now();
-  const checkpointAt = new Date(atHour(localDay(nowMs), localHour(nowMs))).toISOString();
-  const sync = await syncRillnet();
+  const checkpointAt = recovery?.checkpointAt || new Date(atHour(localDay(nowMs), localHour(nowMs))).toISOString();
+  const client = createAdminClient();
+  if (recovery) {
+    const claimed = await claimCheckpointRecovery(client, checkpointAt, recovery.recoveryToken);
+    if (!claimed) return NextResponse.json({ ok: true, stage: "RECOVERY_ALREADY_CLAIMED" }, { status: 200 });
+  }
+  const sync = await syncRillnet({ checkpointAt });
   if (!sync.ok) {
     const status = sync.error?.code === "SYNC_ALREADY_RUNNING" ? 409 : 500;
     await writeCheckpointAudit({ checkpointAt, startedAt: sync.startedAt, completedAt: sync.completedAt, syncRunId: sync.syncRunId, executionStatus: "FAILED", httpStatus: status, errorCode: sync.error?.code, errorMessageSafe: sync.error?.message });
+    if (recovery) {
+      await finishCheckpointRecovery(client, checkpointAt, recovery.recoveryToken, { status: "FAILED", failureStage: "SYNC", lastSafeError: sync.error?.message || "Recovery sync failed" });
+      attention(checkpointAt, "SYNC", 2, sync.error?.message || "Recovery sync failed");
+    } else if (!sync.syncRunId && sync.error && isTransientInfrastructureError(sync.error)) {
+      try {
+        const activeLock = await retryTransientInfrastructure(hasActiveSyncLock);
+        if (!activeLock.value) {
+          await retryTransientInfrastructure(() => queueCheckpointRecovery(client, {
+            checkpointAt,
+            scheduledFor: new Date(Date.now() + 5 * 60_000).toISOString(),
+            failureStage: "SYNC_LOCK_ACQUISITION",
+            lastSafeError: sync.error!.message,
+          }));
+          logger.info({ category: "CHECKPOINT_RECOVERY_QUEUED", checkpointAt, recoveryAttempt: 1 });
+        }
+      } catch (error) {
+        attention(checkpointAt, "RECOVERY_QUEUE", 1, error);
+      }
+    }
     return NextResponse.json({ ok: false, stage: "SYNC", sync }, { status });
+  }
+
+  if (recovery) {
+    await finishCheckpointRecovery(client, checkpointAt, recovery.recoveryToken, { status: "SUCCEEDED", syncRunId: sync.syncRunId });
+  }
+
+  if (sync.skipped && sync.skipReason === "CHECKPOINT_ALREADY_COMPLETED") {
+    return NextResponse.json({ ok: true, stage: "RECOVERY_ALREADY_COMPLETED", sync: { syncRunId: sync.syncRunId } });
   }
 
   // No new source evidence means the engine must not evaluate or remind again.
@@ -59,7 +121,7 @@ async function runFollowupCycle(request: NextRequest) {
     let rillnetReviewError: string | null = null;
     try { rillnetReviews = await dispatchRillnetChangeReviews(createAdminClient(), "followup_cycle_no_fresh_snapshot"); }
     catch (error) {
-      rillnetReviewError = describeError(error);
+      rillnetReviewError = getRuntimeErrorDetails(error).message;
       rillnetReviews = { scanned: 0, sent: 0, skipped: 0, failed: 1, summaries: [], details: [{ status: "FAILED", reason: rillnetReviewError }] };
     }
     let statusUpdates = null;
@@ -67,7 +129,7 @@ async function runFollowupCycle(request: NextRequest) {
     if (sync.syncRunId) {
       try { statusUpdates = await sendIncidentSyncStatus(createAdminClient(), sync.syncRunId, sync.completedAt || new Date().toISOString()); }
       catch (error) {
-        statusUpdateError = describeError(error);
+        statusUpdateError = getRuntimeErrorDetails(error).message;
         statusUpdates = { active: null, changed: null, unchanged: null, resolved: null, sentBatches: null, failed: 1, skipped: null };
       }
     }
@@ -106,7 +168,7 @@ async function runFollowupCycle(request: NextRequest) {
       sendAttempts: telegram?.sendAttempts, sendSuccess: telegram?.sent, sendFailed: telegram?.failed,
       statusUpdatesActive: statusUpdates?.active, statusUpdatesResolved: statusUpdates?.resolved,
       statusUpdateBatchesSent: statusUpdates?.sentBatches, statusUpdateBatchesFailed: statusUpdates?.failed,
-      errorCode: "FOLLOWUP_CYCLE_DISPATCH_FAILED", errorMessageSafe: describeError(error),
+      errorCode: "FOLLOWUP_CYCLE_DISPATCH_FAILED", errorMessageSafe: getRuntimeErrorDetails(error).message,
     });
     throw error;
   }
@@ -114,7 +176,9 @@ async function runFollowupCycle(request: NextRequest) {
   // turn a successful Phase 1 checkpoint into a failed checkpoint.
   let nearTermCapacity: Awaited<ReturnType<NearTermCapacityRuntimeService["runCheckpoint"]>> | null = null;
   try { nearTermCapacity = await new NearTermCapacityRuntimeService(createAdminClient()).runCheckpoint("followup_cycle"); }
-  catch (error) { console.error(JSON.stringify({ category: "PHASE2_SHADOW_FAILURE", component: "near_term_capacity", message: describeError(error) })); }
+  catch (error) {
+    logger.error({ category: "PHASE2_SHADOW_FAILURE", component: "near_term_capacity", message: getRuntimeErrorDetails(error).message });
+  }
   await writeCheckpointAudit({
     checkpointAt, startedAt: sync.startedAt, completedAt: sync.completedAt, syncRunId: sync.syncRunId, executionStatus: "SUCCESS", httpStatus: 200,
     supportedCasesEvaluated: evaluation?.supportedCasesEvaluated,

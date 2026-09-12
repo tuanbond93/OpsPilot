@@ -8,8 +8,9 @@ export class SupabaseSyncRunRepository extends BaseRepository implements ISyncRu
     super(client);
   }
 
-  async createSyncRun(startedAt: string = new Date().toISOString()): Promise<SyncRunRow> {
+  async createSyncRun(startedAt: string = new Date().toISOString(), options: { id?: string; checkpointAt?: string } = {}): Promise<SyncRunRow> {
     const newRun: Partial<SyncRunRow> = {
+      ...(options.id ? { id: options.id } : {}),
       started_at: startedAt,
       status: "running" as SyncRunStatus,
       current_phase: "CREATED",
@@ -18,6 +19,7 @@ export class SupabaseSyncRunRepository extends BaseRepository implements ISyncRu
       normalized_order_count: 0,
       incident_count: 0,
       created_at: startedAt,
+      checkpoint_at: options.checkpointAt || null,
     };
 
     const query = this.client
@@ -26,7 +28,18 @@ export class SupabaseSyncRunRepository extends BaseRepository implements ISyncRu
       .select()
       .single();
 
-    return this.executeSingle<SyncRunRow>(query as any);
+    try {
+      return await this.executeSingle<SyncRunRow>(query as any);
+    } catch (error: any) {
+      // A retry after an ambiguous network timeout may find the client-supplied
+      // primary key already committed. Re-read that exact row; never create a
+      // second sync run.
+      if (options.id && error?.code === "23505") {
+        const existing = this.client.from("sync_runs").select("*").eq("id", options.id).maybeSingle();
+        return this.executeSingle<SyncRunRow>(existing as any);
+      }
+      throw error;
+    }
   }
 
   async updatePhase(
@@ -147,6 +160,11 @@ export class SupabaseSyncRunRepository extends BaseRepository implements ISyncRu
       .limit(1)
       .maybeSingle();
 
+    return this.executeOptional<SyncRunRow>(query as any);
+  }
+
+  async getSyncRunForCheckpoint(checkpointAt: string): Promise<SyncRunRow | null> {
+    const query = this.client.from("sync_runs").select("*").eq("checkpoint_at", checkpointAt).maybeSingle();
     return this.executeOptional<SyncRunRow>(query as any);
   }
 }

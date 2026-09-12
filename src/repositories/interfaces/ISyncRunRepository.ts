@@ -1,7 +1,7 @@
 import type { SyncRunRow, SyncPhase } from "@/connectors/supabase/types";
 
 export interface ISyncRunRepository {
-  createSyncRun(startedAt?: string): Promise<SyncRunRow>;
+  createSyncRun(startedAt?: string, options?: { id?: string; checkpointAt?: string }): Promise<SyncRunRow>;
   updatePhase(
     id: string,
     currentPhase: SyncPhase,
@@ -31,4 +31,5 @@ export interface ISyncRunRepository {
   getLatestSyncRun(): Promise<SyncRunRow | null>;
   getLatestSyncRuns(limit?: number): Promise<SyncRunRow[]>;
   getPreviousSuccessfulSyncRun(currentSyncRunId: string): Promise<SyncRunRow | null>;
+  getSyncRunForCheckpoint(checkpointAt: string): Promise<SyncRunRow | null>;
 }

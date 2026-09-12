@@ -42,4 +42,11 @@ describe("checkpoint dispatch audit persistence", () => {
   it("does not hide non-duplicate persistence errors", async () => {
     await expect(persistCheckpointDispatchAudit(client({ code: "42P01", message: "missing table" }), { checkpointAt: "2026-09-10T03:00:00.000Z", startedAt: "2026-09-10T03:00:01.000Z", completedAt: "2026-09-10T03:00:02.000Z", executionStatus: "FAILED" })).rejects.toMatchObject({ code: "42P01" });
   });
+
+  it("retries a transient audit write safely", async () => {
+    const insert = vi.fn().mockResolvedValueOnce({ error: { message: "Gateway Timeout" } }).mockResolvedValueOnce({ error: null });
+    const supabase = { from: vi.fn(() => ({ insert })) } as any;
+    await persistCheckpointDispatchAudit(supabase, { checkpointAt: "2026-09-10T05:00:00.000Z", startedAt: "2026-09-10T05:00:01.000Z", completedAt: "2026-09-10T05:00:02.000Z", executionStatus: "FAILED" });
+    expect(insert).toHaveBeenCalledTimes(2);
+  });
 });

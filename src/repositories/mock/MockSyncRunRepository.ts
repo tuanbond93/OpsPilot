@@ -12,9 +12,9 @@ export class MockSyncRunRepository implements ISyncRunRepository {
     this.inMemoryRuns = [...runs];
   }
 
-  async createSyncRun(startedAt: string = new Date().toISOString()): Promise<SyncRunRow> {
+  async createSyncRun(startedAt: string = new Date().toISOString(), options: { id?: string; checkpointAt?: string } = {}): Promise<SyncRunRow> {
     const fullRow: SyncRunRow = {
-      id: `sync-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+      id: options.id || `sync-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
       started_at: startedAt,
       completed_at: null,
       status: "running",
@@ -27,6 +27,7 @@ export class MockSyncRunRepository implements ISyncRunRepository {
       error_code: null,
       error_message: null,
       source_updated_at: null,
+      checkpoint_at: options.checkpointAt || null,
       created_at: startedAt,
     };
     this.inMemoryRuns.push(fullRow);
@@ -174,5 +175,9 @@ export class MockSyncRunRepository implements ISyncRunRepository {
       .filter((r) => r.status === "success" && r.id !== currentSyncRunId)
       .sort((a, b) => new Date(b.started_at || 0).getTime() - new Date(a.started_at || 0).getTime());
     return matches[0] || null;
+  }
+
+  async getSyncRunForCheckpoint(checkpointAt: string): Promise<SyncRunRow | null> {
+    return this.inMemoryRuns.find((run) => run.checkpoint_at === checkpointAt) || null;
   }
 }

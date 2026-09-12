@@ -18,6 +18,7 @@ import { ActionQueue } from "@/engine/action-queue";
 import { refresh } from "@/projections/projection-engine";
 import { logRuntimeError, logRuntimeMessage } from "@/observability/runtimeDiagnostics";
 import { logger } from "@/observability/logger";
+import { retryTelemetryFrom, retryTransientInfrastructure, type TransientRetryTelemetry } from "@/services/transient-infrastructure";
 import { getRoutePromotion, routeIncident, shouldEnqueueAiJob, type TriageResult } from "@/engine/rules/triage";
 import { hasConflictingActions, selectApplicablePlaybookDirectives } from "@/engine/rules/conflict-detector";
 import warehouseAssignments from "@/data/warehouse-assignments.generated.json";
@@ -114,12 +115,26 @@ export class SyncService implements ISyncService {
 
     let lockAcquired = false;
     let heartbeatTimer: NodeJS.Timeout | null = null;
+    let syncLockTelemetry: TransientRetryTelemetry | null = null;
+
+    if (_options?.checkpointAt && this.syncRunRepo) {
+      const existing = await this.syncRunRepo.getSyncRunForCheckpoint(_options.checkpointAt);
+      if (existing) {
+        if (existing.status === "success" || existing.current_phase === "COMPLETED") {
+          return { ok: true, skipped: true, skipReason: "CHECKPOINT_ALREADY_COMPLETED", syncRunId: existing.id, startedAt, completedAt: startedAt, durationMs: 0, fetchedOrderCount: existing.fetched_order_count, normalizedOrderCount: existing.normalized_order_count, incidentCount: existing.incident_count, phaseTimings: {}, dbInstrumentation: { totalQueries: 0, phases: {}, bottlenecksDetected: [] }, syncLockAttempts: 0, syncLockRetryCount: 0, syncLockFinalStatus: "NOT_ATTEMPTED" };
+        }
+        return { ok: false, syncRunId: existing.id, startedAt, completedAt: startedAt, durationMs: 0, fetchedOrderCount: 0, normalizedOrderCount: 0, incidentCount: 0, phaseTimings: {}, dbInstrumentation: { totalQueries: 0, phases: {}, bottlenecksDetected: [] }, error: { code: "CHECKPOINT_ALREADY_STARTED", message: "This checkpoint already has an operational sync run." }, syncLockAttempts: 0, syncLockRetryCount: 0, syncLockFinalStatus: "NOT_ATTEMPTED" };
+      }
+    }
 
     if (this.syncLockRepo) {
       let lockRes;
       try {
-        lockRes = await this.syncLockRepo.acquireLock(lockKey, ownerId, ttlMs);
+        const retried = await retryTransientInfrastructure(() => this.syncLockRepo!.acquireLock(lockKey, ownerId, ttlMs));
+        lockRes = retried.value;
+        syncLockTelemetry = retried.telemetry;
       } catch (err: any) {
+        syncLockTelemetry = retryTelemetryFrom(err);
         logRuntimeError("SyncLock.acquireLock", err);
         return {
           ok: false,
@@ -133,9 +148,12 @@ export class SyncService implements ISyncService {
           phaseTimings: {},
           dbInstrumentation: { totalQueries: 0, phases: {}, bottlenecksDetected: [] },
           error: {
-            code: err?.name || "LockAcquisitionError",
+            code: err?.code || err?.name || "LockAcquisitionError",
             message: err?.message || String(err),
           },
+          syncLockAttempts: syncLockTelemetry?.attempts || 1,
+          syncLockRetryCount: syncLockTelemetry?.retryCount || 0,
+          syncLockFinalStatus: syncLockTelemetry?.finalStatus || "NON_RETRYABLE_FAILURE",
         };
       }
 
@@ -165,6 +183,9 @@ export class SyncService implements ISyncService {
             code: "SYNC_ALREADY_RUNNING",
             message: "A sync process is currently active and holding the distributed lock.",
           },
+          syncLockAttempts: syncLockTelemetry?.attempts || 1,
+          syncLockRetryCount: syncLockTelemetry?.retryCount || 0,
+          syncLockFinalStatus: "SUCCESS",
         };
       }
 
@@ -369,7 +390,10 @@ export class SyncService implements ISyncService {
             const safeIdx = ORDERED_SYNC_PHASES.indexOf(safePhase);
             completedPhases = ORDERED_SYNC_PHASES.slice(0, safeIdx);
           } else {
-            const newRun = await this.syncRunRepo.createSyncRun(startedAt);
+            const newRunId = crypto.randomUUID();
+            const newRun = (await retryTransientInfrastructure(
+              () => this.syncRunRepo!.createSyncRun(startedAt, { id: newRunId, checkpointAt: _options?.checkpointAt })
+            )).value;
             syncRunId = newRun.id;
             completedPhases = ["CREATED"];
             logger.info({
@@ -488,6 +512,9 @@ export class SyncService implements ISyncService {
                 phases: dbPhases,
                 bottlenecksDetected,
               },
+              syncLockAttempts: syncLockTelemetry?.attempts || 0,
+              syncLockRetryCount: syncLockTelemetry?.retryCount || 0,
+              syncLockFinalStatus: syncLockTelemetry?.finalStatus || "NOT_ATTEMPTED",
             };
           }
 
@@ -1013,6 +1040,9 @@ export class SyncService implements ISyncService {
             phases: dbPhases,
             bottlenecksDetected,
           },
+          syncLockAttempts: syncLockTelemetry?.attempts || 0,
+          syncLockRetryCount: syncLockTelemetry?.retryCount || 0,
+          syncLockFinalStatus: syncLockTelemetry?.finalStatus || "NOT_ATTEMPTED",
         };
       } catch (err: unknown) {
         logRuntimeError("SyncService.runSync", err);
@@ -1061,6 +1091,9 @@ export class SyncService implements ISyncService {
             code: errorCode,
             message: sanitizedMessage,
           },
+          syncLockAttempts: syncLockTelemetry?.attempts || 0,
+          syncLockRetryCount: syncLockTelemetry?.retryCount || 0,
+          syncLockFinalStatus: syncLockTelemetry?.finalStatus || "NOT_ATTEMPTED",
         };
       }
     } finally {

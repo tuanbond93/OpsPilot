@@ -32,6 +32,7 @@ export interface SyncRunRow {
   incident_count: number;
   duration_ms?: number | null;
   source_updated_at?: string | null;
+  checkpoint_at?: string | null;
   error_code?: string | null;
   error_message?: string | null;
   created_at: string;

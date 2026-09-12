@@ -20,7 +20,7 @@ export interface DetectedBottleneck {
 export interface SyncJobResult {
   ok: boolean;
   skipped?: boolean;
-  skipReason?: "SOURCE_UNCHANGED";
+  skipReason?: "SOURCE_UNCHANGED" | "CHECKPOINT_ALREADY_COMPLETED";
   syncRunId: string;
   startedAt: string;
   completedAt: string;
@@ -45,6 +45,9 @@ export interface SyncJobResult {
     code: string;
     message: string;
   };
+  syncLockAttempts?: number;
+  syncLockRetryCount?: number;
+  syncLockFinalStatus?: "SUCCESS" | "NON_RETRYABLE_FAILURE" | "TRANSIENT_FAILURE" | "NOT_ATTEMPTED";
 }
 
 /**
