@@ -3,6 +3,7 @@ import { generate } from "@/ai/provider";
 import { buildContext, critique, detectCandidate, type AiRecommendation, type CurrentRisk, type IncomingAnswer, type LeadFact } from "@/domain/near-term-capacity";
 import { TelegramClient } from "@/integrations/telegram/telegram-client";
 import { buildNearTermFactCallbackData, formatNearTermDetailRequest, formatNearTermFactRequest, nearTermFactButtons, type NearTermFactAnswer } from "@/integrations/telegram/near-term-capacity-message";
+import { NearTermCapacityDecisionBridge } from "@/services/near-term-capacity-decision-bridge";
 
 export const NEAR_TERM_SHADOW_MODE = "SHADOW_DECISION_WITH_LIVE_FACT_COLLECTION" as const;
 const policy = { nearTermWindowMinutes: 240, leadFactMaxAgeMinutes: 60, allowedActions: ["NO_ACTION_MONITOR", "ADD_VEHICLE", "HOLD_LOW_PRIORITY_ECOM", "ADD_MANPOWER", "REALLOCATE_AVAILABLE_CAPACITY", "HUMAN_INVESTIGATION_REQUIRED"] as const };
@@ -106,6 +107,9 @@ export class NearTermCapacityRuntimeService {
     const critic = critique(context, ai); const status = critic.verdict === "VALID_DECISION" ? "DECISION_READY" : "HUMAN_INVESTIGATION_REQUIRED";
     await this.db.from("near_term_capacity_cases").update({ decision_context: context, ai_recommendation: ai, critic_result: critic, status, updated_at: new Date().toISOString() }).eq("id", row.id);
     await this.event(row.id, critic.verdict === "VALID_DECISION" ? "AI_DECISION_CREATED" : "HUMAN_INVESTIGATION_REQUIRED", "near_term_capacity", { critic, mode: NEAR_TERM_SHADOW_MODE });
+    if (critic.verdict === "VALID_DECISION" && ai.recommended_action !== "HUMAN_INVESTIGATION_REQUIRED") {
+      await new NearTermCapacityDecisionBridge(this.db).createAndDispatch({ ...row, lead_fact_snapshot: lead, decision_context: context, ai_recommendation: ai, critic_result: critic }, "near_term_capacity");
+    }
     return { status, recommendation: critic.verdict === "VALID_DECISION" ? ai.recommended_action : null };
   }
 }

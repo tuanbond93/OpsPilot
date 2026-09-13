@@ -1,4 +1,4 @@
-import type { AiRecommendation, CurrentRisk } from "@/domain/near-term-capacity";
+import type { AiRecommendation, CurrentRisk, DecisionContext, LeadFact } from "@/domain/near-term-capacity";
 
 function escape(value: string): string { return value.replace(/[&<>]/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" })[char]!); }
 function shown(value: number | null): string { return value == null ? "Chưa có dữ liệu" : String(value); }
@@ -34,15 +34,17 @@ export function formatNearTermDetailRequest() {
 }
 
 /** Manager sees exactly one validated final action; unknown money stays explicit. */
-export function formatNearTermManagerCard(warehouseName: string, decision: AiRecommendation) {
+export function formatNearTermManagerCard(warehouseName: string, facts: CurrentRisk, lead: LeadFact, context: DecisionContext, decision: AiRecommendation) {
   const money = decision.estimated_cost_vnd == null && decision.estimated_saving_vnd == null
     ? "Chưa đủ dữ liệu xác minh chi phí"
     : `Chi phí: ${decision.estimated_cost_vnd ?? "—"}; tiết kiệm: ${decision.estimated_saving_vnd ?? "—"}`;
   return [
-    "🔵 OPSPILOT — QUYẾT ĐỊNH CẦN DUYỆT", "", `📍 Kho: ${escape(warehouseName)}`, "",
-    "⚠️ RỦI RO", escape(decision.current_risk), "", "🤖 AI ĐỀ XUẤT", escape(decision.recommended_action), "",
+    "🧠 OPSPILOT — QUYẾT ĐỊNH CẦN PHÊ DUYỆT", "", `📍 Kho: ${escape(warehouseName)}`, "",
+    "⚠️ Vấn đề vận hành", escape(decision.current_risk), `• Hiện tại: ${shown(facts.currentKg)} kg / ${shown(facts.currentOrders)} đơn`,
+    `• Facts từ Lead: ${escape(lead.incoming)}${lead.expectedIncomingKg != null ? ` · ${lead.expectedIncomingKg} kg` : ""}${lead.expectedIncomingAt ? ` · ETA ${escape(lead.expectedIncomingAt)}` : ""}`, `• Bất định: ${escape(context.uncertainties.join(", ") || decision.uncertainties.join(", ") || "Không có")}`, "",
+    "🤖 AI đề xuất", escape(decision.recommended_action), "",
     "📌 LÝ DO", escape(decision.reason_summary), "", "Nếu không làm:", escape(decision.expected_state_if_no_action), "",
     "Nếu thực hiện:", escape(decision.expected_state_if_action), "", `⏰ Cần quyết định trước: ${escape(decision.required_by)}`,
-    `💰 Chi phí / tiết kiệm: ${money}`, `🎯 Confidence: ${Math.round(decision.confidence * 100)}%`,
+    `💰 Trade-off: ${money}`, `🧾 Evidence: ${escape(facts.capturedAt)}`, `🎯 Confidence: ${Math.round(decision.confidence * 100)}%`,
   ].join("\n");
 }

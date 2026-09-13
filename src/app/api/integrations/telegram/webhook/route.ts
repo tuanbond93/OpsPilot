@@ -14,6 +14,7 @@ import { ManagerMirrorService } from "@/notifications/gateway/mirror";
 import { isMirrorEnabled } from "@/config/feature-flags";
 import { resolveProvince } from "@/notifications/gateway/scope-resolver";
 import { parseNearTermFactCallbackData } from "@/integrations/telegram/near-term-capacity-message";
+import { parseCapacityDecisionCallbackData } from "@/integrations/telegram/capacity-decision-actions";
 import { NearTermCapacityRuntimeService } from "@/services/near-term-capacity-runtime";
 import {
   parseMb03CancelCommand,
@@ -399,6 +400,22 @@ export async function POST(request: NextRequest) {
       if (confirmError) return NextResponse.json({ method: "answerCallbackQuery", callback_query_id: update.callback_query.id, text: "Không thể ghi nhận kết quả an toàn. Hãy tải lại trạng thái case.", show_alert: true });
       const label = rillnetReview.outcome === "SUCCESS" ? "Thành công — case đã được đánh dấu giải quyết." : rillnetReview.outcome === "FAILED" ? "Thất bại — case được đưa về theo dõi tiếp." : "Theo dõi tiếp — đã nhận snapshot mới làm mốc đối soát.";
       return NextResponse.json({ method: "answerCallbackQuery", callback_query_id: update.callback_query.id, text: (confirmed as { duplicate?: boolean } | null)?.duplicate ? `Kết quả đã được xác nhận trước đó: ${label}` : label, show_alert: false });
+    }
+    const capacityDecisionCallback = parseCapacityDecisionCallbackData(update.callback_query.data);
+    if (capacityDecisionCallback) {
+      if (!canManageTelegramDecision({ role: member.role, pilotRole: member.pilot_role })) return NextResponse.json({ method: "answerCallbackQuery", callback_query_id: update.callback_query.id, text: "Bạn không có quyền quản lý quyết định.", show_alert: true });
+      const db = client as any;
+      const { data: request, error: requestError } = await db.from("telegram_decision_requests").select("id,manager_scope_code,telegram_message_id,message_thread_id,telegram_chat_id,status,source_fingerprint,capacity_case_id").eq("id", capacityDecisionCallback.requestId).eq("telegram_chat_id", chat.id).maybeSingle();
+      if (requestError) return NextResponse.json({ error: "CAPACITY_DECISION_REQUEST_LOOKUP_FAILED", message: requestError.message }, { status: 503 });
+      if (!request || !request.capacity_case_id || request.message_thread_id !== threadId || request.telegram_message_id !== message.message_id) return NextResponse.json({ method: "answerCallbackQuery", callback_query_id: update.callback_query.id, text: "Yêu cầu quyết định không hợp lệ hoặc đã hết hiệu lực.", show_alert: true });
+      const { data: scopes, error: scopeError } = await db.from("telegram_user_scopes").select("scope_code,permission").eq("member_id", member.id).eq("active", true);
+      if (scopeError) return NextResponse.json({ error: "CAPACITY_DECISION_SCOPE_LOOKUP_FAILED", message: scopeError.message }, { status: 503 });
+      if (!(scopes || []).some((scope: any) => ["ADMIN", "MANAGE_SCOPE"].includes(scope.permission) && (scope.scope_code === "ALL" || scope.scope_code === request.manager_scope_code))) return NextResponse.json({ method: "answerCallbackQuery", callback_query_id: update.callback_query.id, text: "Bạn không thuộc phạm vi quyết định này.", show_alert: true });
+      const { data: result, error: responseError } = await db.rpc("record_near_term_capacity_decision_response", { p_payload: { requestId: request.id, response: capacityDecisionCallback.action, memberId: member.id, telegramUserId: sender.id, telegramUpdateId: update.update_id, sourceFingerprint: request.source_fingerprint, idempotencyKey: `capacity-manager:${update.update_id}`, actor: `telegram:${member.id}`, metadata: { chatId: chat.id, messageThreadId: threadId, telegramMessageId: message.message_id } } });
+      if (responseError) return NextResponse.json({ method: "answerCallbackQuery", callback_query_id: update.callback_query.id, text: "Không thể ghi nhận phản hồi an toàn. Hãy thử lại.", show_alert: true });
+      const label = capacityDecisionCallback.action === "APPROVE" ? "Đã phê duyệt. OpsPilot chưa thực thi hành động nào." : "Đã từ chối. Không có hành động nào được thực thi.";
+      if ((result as any)?.duplicate) return NextResponse.json({ method: "answerCallbackQuery", callback_query_id: update.callback_query.id, text: "Quyết định này đã được phản hồi trước đó.", show_alert: false });
+      return NextResponse.json({ method: "editMessageReplyMarkup", chat_id: chat.id, message_id: message.message_id, reply_markup: { inline_keyboard: [] }, text: label });
     }
     // Decision callbacks are deliberately handled before employee namespaces.
     // They only write the immutable shadow-observation RPC; no execution path is
