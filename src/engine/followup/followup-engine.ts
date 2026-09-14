@@ -26,6 +26,12 @@ import { logger } from "@/observability/logger";
 import type { NormalizedRillnetOrder } from "@/connectors/rillnet";
 import { assessOperationalCohort, evidenceFromOrder, checkpointKey, localHour, isFreshRillnetSnapshot, nextCheckpoint, OPERATIONAL_CHECKPOINT_POLICY_VERSION } from "@/domain/operational-learning/checkpoint-policy";
 
+// PostgREST translates one bulk upsert into one PostgreSQL statement.  Cohort
+// rows contain their evidence JSON, so an entire checkpoint must not become a
+// single, statement-timeout-sized write.  This preserves the same conflict
+// target and result set while bounding each database statement.
+const FOLLOWUP_CASE_UPSERT_CHUNK_SIZE = 50;
+
 function formatRillnetStatusSignature(signature: string | null | undefined): string {
   try {
     const pairs = JSON.parse(signature || "[]") as Array<[string, number]>;
@@ -609,16 +615,23 @@ export class FollowupEngine {
     metrics: MutableFollowupRunMetrics
   ): Promise<FollowupCaseRow[]> {
     const startedAt = this.logSubphaseStart("batchUpsertCases");
-    metrics.caseWrites++;
+    const chunks = Array.from(
+      { length: Math.ceil(cases.length / FOLLOWUP_CASE_UPSERT_CHUNK_SIZE) },
+      (_, index) => cases.slice(index * FOLLOWUP_CASE_UPSERT_CHUNK_SIZE, (index + 1) * FOLLOWUP_CASE_UPSERT_CHUNK_SIZE)
+    );
+    metrics.caseWrites += chunks.length;
     try {
-      const result = await this.timeOperation(metrics, "caseWrite", () =>
-        this.followupRepo!.batchUpsertCases(cases)
-      );
+      const result: FollowupCaseRow[] = [];
+      for (const chunk of chunks) {
+        result.push(...await this.timeOperation(metrics, "caseWrite", () =>
+          this.followupRepo!.batchUpsertCases(chunk)
+        ));
+      }
       this.logSubphaseEnd("batchUpsertCases", startedAt, {
         caseMutations: cases.length,
         events: 0,
         actions: 0,
-        repositoryCalls: 1,
+        repositoryCalls: chunks.length,
         rowsLoaded: result.length,
         payloadBytes: serializedPayloadBytes(cases),
       });
@@ -628,7 +641,7 @@ export class FollowupEngine {
         caseMutations: cases.length,
         events: 0,
         actions: 0,
-        repositoryCalls: 1,
+        repositoryCalls: chunks.length,
         rowsLoaded: 0,
         payloadBytes: serializedPayloadBytes(cases),
         status: "failed",
