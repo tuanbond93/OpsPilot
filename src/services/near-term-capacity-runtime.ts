@@ -4,11 +4,42 @@ import { buildContext, critique, detectCandidate, type AiRecommendation, type Cu
 import { TelegramClient } from "@/integrations/telegram/telegram-client";
 import { buildNearTermFactCallbackData, formatNearTermDetailRequest, formatNearTermFactRequest, nearTermFactButtons, type NearTermFactAnswer } from "@/integrations/telegram/near-term-capacity-message";
 import { NearTermCapacityDecisionBridge } from "@/services/near-term-capacity-decision-bridge";
+import { resolveAuthorizedRecipients, resolveProvince, type ResolvedRecipient } from "@/notifications/gateway/scope-resolver";
 
 export const NEAR_TERM_SHADOW_MODE = "SHADOW_DECISION_WITH_LIVE_FACT_COLLECTION" as const;
 const policy = { nearTermWindowMinutes: 240, leadFactMaxAgeMinutes: 60, allowedActions: ["NO_ACTION_MONITOR", "ADD_VEHICLE", "HOLD_LOW_PRIORITY_ECOM", "ADD_MANPOWER", "REALLOCATE_AVAILABLE_CAPACITY", "HUMAN_INVESTIGATION_REQUIRED"] as const };
 type CaseRow = { id: string; warehouse_id: string; warehouse_name: string; current_risk_snapshot: CurrentRisk; lead_fact_snapshot: LeadFact | null; status: string; active: boolean };
-type Member = { id: string; group_id: string; warehouse_name: string | null; warehouse_names: unknown };
+type PilotGroup = { id: string; telegram_chat_id: string | number; status: string };
+type PilotTopic = { group_id: string; message_thread_id: number; province_name: string | null; is_manager_decision: boolean; status: string };
+type ScopedLeadRecipient = { member: ResolvedRecipient; chatId: string; messageThreadId: number; province: string };
+
+function provinceKey(value: string | null | undefined) {
+  return String(value || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/đ/gi, "d").trim().toLocaleLowerCase("vi");
+}
+
+/**
+ * Phase 2 routes a warehouse as case context, not as a roster-owner lookup.
+ * A governed scope must resolve exactly one active Lead and its province topic.
+ */
+export function selectScopedLeadRecipient(input: {
+  scopedManagers: ResolvedRecipient[];
+  groups: PilotGroup[];
+  topics: PilotTopic[];
+  province: string | null;
+}): ScopedLeadRecipient | null {
+  if (!input.province) return null;
+  const leads = input.scopedManagers.filter((member) => member.role === "LEAD" || member.role === "MANAGER");
+  if (leads.length !== 1) return null;
+  const member = leads[0];
+  const group = input.groups.find((item) => item.id === member.groupId && item.status === "ACTIVE");
+  if (!group) return null;
+  const topic = input.topics.find((item) =>
+    item.group_id === group.id && item.status === "ACTIVE" && !item.is_manager_decision &&
+    provinceKey(item.province_name) === provinceKey(input.province)
+  );
+  if (!topic) return null;
+  return { member, chatId: String(group.telegram_chat_id), messageThreadId: topic.message_thread_id, province: input.province };
+}
 
 export function parseLeadDetail(value: string): Pick<LeadFact, "expectedIncomingKg" | "expectedIncomingAt" | "incomingType"> | null {
   const matches = Object.fromEntries([...value.matchAll(/\b(KG|ETA|TYPE)\s*=\s*([^;\n]+)/gi)].map((m) => [m[1].toUpperCase(), m[2].trim()]));
@@ -32,14 +63,17 @@ export class NearTermCapacityRuntimeService {
     const { data, error } = await this.db.from("near_term_capacity_cases").select("*").eq("active", true).maybeSingle();
     if (error) throw error; return data as CaseRow | null;
   }
-  private async recipient(warehouseName: string) {
-    const { data: members, error } = await this.db.from("telegram_pilot_members").select("id,group_id,warehouse_name,warehouse_names").eq("status", "ACTIVE");
-    if (error) throw error;
-    const member = ((members || []) as Member[]).find((item) => item.warehouse_name === warehouseName || (Array.isArray(item.warehouse_names) && item.warehouse_names.includes(warehouseName)));
-    if (!member) return null;
-    const { data: group, error: groupError } = await this.db.from("telegram_pilot_groups").select("telegram_chat_id").eq("id", member.group_id).eq("status", "ACTIVE").maybeSingle();
-    if (groupError) throw groupError;
-    return group ? { member, chatId: String(group.telegram_chat_id) } : null;
+  private async recipient(warehouseId: string, warehouseName: string) {
+    const scope = await resolveAuthorizedRecipients(this.db, { warehouseId, warehouse: warehouseName });
+    if (scope.quarantine || !scope.managers.length) return null;
+    const province = resolveProvince({ warehouseId, warehouse: warehouseName });
+    const groupIds = [...new Set(scope.managers.map((member) => member.groupId))];
+    const [{ data: groups, error: groupError }, { data: topics, error: topicError }] = await Promise.all([
+      this.db.from("telegram_pilot_groups").select("id,telegram_chat_id,status").in("id", groupIds).eq("status", "ACTIVE"),
+      this.db.from("telegram_pilot_topics").select("group_id,message_thread_id,province_name,is_manager_decision,status").in("group_id", groupIds).eq("status", "ACTIVE"),
+    ]);
+    if (groupError || topicError) throw groupError || topicError;
+    return selectScopedLeadRecipient({ scopedManagers: scope.managers, groups: (groups || []) as PilotGroup[], topics: (topics || []) as PilotTopic[], province });
   }
   /** Existing persisted KHO_TON incident/history are evidence, not a made-up capacity threshold. */
   async runCheckpoint(actor = "near_term_capacity_checkpoint") {
@@ -51,13 +85,13 @@ export class NearTermCapacityRuntimeService {
       if (historyError) throw historyError;
       const facts: CurrentRisk = { warehouseId: String(incident.warehouse_id), warehouseName: String(incident.warehouse_name || incident.warehouse_id), capturedAt: history?.recorded_at || incident.last_detected_at, currentOrders: history?.affected_order_count ?? null, currentKg: null, b2bOrders: null, evidenceRefs: [`incident:${incident.id}`, ...(history ? [`incident_history:${history.recorded_at}`] : [])], riskSignals: ["KHO_TON"], hardSlaConstraint: "Persisted warehouse backlog risk" };
       if (!detectCandidate(facts)) continue;
-      const recipient = await this.recipient(facts.warehouseName); if (!recipient) continue;
+      const recipient = await this.recipient(facts.warehouseId, facts.warehouseName); if (!recipient) continue;
       const { data: created, error: createError } = await this.db.from("near_term_capacity_cases").insert({ warehouse_id: facts.warehouseId, warehouse_name: facts.warehouseName, current_risk_snapshot: facts, status: "FACT_REQUESTED", active: true }).select("*").single();
       if (createError) { if (createError.code === "23505") return { status: "ACTIVE_CASE_EXISTS", risk_candidates: 1, fact_requests_sent: 0 }; throw createError; }
       const caseRow = created as CaseRow; const keyboard = nearTermFactButtons.map(([text, answer]) => [{ text, callbackData: buildNearTermFactCallbackData(caseRow.id, answer) }]);
       try {
-        const sent = await this.telegram.sendToChat(recipient.chatId, formatNearTermFactRequest(facts, policy.nearTermWindowMinutes), { inlineKeyboard: keyboard });
-        await this.event(caseRow.id, "FACT_REQUEST_SENT", actor, { interactionId: caseRow.id, telegramMessageId: sent.messageId, memberId: recipient.member.id, mode: NEAR_TERM_SHADOW_MODE });
+        const sent = await this.telegram.sendToChat(recipient.chatId, formatNearTermFactRequest(facts, policy.nearTermWindowMinutes), { inlineKeyboard: keyboard, messageThreadId: recipient.messageThreadId });
+        await this.event(caseRow.id, "FACT_REQUEST_SENT", actor, { interactionId: caseRow.id, telegramMessageId: sent.messageId, memberId: recipient.member.memberId, messageThreadId: recipient.messageThreadId, province: recipient.province, mode: NEAR_TERM_SHADOW_MODE });
         return { status: "FACT_REQUEST_SENT", risk_candidates: 1, fact_requests_sent: 1, caseId: caseRow.id };
       } catch (sendError) { await this.event(caseRow.id, "FACT_REQUEST_SEND_FAILED", actor, { reason: sendError instanceof Error ? sendError.message : String(sendError) }); throw sendError; }
     }
