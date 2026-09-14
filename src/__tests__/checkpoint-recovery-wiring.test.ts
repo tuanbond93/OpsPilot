@@ -68,7 +68,23 @@ describe("checkpoint recovery wiring", () => {
     const { GET } = await import("@/app/api/cron/followup-cycle/route");
     const response = await GET(new NextRequest("https://opspilot.test/api/cron/followup-cycle?checkpoint_at=2026-09-12T01%3A00%3A00.000Z&recovery_attempt=1", { headers: { "x-opspilot-recovery-token": "token-1" } }));
     expect(response.status).toBe(200);
-    expect(finish).toHaveBeenCalledWith(expect.anything(), "2026-09-12T01:00:00.000Z", "token-1", expect.objectContaining({ status: "SUCCEEDED", syncRunId: "run-1" }));
+    expect(finish).toHaveBeenCalledWith(expect.anything(), "2026-09-12T01:00:00.000Z", "token-1", expect.objectContaining({ status: "CONFIRMED", syncRunId: "run-1" }));
+  });
+
+  it("8a. returns a transient recovery failure to PENDING through the bounded retry contract", async () => {
+    claim.mockResolvedValue(true);
+    syncRillnet.mockResolvedValue(failedBeforeSync);
+    const { GET } = await import("@/app/api/cron/followup-cycle/route");
+    await GET(new NextRequest("https://opspilot.test/api/cron/followup-cycle?checkpoint_at=2026-09-12T01%3A00%3A00.000Z&recovery_attempt=1", { headers: { "x-opspilot-recovery-token": "token-1" } }));
+    expect(finish).toHaveBeenCalledWith(expect.anything(), "2026-09-12T01:00:00.000Z", "token-1", expect.objectContaining({ status: "RETRYABLE" }));
+  });
+
+  it("8b. does not retry a deterministic recovery authorization failure", async () => {
+    claim.mockResolvedValue(true);
+    syncRillnet.mockResolvedValue({ ...failedBeforeSync, error: { code: "401", message: "Unauthorized" } });
+    const { GET } = await import("@/app/api/cron/followup-cycle/route");
+    await GET(new NextRequest("https://opspilot.test/api/cron/followup-cycle?checkpoint_at=2026-09-12T01%3A00%3A00.000Z&recovery_attempt=1", { headers: { "x-opspilot-recovery-token": "token-1" } }));
+    expect(finish).toHaveBeenCalledWith(expect.anything(), "2026-09-12T01:00:00.000Z", "token-1", expect.objectContaining({ status: "FAILED_REQUIRES_ATTENTION" }));
   });
 
   it("9. does not execute a duplicate recovery that cannot be claimed", async () => {

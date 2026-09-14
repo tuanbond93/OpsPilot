@@ -90,7 +90,12 @@ async function runFollowupCycle(request: NextRequest) {
       attention(checkpointAt, "SYNC", sync.error?.code || "SYNC_FAILURE", sync.syncLockAttempts || 1, sync.error?.message || "Sync failed");
     }
     if (recovery) {
-      await finishCheckpointRecovery(client, checkpointAt, recovery.recoveryToken, { status: "FAILED", failureStage: "SYNC", lastSafeError: sync.error?.message || "Recovery sync failed" });
+      const retryable = isTransientInfrastructureError(sync.error);
+      await finishCheckpointRecovery(client, checkpointAt, recovery.recoveryToken, {
+        status: retryable ? "RETRYABLE" : "FAILED_REQUIRES_ATTENTION",
+        failureStage: retryable ? "SYNC_RETRYABLE" : "CHECKPOINT_FAILED_REQUIRES_ATTENTION",
+        lastSafeError: sync.error?.message || "Recovery sync failed",
+      });
     } else if (!sync.syncRunId && sync.error && isTransientInfrastructureError(sync.error)) {
       try {
         const activeLock = await retryTransientInfrastructure(hasActiveSyncLock);
@@ -111,7 +116,7 @@ async function runFollowupCycle(request: NextRequest) {
   }
 
   if (recovery) {
-    await finishCheckpointRecovery(client, checkpointAt, recovery.recoveryToken, { status: "SUCCEEDED", syncRunId: sync.syncRunId });
+    await finishCheckpointRecovery(client, checkpointAt, recovery.recoveryToken, { status: "CONFIRMED", syncRunId: sync.syncRunId });
   }
 
   if (sync.skipped && sync.skipReason === "CHECKPOINT_ALREADY_COMPLETED") {
