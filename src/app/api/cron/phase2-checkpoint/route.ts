@@ -26,7 +26,10 @@ export async function GET(request: NextRequest) {
   const claimed = await claimPhase2CheckpointWork(client, identity);
   if (!claimed) return NextResponse.json({ ok: true, stage: "PHASE2_ALREADY_CLAIMED" });
   try {
-    const result = await new NearTermCapacityRuntimeService(client).runCheckpoint("phase2_checkpoint");
+    const result = await new NearTermCapacityRuntimeService(client).runCheckpoint("phase2_checkpoint", {
+      checkpointAt: identity.checkpointAt,
+      syncRunId: claimed.sync_run_id,
+    });
     await finishPhase2CheckpointWork(client, { ...identity, outcome: "COMPLETED" });
     return NextResponse.json({ ok: true, stage: "PHASE2_COMPLETED", result });
   } catch (error) {

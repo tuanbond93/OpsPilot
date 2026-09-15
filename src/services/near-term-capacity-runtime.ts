@@ -12,6 +12,13 @@ type CaseRow = { id: string; warehouse_id: string; warehouse_name: string; curre
 type PilotGroup = { id: string; telegram_chat_id: string | number; status: string };
 type PilotTopic = { group_id: string; message_thread_id: number; province_name: string | null; is_manager_decision: boolean; status: string };
 type ScopedLeadRecipient = { member: ResolvedRecipient; chatId: string; messageThreadId: number; province: string };
+type DetectorTelemetryContext = { checkpointAt: string; syncRunId: string };
+type DetectorTelemetrySummary = {
+  incidentsAvailable: number; incidentsScanned: number; candidatesDetected: number; candidatesPersisted: number;
+  rejectedCount: number; missingSignalCount: number; noRiskCount: number; belowThresholdCount: number;
+  outsideScopeCount: number; duplicateCount: number; activeCaseBlockCount: number; otherRejectionCount: number;
+  startedAt: string; completedAt: string;
+};
 
 function provinceKey(value: string | null | undefined) {
   return String(value || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/đ/gi, "d").trim().toLocaleLowerCase("vi");
@@ -55,6 +62,35 @@ function factFrom(answer: IncomingAnswer, actor: string, interactionId: string, 
 /** Adapter is deliberately fail-soft: callers never let Phase 2 affect the Phase 1 checkpoint. */
 export class NearTermCapacityRuntimeService {
   constructor(private readonly db: SupabaseClient, private readonly telegram = new TelegramClient()) {}
+  private async telemetryWrite(table: string, payload: Record<string, unknown>) {
+    try {
+      const { error } = await this.db.from(table).upsert(payload);
+      if (error) console.warn("NEAR_TERM_CAPACITY_TELEMETRY_WRITE_FAILED", { table, error: error.message });
+    } catch (error) { console.warn("NEAR_TERM_CAPACITY_TELEMETRY_WRITE_FAILED", { table, error: error instanceof Error ? error.message : String(error) }); }
+  }
+  private async writeIncidentTelemetry(context: DetectorTelemetryContext, incident: { incident_key?: string | null; reason_code?: string | null; warehouse_name?: string | null; warehouse_id?: string | null }, facts: CurrentRisk, candidate: boolean, rejectionReason: string | null) {
+    await this.telemetryWrite("near_term_capacity_detector_telemetry", {
+      checkpoint_at: context.checkpointAt, sync_run_id: context.syncRunId, incident_key: String(incident.incident_key || `${incident.warehouse_id}:${incident.reason_code}`),
+      incident_type: String(incident.reason_code || "UNKNOWN"), warehouse: String(incident.warehouse_name || incident.warehouse_id || "UNKNOWN"),
+      province: resolveProvince({ warehouseId: String(incident.warehouse_id || ""), warehouse: String(incident.warehouse_name || incident.warehouse_id || "") }) || null,
+      affected_order_count: facts.currentOrders, current_kg: facts.currentKg, captured_at_present: Boolean(facts.capturedAt),
+      evidence_refs_present: facts.evidenceRefs.length > 0, risk_signals_present: facts.riskSignals.length > 0,
+      current_orders_availability: facts.currentOrders == null ? "MISSING" : "AVAILABLE", current_kg_availability: facts.currentKg == null ? "MISSING" : "AVAILABLE",
+      backlog_trend_availability: "NOT_USED", new_inflow_availability: "NOT_USED", vehicle_capacity_availability: "NOT_USED",
+      manpower_capacity_availability: "NOT_USED", cot_deadline_availability: "NOT_USED", detector_result: candidate ? "CANDIDATE" : "REJECTED", rejection_reason: rejectionReason,
+    });
+  }
+  private async writeCheckpointTelemetry(context: DetectorTelemetryContext, summary: DetectorTelemetrySummary) {
+    const completedAt = summary.completedAt;
+    await this.telemetryWrite("near_term_capacity_checkpoint_telemetry", {
+      checkpoint_at: context.checkpointAt, sync_run_id: context.syncRunId, incidents_available: summary.incidentsAvailable, incidents_scanned: summary.incidentsScanned,
+      candidates_detected: summary.candidatesDetected, candidates_persisted: summary.candidatesPersisted, rejected_count: summary.rejectedCount,
+      missing_signal_count: summary.missingSignalCount, no_risk_count: summary.noRiskCount, below_threshold_count: summary.belowThresholdCount,
+      outside_scope_count: summary.outsideScopeCount, duplicate_count: summary.duplicateCount, active_case_block_count: summary.activeCaseBlockCount,
+      other_rejection_count: summary.otherRejectionCount, phase2_started_at: summary.startedAt, phase2_completed_at: completedAt,
+      phase2_duration_ms: Math.max(0, Date.parse(completedAt) - Date.parse(summary.startedAt)), updated_at: completedAt,
+    });
+  }
   private async event(caseId: string, eventType: string, actor: string, payload: Record<string, unknown> = {}) {
     const { error } = await this.db.from("near_term_capacity_events").insert({ case_id: caseId, event_type: eventType, actor, payload });
     if (error) throw error;
@@ -76,26 +112,34 @@ export class NearTermCapacityRuntimeService {
     return selectScopedLeadRecipient({ scopedManagers: scope.managers, groups: (groups || []) as PilotGroup[], topics: (topics || []) as PilotTopic[], province });
   }
   /** Existing persisted KHO_TON incident/history are evidence, not a made-up capacity threshold. */
-  async runCheckpoint(actor = "near_term_capacity_checkpoint") {
-    if (await this.activeCase()) return { status: "ACTIVE_CASE_EXISTS", risk_candidates: 0, fact_requests_sent: 0 };
-    const { data: incidents, error } = await this.db.from("incidents").select("id,warehouse_id,warehouse_name,reason_code,last_detected_at").in("status", ["open", "monitoring"]).eq("reason_code", "KHO_TON").order("last_detected_at", { ascending: false }).limit(20);
+  async runCheckpoint(actor = "near_term_capacity_checkpoint", telemetryContext?: DetectorTelemetryContext) {
+    const startedAt = new Date().toISOString();
+    const summary: DetectorTelemetrySummary = { incidentsAvailable: 0, incidentsScanned: 0, candidatesDetected: 0, candidatesPersisted: 0, rejectedCount: 0, missingSignalCount: 0, noRiskCount: 0, belowThresholdCount: 0, outsideScopeCount: 0, duplicateCount: 0, activeCaseBlockCount: 0, otherRejectionCount: 0, startedAt, completedAt: startedAt };
+    const finish = async <T>(result: T) => { if (telemetryContext) { summary.completedAt = new Date().toISOString(); await this.writeCheckpointTelemetry(telemetryContext, summary); } return result; };
+    if (await this.activeCase()) { summary.activeCaseBlockCount = 1; return finish({ status: "ACTIVE_CASE_EXISTS", risk_candidates: 0, fact_requests_sent: 0 }); }
+    const { data: incidents, error } = await this.db.from("incidents").select("id,incident_key,warehouse_id,warehouse_name,reason_code,last_detected_at").in("status", ["open", "monitoring"]).eq("reason_code", "KHO_TON").order("last_detected_at", { ascending: false }).limit(20);
     if (error) throw error;
+    summary.incidentsAvailable = (incidents || []).length; summary.incidentsScanned = summary.incidentsAvailable;
     for (const incident of incidents || []) {
       const { data: history, error: historyError } = await this.db.from("incident_history").select("affected_order_count,recorded_at").eq("incident_id", incident.id).order("recorded_at", { ascending: false }).limit(1).maybeSingle();
       if (historyError) throw historyError;
       const facts: CurrentRisk = { warehouseId: String(incident.warehouse_id), warehouseName: String(incident.warehouse_name || incident.warehouse_id), capturedAt: history?.recorded_at || incident.last_detected_at, currentOrders: history?.affected_order_count ?? null, currentKg: null, b2bOrders: null, evidenceRefs: [`incident:${incident.id}`, ...(history ? [`incident_history:${history.recorded_at}`] : [])], riskSignals: ["KHO_TON"], hardSlaConstraint: "Persisted warehouse backlog risk" };
-      if (!detectCandidate(facts)) continue;
-      const recipient = await this.recipient(facts.warehouseId, facts.warehouseName); if (!recipient) continue;
+      const candidate = detectCandidate(facts);
+      if (telemetryContext) await this.writeIncidentTelemetry(telemetryContext, incident, facts, candidate, candidate ? null : "MISSING_REQUIRED_SIGNAL");
+      if (!candidate) { summary.rejectedCount += 1; summary.missingSignalCount += 1; continue; }
+      summary.candidatesDetected += 1;
+      const recipient = await this.recipient(facts.warehouseId, facts.warehouseName); if (!recipient) { summary.outsideScopeCount += 1; continue; }
       const { data: created, error: createError } = await this.db.from("near_term_capacity_cases").insert({ warehouse_id: facts.warehouseId, warehouse_name: facts.warehouseName, current_risk_snapshot: facts, status: "FACT_REQUESTED", active: true }).select("*").single();
-      if (createError) { if (createError.code === "23505") return { status: "ACTIVE_CASE_EXISTS", risk_candidates: 1, fact_requests_sent: 0 }; throw createError; }
+      if (createError) { if (createError.code === "23505") { summary.duplicateCount += 1; return finish({ status: "ACTIVE_CASE_EXISTS", risk_candidates: 1, fact_requests_sent: 0 }); } throw createError; }
+      summary.candidatesPersisted += 1;
       const caseRow = created as CaseRow; const keyboard = nearTermFactButtons.map(([text, answer]) => [{ text, callbackData: buildNearTermFactCallbackData(caseRow.id, answer) }]);
       try {
         const sent = await this.telegram.sendToChat(recipient.chatId, formatNearTermFactRequest(facts, policy.nearTermWindowMinutes), { inlineKeyboard: keyboard, messageThreadId: recipient.messageThreadId });
         await this.event(caseRow.id, "FACT_REQUEST_SENT", actor, { interactionId: caseRow.id, telegramMessageId: sent.messageId, memberId: recipient.member.memberId, messageThreadId: recipient.messageThreadId, province: recipient.province, mode: NEAR_TERM_SHADOW_MODE });
-        return { status: "FACT_REQUEST_SENT", risk_candidates: 1, fact_requests_sent: 1, caseId: caseRow.id };
+        return finish({ status: "FACT_REQUEST_SENT", risk_candidates: 1, fact_requests_sent: 1, caseId: caseRow.id });
       } catch (sendError) { await this.event(caseRow.id, "FACT_REQUEST_SEND_FAILED", actor, { reason: sendError instanceof Error ? sendError.message : String(sendError) }); throw sendError; }
     }
-    return { status: "NO_CANDIDATE", risk_candidates: 0, fact_requests_sent: 0 };
+    return finish({ status: "NO_CANDIDATE", risk_candidates: 0, fact_requests_sent: 0 });
   }
   async consumeInitialAnswer(caseId: string, answer: NearTermFactAnswer, memberId: string, chatId: string, messageId: number, updateId: number) {
     const row = await this.activeCase();

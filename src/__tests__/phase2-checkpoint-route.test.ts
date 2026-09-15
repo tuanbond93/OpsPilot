@@ -26,7 +26,7 @@ describe("Phase2 checkpoint dispatcher route", () => {
     const { GET } = await import("@/app/api/cron/phase2-checkpoint/route");
     const response = await GET(request());
     expect(response.status).toBe(200);
-    expect(runCheckpoint).toHaveBeenCalledWith("phase2_checkpoint");
+    expect(runCheckpoint).toHaveBeenCalledWith("phase2_checkpoint", { checkpointAt: "2026-09-15T01:00:00.000Z", syncRunId: "run-1" });
     expect(finish).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ outcome: "COMPLETED" }));
   });
 
