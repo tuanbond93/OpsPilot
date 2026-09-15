@@ -7,6 +7,9 @@ const sendStatus = vi.fn();
 const persist = vi.fn();
 const queuePhase2 = vi.fn();
 const slowPhase2 = vi.fn();
+const queueRecovery = vi.fn();
+const claimRecovery = vi.fn();
+const finishRecovery = vi.fn();
 
 vi.mock("@/security/api-security", () => ({ isCronAuthorized: () => true, authorizeApiRequest: vi.fn() }));
 vi.mock("@/connectors/supabase", () => ({ createAdminClient: () => ({}) }));
@@ -17,6 +20,7 @@ vi.mock("@/services/telegram-incident-status", () => ({ sendIncidentSyncStatus: 
 vi.mock("@/services/checkpoint-dispatch-audit", () => ({ persistCheckpointDispatchAudit: persist }));
 vi.mock("@/services/phase2-checkpoint-work", () => ({ queuePhase2CheckpointWork: queuePhase2 }));
 vi.mock("@/services/near-term-capacity-runtime", () => ({ NearTermCapacityRuntimeService: class { runCheckpoint = slowPhase2; } }));
+vi.mock("@/services/checkpoint-recovery", () => ({ queueCheckpointRecovery: queueRecovery, claimCheckpointRecovery: claimRecovery, finishCheckpointRecovery: finishRecovery }));
 
 const sync = {
   ok: true, syncRunId: "00000000-0000-4000-8000-000000000001", startedAt: "2026-09-10T07:00:01.000Z", completedAt: "2026-09-10T07:01:00.000Z",
@@ -43,16 +47,33 @@ describe("followup checkpoint audit wiring", () => {
     }));
   });
 
-  it("does not let an audit persistence failure fail an otherwise successful sync", async () => {
-    syncRillnet.mockResolvedValue(sync);
+  it("returns a retryable failure rather than false primary success when audit persistence is unconfirmed", async () => {
+    syncRillnet.mockResolvedValue({ ...sync, skipped: false, skipReason: undefined, followupEvaluation: { supportedCasesEvaluated: 1, khoTonEvaluated: 1, khoChuaLuanChuyenEvaluated: 0, pendingCreated: { first: 0, second: 0, third: 0, escalation: 0 } } });
+    dispatch.mockResolvedValue({ scanned: 1, recipientsResolved: 1, interactionsCreated: 0, sendAttempts: 0, sent: 0, failed: 0 });
     sendStatus.mockResolvedValue({ active: 0, resolved: 0, sentBatches: 0, failed: 0 });
     persist.mockRejectedValue(new Error("audit unavailable"));
     const { GET } = await import("@/app/api/cron/followup-cycle/route");
 
     const response = await GET(new NextRequest("https://opspilot.test/api/cron/followup-cycle"));
 
-    expect(response.status).toBe(200);
+    expect(response.status).toBe(503);
     expect(persist).toHaveBeenCalledTimes(1);
+    expect(queueRecovery).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ failureStage: "AUDIT_PERSISTENCE" }));
+    expect(queuePhase2).not.toHaveBeenCalled();
+  });
+
+  it("retries post-audit delivery without re-running Phase1 or Telegram", async () => {
+    claimRecovery.mockResolvedValue(true);
+    syncRillnet.mockResolvedValue({ ...sync, skipped: true, skipReason: "CHECKPOINT_ALREADY_COMPLETED" });
+    persist.mockResolvedValue(undefined);
+    queuePhase2.mockResolvedValue(undefined);
+    const { GET } = await import("@/app/api/cron/followup-cycle/route");
+    const response = await GET(new NextRequest("https://opspilot.test/api/cron/followup-cycle?checkpoint_at=2026-09-10T07%3A00%3A00.000Z&recovery_attempt=1", { headers: { "x-opspilot-recovery-token": "token-1" } }));
+    expect(response.status).toBe(200);
+    expect(dispatch).not.toHaveBeenCalled();
+    expect(sendStatus).not.toHaveBeenCalled();
+    expect(queuePhase2).toHaveBeenCalledTimes(1);
+    expect(finishRecovery).toHaveBeenCalledWith(expect.anything(), expect.any(String), "token-1", expect.objectContaining({ status: "CONFIRMED" }));
   });
 
   it("returns primary success without awaiting a slow Phase2 runtime", async () => {

@@ -115,11 +115,11 @@ async function runFollowupCycle(request: NextRequest) {
     return NextResponse.json({ ok: false, stage: "SYNC", sync }, { status });
   }
 
-  if (recovery) {
-    await finishCheckpointRecovery(client, checkpointAt, recovery.recoveryToken, { status: "CONFIRMED", syncRunId: sync.syncRunId });
-  }
-
   if (sync.skipped && sync.skipReason === "CHECKPOINT_ALREADY_COMPLETED") {
+    const auditPersisted = await writeCheckpointAudit({ checkpointAt, startedAt: sync.startedAt, completedAt: sync.completedAt, syncRunId: sync.syncRunId, executionStatus: "SUCCESS", httpStatus: 200, exclusionCounts: { CHECKPOINT_ALREADY_COMPLETED: 1 } });
+    if (!auditPersisted) return failPrimaryAudit(client, checkpointAt, recovery, sync.syncRunId);
+    await queuePhase2CheckpointWork(client, { checkpointAt, syncRunId: sync.syncRunId });
+    if (recovery) await finishCheckpointRecovery(client, checkpointAt, recovery.recoveryToken, { status: "CONFIRMED", syncRunId: sync.syncRunId });
     return NextResponse.json({ ok: true, stage: "RECOVERY_ALREADY_COMPLETED", sync: { syncRunId: sync.syncRunId } });
   }
 
@@ -145,13 +145,15 @@ async function runFollowupCycle(request: NextRequest) {
         statusUpdates = { active: null, changed: null, unchanged: null, resolved: null, sentBatches: null, failed: 1, skipped: null };
       }
     }
-    await writeCheckpointAudit({
+    const auditPersisted = await writeCheckpointAudit({
       checkpointAt, startedAt: sync.startedAt, completedAt: sync.completedAt, syncRunId: sync.syncRunId, executionStatus: "SUCCESS", httpStatus: 200,
       telegramScanned: 0, recipientsResolved: 0, interactionsCreated: 0, sendAttempts: 0, sendSuccess: 0, sendFailed: 0,
       statusUpdatesActive: statusUpdates?.active, statusUpdatesResolved: statusUpdates?.resolved,
       statusUpdateBatchesSent: statusUpdates?.sentBatches, statusUpdateBatchesFailed: statusUpdates?.failed,
       exclusionCounts: { NO_FRESH_EVIDENCE: 1 },
     });
+    if (!auditPersisted) return failPrimaryAudit(client, checkpointAt, recovery, sync.syncRunId);
+    if (recovery) await finishCheckpointRecovery(client, checkpointAt, recovery.recoveryToken, { status: "CONFIRMED", syncRunId: sync.syncRunId });
     return NextResponse.json({
       ok: rillnetReviews.failed === 0 && (!statusUpdates || statusUpdates.failed === 0),
       stage: "NO_FRESH_SNAPSHOT",
@@ -185,7 +187,7 @@ async function runFollowupCycle(request: NextRequest) {
     throw error;
   }
   // Phase 2 is durable separate work. It must never consume the primary HTTP budget.
-  await writeCheckpointAudit({
+  const auditPersisted = await writeCheckpointAudit({
     checkpointAt, startedAt: sync.startedAt, completedAt: sync.completedAt, syncRunId: sync.syncRunId, executionStatus: "SUCCESS", httpStatus: 200,
     supportedCasesEvaluated: evaluation?.supportedCasesEvaluated,
     khoTonEvaluated: evaluation?.khoTonEvaluated,
@@ -200,7 +202,9 @@ async function runFollowupCycle(request: NextRequest) {
     statusUpdatesActive: statusUpdates.active, statusUpdatesResolved: statusUpdates.resolved,
     statusUpdateBatchesSent: statusUpdates.sentBatches, statusUpdateBatchesFailed: statusUpdates.failed,
   });
+  if (!auditPersisted) return failPrimaryAudit(client, checkpointAt, recovery, sync.syncRunId);
   await queuePhase2CheckpointWork(client, { checkpointAt, syncRunId: sync.syncRunId });
+  if (recovery) await finishCheckpointRecovery(client, checkpointAt, recovery.recoveryToken, { status: "CONFIRMED", syncRunId: sync.syncRunId });
   return NextResponse.json({
     ok: telegram.failed === 0,
     stage: "COMPLETE",
@@ -214,6 +218,24 @@ async function runFollowupCycle(request: NextRequest) {
     statusUpdates,
     phase2: { status: "PENDING", syncRunId: sync.syncRunId },
   });
+}
+
+async function failPrimaryAudit(client: ReturnType<typeof createAdminClient>, checkpointAt: string, recovery: ReturnType<typeof recoveryRequest>, syncRunId?: string) {
+  if (recovery) {
+    await finishCheckpointRecovery(client, checkpointAt, recovery.recoveryToken, {
+      status: "RETRYABLE", syncRunId, failureStage: "AUDIT_PERSISTENCE", lastSafeError: "Checkpoint audit persistence unconfirmed",
+    });
+  } else {
+    try {
+      await queueCheckpointRecovery(client, {
+        checkpointAt, scheduledFor: new Date(Date.now() + 5 * 60_000).toISOString(),
+        failureStage: "AUDIT_PERSISTENCE", lastSafeError: "Checkpoint audit persistence unconfirmed",
+      });
+    } catch (error) {
+      attention(checkpointAt, "RECOVERY_QUEUE", "AUDIT_PERSISTENCE", 1, error);
+    }
+  }
+  return NextResponse.json({ ok: false, stage: "AUDIT_PERSISTENCE", syncRunId }, { status: 503 });
 }
 
 export async function GET(request: NextRequest) {

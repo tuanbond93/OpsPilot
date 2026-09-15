@@ -21,6 +21,7 @@ vi.mock("@/connectors/supabase", () => ({
 vi.mock("@/jobs/sync-rillnet", () => ({ syncRillnet }));
 vi.mock("@/services/checkpoint-recovery", () => ({ queueCheckpointRecovery: queue, claimCheckpointRecovery: claim, finishCheckpointRecovery: finish }));
 vi.mock("@/services/checkpoint-dispatch-audit", () => ({ persistCheckpointDispatchAudit: persist }));
+vi.mock("@/services/phase2-checkpoint-work", () => ({ queuePhase2CheckpointWork: vi.fn() }));
 vi.mock("@/services/telegram-followup-pilot", () => ({ runTelegramFollowupPilotDispatch: vi.fn() }));
 vi.mock("@/services/telegram-rillnet-review", () => ({ dispatchRillnetChangeReviews: vi.fn() }));
 vi.mock("@/services/telegram-incident-status", () => ({ sendIncidentSyncStatus: vi.fn() }));
