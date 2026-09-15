@@ -7,10 +7,10 @@ import { dispatchRillnetChangeReviews } from "@/services/telegram-rillnet-review
 import { sendIncidentSyncStatus } from "@/services/telegram-incident-status";
 import { atHour, localDay, localHour } from "@/domain/operational-learning/checkpoint-policy";
 import { persistCheckpointDispatchAudit } from "@/services/checkpoint-dispatch-audit";
-import { NearTermCapacityRuntimeService } from "@/services/near-term-capacity-runtime";
 import { getRuntimeErrorDetails } from "@/observability/runtimeDiagnostics";
 import { logger } from "@/observability/logger";
 import { claimCheckpointRecovery, finishCheckpointRecovery, queueCheckpointRecovery } from "@/services/checkpoint-recovery";
+import { queuePhase2CheckpointWork } from "@/services/phase2-checkpoint-work";
 import { isTransientInfrastructureError, retryTransientInfrastructure } from "@/services/transient-infrastructure";
 
 export const dynamic = "force-dynamic";
@@ -184,13 +184,7 @@ async function runFollowupCycle(request: NextRequest) {
     });
     throw error;
   }
-  // This shadow adapter is additive. A Phase 2 failure is logged but can never
-  // turn a successful Phase 1 checkpoint into a failed checkpoint.
-  let nearTermCapacity: Awaited<ReturnType<NearTermCapacityRuntimeService["runCheckpoint"]>> | null = null;
-  try { nearTermCapacity = await new NearTermCapacityRuntimeService(createAdminClient()).runCheckpoint("followup_cycle"); }
-  catch (error) {
-    logger.error({ category: "PHASE2_SHADOW_FAILURE", component: "near_term_capacity", message: getRuntimeErrorDetails(error).message });
-  }
+  // Phase 2 is durable separate work. It must never consume the primary HTTP budget.
   await writeCheckpointAudit({
     checkpointAt, startedAt: sync.startedAt, completedAt: sync.completedAt, syncRunId: sync.syncRunId, executionStatus: "SUCCESS", httpStatus: 200,
     supportedCasesEvaluated: evaluation?.supportedCasesEvaluated,
@@ -206,6 +200,7 @@ async function runFollowupCycle(request: NextRequest) {
     statusUpdatesActive: statusUpdates.active, statusUpdatesResolved: statusUpdates.resolved,
     statusUpdateBatchesSent: statusUpdates.sentBatches, statusUpdateBatchesFailed: statusUpdates.failed,
   });
+  await queuePhase2CheckpointWork(client, { checkpointAt, syncRunId: sync.syncRunId });
   return NextResponse.json({
     ok: telegram.failed === 0,
     stage: "COMPLETE",
@@ -217,7 +212,7 @@ async function runFollowupCycle(request: NextRequest) {
     },
     telegram,
     statusUpdates,
-    nearTermCapacity,
+    phase2: { status: "PENDING", syncRunId: sync.syncRunId },
   });
 }
 
