@@ -19,4 +19,14 @@ describe("Phase2 checkpoint work contract", () => {
     expect(migration).toContain("opspilot-phase2-checkpoint-dispatch");
     expect(migration).not.toContain("opspilot-followup-cycle-mb3");
   });
+
+  it("keeps the dispatcher method aligned with the endpoint handler", () => {
+    const migration = readFileSync("src/database/migrations/073_phase2_checkpoint_dispatch_get.sql", "utf8");
+    const endpoint = readFileSync("src/app/api/cron/phase2-checkpoint/route.ts", "utf8");
+    expect(migration).toContain("net.http_get(");
+    expect(migration).not.toContain("net.http_post(");
+    expect(endpoint).toContain("export async function GET");
+    expect(migration).toContain("Authorization','Bearer ' || cron_secret");
+    expect(migration).toContain("x-opspilot-phase2-token");
+  });
 });
