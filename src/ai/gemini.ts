@@ -17,7 +17,7 @@ export class GeminiProvider implements AIProvider {
     options: GenerateOptions = {}
   ): Promise<AIResponse> {
     const apiKey = this.getApiKey();
-    const model = options.model || "gemini-1.5-flash";
+    const model = options.model ?? process.env.AI_MODEL ?? "gemini-2.5-flash";
     const timeoutMs = options.timeoutMs ?? 20000;
     const maxRetries = options.retries ?? 1;
 
