@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { CAPACITY_ACTIONS, acceptLeadFact, allowedActions, buildContext, critique, detectCandidate, executionInstruction, factRequestNeeded, precheck, verifyCapacityOutcome, type AiRecommendation, type CurrentRisk, type LeadFact } from "@/domain/near-term-capacity";
 import { buildNearTermFactCallbackData, formatNearTermFactRequest, formatNearTermManagerCard, nearTermFactButtons, parseNearTermFactCallbackData } from "@/integrations/telegram/near-term-capacity-message";
 import { buildCapacityDecisionCallbackData, parseCapacityDecisionCallbackData } from "@/integrations/telegram/capacity-decision-actions";
-import { parseLeadDetail } from "@/services/near-term-capacity-runtime";
+import { isRecoverableUnsentFactRequest, parseLeadDetail } from "@/services/near-term-capacity-runtime";
 import fs from "node:fs";
 
 const now = new Date();
@@ -12,6 +12,12 @@ const lead: LeadFact = { interactionId: "telegram:1", suppliedBy: "lead:1", capt
 function recommendation(overrides: Partial<AiRecommendation> = {}): AiRecommendation { return { decision_case_id: "case-1", recommended_action: "ADD_VEHICLE", confidence: .8, reason_summary: "risk", current_risk: "risk", expected_state_if_no_action: "breach", expected_state_if_action: "reduce", key_evidence: ["incident:1"], uncertainties: [], execution_instruction: "Arrange one verified vehicle", required_by: new Date(now.getTime() + 10_000).toISOString(), required_followup_at: new Date(now.getTime() + 20_000).toISOString(), estimated_cost_vnd: null, estimated_saving_vnd: null, ...overrides }; }
 
 describe("near-term capacity decision loop", () => {
+  it("recovers only an active FACT_REQUESTED case with no delivery or response", () => {
+    expect(isRecoverableUnsentFactRequest({ active: true, status: "FACT_REQUESTED" }, null, null)).toBe(true);
+    expect(isRecoverableUnsentFactRequest({ active: true, status: "FACT_REQUESTED" }, { id: "sent" }, null)).toBe(false);
+    expect(isRecoverableUnsentFactRequest({ active: true, status: "FACT_REQUESTED" }, null, { id: "response" })).toBe(false);
+    expect(isRecoverableUnsentFactRequest({ active: false, status: "FACT_REQUESTED" }, null, null)).toBe(false);
+  });
   it("keeps every Phase 2 persistence table server-only with RLS and no client policy", () => { const sql = fs.readFileSync("src/database/migrations/067_near_term_capacity_decision_loop.sql", "utf8"); for (const table of ["near_term_capacity_cases", "near_term_capacity_fact_responses", "near_term_capacity_events"]) expect(sql).toContain(`ALTER TABLE ${table} ENABLE ROW LEVEL SECURITY;`); expect(sql).not.toMatch(/CREATE\s+POLICY|USING\s*\(\s*true\s*\)|WITH\s+CHECK\s*\(\s*true\s*\)/i); });
   it("detects only evidenced candidates and requests Lead facts", () => { expect(detectCandidate(facts)).toBe(true); expect(factRequestNeeded(facts)).toBe(true); expect(detectCandidate({ ...facts, riskSignals: [] })).toBe(false); });
   it("persists the first Lead fact only", () => { const first = acceptLeadFact(null, lead); expect(acceptLeadFact(first, { ...lead, incoming: "UNKNOWN" })).toBe(first); });

@@ -20,6 +20,10 @@ type DetectorTelemetrySummary = {
   startedAt: string; completedAt: string;
 };
 
+export function isRecoverableUnsentFactRequest(caseRow: Pick<CaseRow, "status" | "active">, sentEvent: unknown, factResponse: unknown) {
+  return caseRow.active && caseRow.status === "FACT_REQUESTED" && !sentEvent && !factResponse;
+}
+
 function provinceKey(value: string | null | undefined) {
   return String(value || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/đ/gi, "d").trim().toLocaleLowerCase("vi");
 }
@@ -104,6 +108,40 @@ export class NearTermCapacityRuntimeService {
     const { data, error } = await this.db.from("near_term_capacity_cases").select("*").eq("active", true).maybeSingle();
     if (error) throw error; return data as CaseRow | null;
   }
+  private async claimUnsentFactRequest(caseId: string) {
+    const cutoff = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+    const { data, error } = await this.db.from("near_term_capacity_cases")
+      .update({ fact_request_delivery_claimed_at: new Date().toISOString() })
+      .eq("id", caseId).eq("active", true).eq("status", "FACT_REQUESTED")
+      .or(`fact_request_delivery_claimed_at.is.null,fact_request_delivery_claimed_at.lt.${cutoff}`)
+      .select("id").maybeSingle();
+    if (error) throw error;
+    return Boolean(data?.id);
+  }
+  private async clearFactRequestClaim(caseId: string) {
+    await this.db.from("near_term_capacity_cases").update({ fact_request_delivery_claimed_at: null }).eq("id", caseId);
+  }
+  private async resumeUnsentFactRequest(row: CaseRow, actor: string) {
+    const [{ data: sentEvent, error: sentError }, { data: factResponse, error: factError }] = await Promise.all([
+      this.db.from("near_term_capacity_events").select("id").eq("case_id", row.id).eq("event_type", "FACT_REQUEST_SENT").maybeSingle(),
+      this.db.from("near_term_capacity_fact_responses").select("id").eq("case_id", row.id).maybeSingle(),
+    ]);
+    if (sentError || factError) throw sentError || factError;
+    if (!isRecoverableUnsentFactRequest(row, sentEvent, factResponse) || !(await this.claimUnsentFactRequest(row.id))) return false;
+    try {
+      const recipient = await this.recipient(row.warehouse_id, row.warehouse_name);
+      if (!recipient) { await this.clearFactRequestClaim(row.id); return false; }
+      const facts = row.current_risk_snapshot;
+      const keyboard = nearTermFactButtons.map(([text, answer]) => [{ text, callbackData: buildNearTermFactCallbackData(row.id, answer) }]);
+      const sent = await this.telegram.sendToChat(recipient.chatId, formatNearTermFactRequest(facts, policy.nearTermWindowMinutes), { inlineKeyboard: keyboard, messageThreadId: recipient.messageThreadId });
+      await this.event(row.id, "FACT_REQUEST_SENT", actor, { interactionId: row.id, telegramMessageId: sent.messageId, memberId: recipient.member.memberId, messageThreadId: recipient.messageThreadId, province: recipient.province, mode: NEAR_TERM_SHADOW_MODE });
+      await this.clearFactRequestClaim(row.id);
+      return true;
+    } catch (error) {
+      await this.clearFactRequestClaim(row.id);
+      throw error;
+    }
+  }
   private async recipient(warehouseId: string, warehouseName: string, resolvedScope?: ScopeResolutionResult) {
     const scope = resolvedScope || await resolveAuthorizedRecipients(this.db, { warehouseId, warehouse: warehouseName });
     if (scope.quarantine || !scope.managers.length) return null;
@@ -121,7 +159,13 @@ export class NearTermCapacityRuntimeService {
     const startedAt = new Date().toISOString();
     const summary: DetectorTelemetrySummary = { incidentsAvailable: 0, incidentsScanned: 0, candidatesDetected: 0, candidatesPersisted: 0, rejectedCount: 0, missingSignalCount: 0, noRiskCount: 0, belowThresholdCount: 0, outsideScopeCount: 0, duplicateCount: 0, activeCaseBlockCount: 0, otherRejectionCount: 0, startedAt, completedAt: startedAt };
     const finish = async <T>(result: T) => { if (telemetryContext) { summary.completedAt = new Date().toISOString(); await this.writeCheckpointTelemetry(telemetryContext, summary); } return result; };
-    if (await this.activeCase()) { summary.activeCaseBlockCount = 1; return finish({ status: "ACTIVE_CASE_EXISTS", risk_candidates: 0, fact_requests_sent: 0 }); }
+    const existingCase = await this.activeCase();
+    if (existingCase) {
+      if (existingCase.status === "FACT_REQUESTED" && await this.resumeUnsentFactRequest(existingCase, actor)) {
+        return finish({ status: "FACT_REQUEST_SENT", risk_candidates: 1, fact_requests_sent: 1, caseId: existingCase.id, recovered: true });
+      }
+      summary.activeCaseBlockCount = 1; return finish({ status: "ACTIVE_CASE_EXISTS", risk_candidates: 0, fact_requests_sent: 0 });
+    }
     const { data: incidents, error } = await this.db.from("incidents").select("id,incident_key,warehouse_id,warehouse_name,reason_code,last_detected_at").in("status", ["open", "monitoring"]).eq("reason_code", "KHO_TON").order("last_detected_at", { ascending: false });
     if (error) throw error;
     const scopeByIncident = new Map<string, ScopeResolutionResult>();
