@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { CAPACITY_ACTIONS, acceptLeadFact, allowedActions, buildContext, critique, detectCandidate, executionInstruction, factRequestNeeded, precheck, verifyCapacityOutcome, type AiRecommendation, type CurrentRisk, type LeadFact } from "@/domain/near-term-capacity";
-import { buildNearTermFactCallbackData, formatNearTermFactRequest, formatNearTermManagerCard, parseNearTermFactCallbackData } from "@/integrations/telegram/near-term-capacity-message";
+import { buildNearTermFactCallbackData, formatNearTermFactRequest, formatNearTermManagerCard, nearTermFactButtons, parseNearTermFactCallbackData } from "@/integrations/telegram/near-term-capacity-message";
 import { buildCapacityDecisionCallbackData, parseCapacityDecisionCallbackData } from "@/integrations/telegram/capacity-decision-actions";
 import { parseLeadDetail } from "@/services/near-term-capacity-runtime";
 import fs from "node:fs";
@@ -22,7 +22,25 @@ describe("near-term capacity decision loop", () => {
   it("creates only executable Phase 1 instructions", () => { expect(executionInstruction("ADD_MANPOWER", "Prepare two confirmed sorters")).toMatch(/two/); expect(() => executionInstruction("NO_ACTION_MONITOR", "x")).toThrow("NON_EXECUTABLE_ACTION"); });
   it("verifies success, failure, and inconclusive without inventing money", () => { expect(verifyCapacityOutcome({ actionExecuted: "YES", slaOutcome: "PRESERVED", riskAfterAction: "REDUCED" })).toBe("SUCCESS"); expect(verifyCapacityOutcome({ actionExecuted: "NO", slaOutcome: "UNKNOWN", riskAfterAction: "UNKNOWN" })).toBe("FAILURE"); expect(verifyCapacityOutcome({ actionExecuted: "UNKNOWN", slaOutcome: "UNKNOWN", riskAfterAction: "UNKNOWN" })).toBe("INCONCLUSIVE"); });
   it("keeps Telegram Lead interaction factual and the Manager card evidence-based with guarded finance", () => { const factText = formatNearTermFactRequest(facts, 240); expect(factText).toContain("CẦN XÁC NHẬN"); expect(factText).not.toMatch(/nên làm gì/i); const context = buildContext("case-1", facts, lead, policy); const card = formatNearTermManagerCard(facts.warehouseName, facts, lead, context, recommendation()); expect(card).toContain("ADD_VEHICLE"); expect(card).toContain("Chưa đủ dữ liệu xác minh chi phí"); expect(card).toContain("Facts từ Lead"); expect(card).not.toContain("HOLD_LOW_PRIORITY_ECOM"); });
-  it("uses a bounded callback namespace and accepts only complete Lead detail facts", () => { const id = "123e4567-e89b-42d3-a456-426614174000"; const callback = buildNearTermFactCallbackData(id, "CONFIRMED_ETA"); expect(parseNearTermFactCallbackData(callback)).toEqual({ caseId: id, answer: "CONFIRMED_ETA" }); expect(parseNearTermFactCallbackData("opspcap:bad:ADD_VEHICLE")).toBeNull(); expect(parseLeadDetail("KG=125.5; ETA=2026-09-10T10:00:00.000Z; TYPE=MIXED")).toMatchObject({ expectedIncomingKg: 125.5, incomingType: "MIXED" }); expect(parseLeadDetail("KG=125; TYPE=ECOM")).toBeNull(); });
+  it("keeps every Lead fact callback compact, round-trippable, and legacy-compatible", () => {
+    const id = "e2524b83-4462-4238-8914-cd371ab51106";
+    for (const [, answer] of nearTermFactButtons) {
+      const callback = buildNearTermFactCallbackData(id, answer);
+      expect(Buffer.byteLength(callback)).toBeLessThanOrEqual(64);
+      expect(parseNearTermFactCallbackData(callback)).toEqual({ caseId: id, answer });
+    }
+    expect(parseNearTermFactCallbackData(`opspcap:${id}:CONFIRMED_ETA`)).toEqual({ caseId: id, answer: "CONFIRMED_ETA" });
+    expect(parseNearTermFactCallbackData(`opspcap:${id}:UNKNOWN`)).toEqual({ caseId: id, answer: "UNKNOWN" });
+    expect(parseNearTermFactCallbackData(`opspcap:${id}:Z`)).toBeNull();
+    expect(parseNearTermFactCallbackData("opsscap:123e4567-e89b-42d3-a456-426614174000:C")).toBeNull();
+    expect(parseNearTermFactCallbackData("opspcap:not-a-uuid:C")).toBeNull();
+    expect(parseNearTermFactCallbackData(`opspcap:${id}`)).toBeNull();
+    expect(parseNearTermFactCallbackData(`opspcap:${id}:NO_SIGNIFICANT_INCOMING`)).toBeNull();
+    expect(parseNearTermFactCallbackData(`opspcap:${id}:ADD_VEHICLE`)).toBeNull();
+    expect(nearTermFactButtons.map(([label]) => label)).toEqual(["Có — ETA khá chắc chắn", "Có — ETA chưa chắc chắn", "Không có đáng kể", "Chưa xác định"]);
+    expect(parseLeadDetail("KG=125.5; ETA=2026-09-10T10:00:00.000Z; TYPE=MIXED")).toMatchObject({ expectedIncomingKg: 125.5, incomingType: "MIXED" });
+    expect(parseLeadDetail("KG=125; TYPE=ECOM")).toBeNull();
+  });
   it("uses an isolated bounded callback for a capacity manager response", () => { const id = "123e4567-e89b-42d3-a456-426614174000"; expect(parseCapacityDecisionCallbackData(buildCapacityDecisionCallbackData(id, "APPROVE"))).toEqual({ requestId: id, action: "APPROVE" }); expect(parseCapacityDecisionCallbackData(`opspcapdc:${id}:CONFIRM_SEND`)).toBeNull(); });
   it("defines a one-to-one durable bridge and atomic first-response-wins response contract", () => { const sql = fs.readFileSync("src/database/migrations/070_near_term_capacity_manager_decision_bridge.sql", "utf8"); expect(sql).toContain("capacity_case_id"); expect(sql).toContain("one_manager_request_per_near_term_capacity_case"); expect(sql).toContain("record_near_term_capacity_decision_response"); expect(sql).toContain("decision_status=CASE WHEN action='APPROVE' THEN 'APPROVED' ELSE 'REJECTED' END"); expect(sql).not.toContain("EXECUTED"); });
 });
