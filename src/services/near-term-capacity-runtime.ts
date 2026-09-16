@@ -4,7 +4,7 @@ import { buildContext, critique, detectCandidate, type AiRecommendation, type Cu
 import { TelegramClient } from "@/integrations/telegram/telegram-client";
 import { buildNearTermFactCallbackData, formatNearTermDetailRequest, formatNearTermFactRequest, nearTermFactButtons, type NearTermFactAnswer } from "@/integrations/telegram/near-term-capacity-message";
 import { NearTermCapacityDecisionBridge } from "@/services/near-term-capacity-decision-bridge";
-import { resolveAuthorizedRecipients, resolveProvince, type ResolvedRecipient } from "@/notifications/gateway/scope-resolver";
+import { resolveAuthorizedRecipients, resolveProvince, type ResolvedRecipient, type ScopeResolutionResult } from "@/notifications/gateway/scope-resolver";
 
 export const NEAR_TERM_SHADOW_MODE = "SHADOW_DECISION_WITH_LIVE_FACT_COLLECTION" as const;
 const policy = { nearTermWindowMinutes: 240, leadFactMaxAgeMinutes: 60, allowedActions: ["NO_ACTION_MONITOR", "ADD_VEHICLE", "HOLD_LOW_PRIORITY_ECOM", "ADD_MANPOWER", "REALLOCATE_AVAILABLE_CAPACITY", "HUMAN_INVESTIGATION_REQUIRED"] as const };
@@ -46,6 +46,11 @@ export function selectScopedLeadRecipient(input: {
   );
   if (!topic) return null;
   return { member, chatId: String(group.telegram_chat_id), messageThreadId: topic.message_thread_id, province: input.province };
+}
+
+/** Keep the governed scope filter ahead of the bounded detector scan. */
+export function selectScopedIncidentBatch<T>(incidents: T[], isInGovernedScope: (incident: T) => boolean, limit = 20): T[] {
+  return incidents.filter(isInGovernedScope).slice(0, limit);
 }
 
 export function parseLeadDetail(value: string): Pick<LeadFact, "expectedIncomingKg" | "expectedIncomingAt" | "incomingType"> | null {
@@ -99,8 +104,8 @@ export class NearTermCapacityRuntimeService {
     const { data, error } = await this.db.from("near_term_capacity_cases").select("*").eq("active", true).maybeSingle();
     if (error) throw error; return data as CaseRow | null;
   }
-  private async recipient(warehouseId: string, warehouseName: string) {
-    const scope = await resolveAuthorizedRecipients(this.db, { warehouseId, warehouse: warehouseName });
+  private async recipient(warehouseId: string, warehouseName: string, resolvedScope?: ScopeResolutionResult) {
+    const scope = resolvedScope || await resolveAuthorizedRecipients(this.db, { warehouseId, warehouse: warehouseName });
     if (scope.quarantine || !scope.managers.length) return null;
     const province = resolveProvince({ warehouseId, warehouse: warehouseName });
     const groupIds = [...new Set(scope.managers.map((member) => member.groupId))];
@@ -117,10 +122,21 @@ export class NearTermCapacityRuntimeService {
     const summary: DetectorTelemetrySummary = { incidentsAvailable: 0, incidentsScanned: 0, candidatesDetected: 0, candidatesPersisted: 0, rejectedCount: 0, missingSignalCount: 0, noRiskCount: 0, belowThresholdCount: 0, outsideScopeCount: 0, duplicateCount: 0, activeCaseBlockCount: 0, otherRejectionCount: 0, startedAt, completedAt: startedAt };
     const finish = async <T>(result: T) => { if (telemetryContext) { summary.completedAt = new Date().toISOString(); await this.writeCheckpointTelemetry(telemetryContext, summary); } return result; };
     if (await this.activeCase()) { summary.activeCaseBlockCount = 1; return finish({ status: "ACTIVE_CASE_EXISTS", risk_candidates: 0, fact_requests_sent: 0 }); }
-    const { data: incidents, error } = await this.db.from("incidents").select("id,incident_key,warehouse_id,warehouse_name,reason_code,last_detected_at").in("status", ["open", "monitoring"]).eq("reason_code", "KHO_TON").order("last_detected_at", { ascending: false }).limit(20);
+    const { data: incidents, error } = await this.db.from("incidents").select("id,incident_key,warehouse_id,warehouse_name,reason_code,last_detected_at").in("status", ["open", "monitoring"]).eq("reason_code", "KHO_TON").order("last_detected_at", { ascending: false });
     if (error) throw error;
-    summary.incidentsAvailable = (incidents || []).length; summary.incidentsScanned = summary.incidentsAvailable;
+    const scopeByIncident = new Map<string, ScopeResolutionResult>();
     for (const incident of incidents || []) {
+      const warehouseId = String(incident.warehouse_id || "");
+      const warehouseName = String(incident.warehouse_name || incident.warehouse_id || "");
+      const scopeKey = `${warehouseId}:${warehouseName}`;
+      if (!scopeByIncident.has(scopeKey)) scopeByIncident.set(scopeKey, await resolveAuthorizedRecipients(this.db, { warehouseId, warehouse: warehouseName }));
+    }
+    const scopedIncidents = selectScopedIncidentBatch(incidents || [], (incident) => {
+      const scope = scopeByIncident.get(`${String(incident.warehouse_id || "")}:${String(incident.warehouse_name || incident.warehouse_id || "")}`);
+      return Boolean(scope && !scope.quarantine && scope.managers.length);
+    });
+    summary.incidentsAvailable = scopedIncidents.length; summary.incidentsScanned = scopedIncidents.length;
+    for (const incident of scopedIncidents) {
       const { data: history, error: historyError } = await this.db.from("incident_history").select("affected_order_count,recorded_at").eq("incident_id", incident.id).order("recorded_at", { ascending: false }).limit(1).maybeSingle();
       if (historyError) throw historyError;
       const facts: CurrentRisk = { warehouseId: String(incident.warehouse_id), warehouseName: String(incident.warehouse_name || incident.warehouse_id), capturedAt: history?.recorded_at || incident.last_detected_at, currentOrders: history?.affected_order_count ?? null, currentKg: null, b2bOrders: null, evidenceRefs: [`incident:${incident.id}`, ...(history ? [`incident_history:${history.recorded_at}`] : [])], riskSignals: ["KHO_TON"], hardSlaConstraint: "Persisted warehouse backlog risk" };
@@ -128,7 +144,8 @@ export class NearTermCapacityRuntimeService {
       if (telemetryContext) await this.writeIncidentTelemetry(telemetryContext, incident, facts, candidate, candidate ? null : "MISSING_REQUIRED_SIGNAL");
       if (!candidate) { summary.rejectedCount += 1; summary.missingSignalCount += 1; continue; }
       summary.candidatesDetected += 1;
-      const recipient = await this.recipient(facts.warehouseId, facts.warehouseName); if (!recipient) { summary.outsideScopeCount += 1; continue; }
+      const resolvedScope = scopeByIncident.get(`${facts.warehouseId}:${facts.warehouseName}`);
+      const recipient = await this.recipient(facts.warehouseId, facts.warehouseName, resolvedScope); if (!recipient) { summary.outsideScopeCount += 1; continue; }
       const { data: created, error: createError } = await this.db.from("near_term_capacity_cases").insert({ warehouse_id: facts.warehouseId, warehouse_name: facts.warehouseName, current_risk_snapshot: facts, status: "FACT_REQUESTED", active: true }).select("*").single();
       if (createError) { if (createError.code === "23505") { summary.duplicateCount += 1; return finish({ status: "ACTIVE_CASE_EXISTS", risk_candidates: 1, fact_requests_sent: 0 }); } throw createError; }
       summary.candidatesPersisted += 1;

@@ -17,7 +17,9 @@ describe("near-term capacity detector telemetry", () => {
     const telemetryWrites: Array<{ table: string; payload: Record<string, unknown> }> = [];
     const from = vi.fn((table: string) => {
       if (table === "near_term_capacity_cases") return { select: () => ({ eq: () => ({ maybeSingle: async () => ({ data: null, error: null }) }) }) };
-      if (table === "incidents") return { select: () => ({ in: () => ({ eq: () => ({ order: () => ({ limit: async () => ({ data: [{ id: "i-1", incident_key: "W1:KHO_TON", warehouse_id: "W1", warehouse_name: "Kho 1", reason_code: "KHO_TON", last_detected_at: new Date().toISOString() }], error: null }) }) }) }) }) };
+      if (table === "incidents") return { select: () => ({ in: () => ({ eq: () => ({ order: async () => ({ data: [{ id: "i-1", incident_key: "1141:KHO_TON", warehouse_id: "1141", warehouse_name: "Kho Trung Chuyển Đà Nẵng", reason_code: "KHO_TON", last_detected_at: new Date().toISOString() }], error: null }) }) }) }) };
+      if (table === "telegram_pilot_members") return { select: () => ({ eq: async () => ({ data: [{ id: "member-1", group_id: "group-1", telegram_user_id: 1, display_name: "Lead", username: null, role: "LEAD", status: "ACTIVE", private_chat_id: null, onboarding_state: "UNKNOWN" }], error: null }) }) };
+      if (table === "telegram_user_scopes") return { select: () => ({ in: () => ({ eq: async () => ({ data: [{ id: "scope-1", member_id: "member-1", scope_type: "REGION", scope_code: "Miền Trung", permission: "MANAGE_SCOPE", active: true }], error: null }) }) }) };
       if (table === "incident_history") return { select: () => ({ eq: () => ({ order: () => ({ limit: () => ({ maybeSingle: async () => ({ data: null, error: null }) }) }) }) }) };
       if (table.includes("telemetry")) return { upsert: async (payload: Record<string, unknown>) => { telemetryWrites.push({ table, payload }); return { error: null }; } };
       throw new Error(`Unexpected table ${table}`);

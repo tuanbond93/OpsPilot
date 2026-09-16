@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { NearTermCapacityRuntimeService, selectScopedLeadRecipient } from "@/services/near-term-capacity-runtime";
+import { NearTermCapacityRuntimeService, selectScopedIncidentBatch, selectScopedLeadRecipient } from "@/services/near-term-capacity-runtime";
 import type { ResolvedRecipient } from "@/notifications/gateway/scope-resolver";
 
 const lead: ResolvedRecipient = {
@@ -14,6 +14,23 @@ const topics = [
 ];
 
 describe("near-term capacity Lead recipient scope", () => {
+  it("applies governed scope before the bounded detector limit", () => {
+    const global = Array.from({ length: 20 }, (_, index) => ({ id: `out-${index}`, inScope: false }))
+      .concat(Array.from({ length: 5 }, (_, index) => ({ id: `in-${index}`, inScope: true })));
+    expect(selectScopedIncidentBatch(global, (incident) => incident.inScope)).toHaveLength(5);
+    expect(selectScopedIncidentBatch(global, (incident) => incident.inScope).map((incident) => incident.id)).toEqual(["in-0", "in-1", "in-2", "in-3", "in-4"]);
+  });
+
+  it("keeps the deterministic source order when more than 20 incidents are in scope", () => {
+    const incidents = Array.from({ length: 50 }, (_, index) => ({ id: index, inScope: true }));
+    expect(selectScopedIncidentBatch(incidents, (incident) => incident.inScope)).toHaveLength(20);
+    expect(selectScopedIncidentBatch(incidents, (incident) => incident.inScope).at(-1)?.id).toBe(19);
+  });
+
+  it("does not fabricate a candidate when no incident is in scope", () => {
+    expect(selectScopedIncidentBatch([{ inScope: false }], (incident) => incident.inScope)).toEqual([]);
+  });
+
   it("routes a governed warehouse A to the single active Lead", () => {
     expect(selectScopedLeadRecipient({ scopedManagers: [lead], groups, topics, province: "Yên Bái" })).toMatchObject({ member: lead, chatId: "-1001", messageThreadId: 12 });
   });
