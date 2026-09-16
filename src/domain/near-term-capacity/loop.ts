@@ -19,6 +19,9 @@ export type CurrentRisk = {
   /** A conservative detector needs an existing, explainable risk signal. */
   riskSignals: string[];
   hardSlaConstraint?: string | null;
+  /** Optional source-backed details for the human fact request only. */
+  orderCodes?: string[];
+  supportingChange?: string | null;
 };
 export type LeadFact = {
   interactionId: string; suppliedBy: string; capturedAt: string;

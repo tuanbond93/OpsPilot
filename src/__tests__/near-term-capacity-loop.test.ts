@@ -28,6 +28,17 @@ describe("near-term capacity decision loop", () => {
   it("creates only executable Phase 1 instructions", () => { expect(executionInstruction("ADD_MANPOWER", "Prepare two confirmed sorters")).toMatch(/two/); expect(() => executionInstruction("NO_ACTION_MONITOR", "x")).toThrow("NON_EXECUTABLE_ACTION"); });
   it("verifies success, failure, and inconclusive without inventing money", () => { expect(verifyCapacityOutcome({ actionExecuted: "YES", slaOutcome: "PRESERVED", riskAfterAction: "REDUCED" })).toBe("SUCCESS"); expect(verifyCapacityOutcome({ actionExecuted: "NO", slaOutcome: "UNKNOWN", riskAfterAction: "UNKNOWN" })).toBe("FAILURE"); expect(verifyCapacityOutcome({ actionExecuted: "UNKNOWN", slaOutcome: "UNKNOWN", riskAfterAction: "UNKNOWN" })).toBe("INCONCLUSIVE"); });
   it("keeps Telegram Lead interaction factual and the Manager card evidence-based with guarded finance", () => { const factText = formatNearTermFactRequest(facts, 240); expect(factText).toContain("CẦN XÁC NHẬN"); expect(factText).not.toMatch(/nên làm gì/i); const context = buildContext("case-1", facts, lead, policy); const card = formatNearTermManagerCard(facts.warehouseName, facts, lead, context, recommendation()); expect(card).toContain("ADD_VEHICLE"); expect(card).toContain("Chưa đủ dữ liệu xác minh chi phí"); expect(card).toContain("Facts từ Lead"); expect(card).not.toContain("HOLD_LOW_PRIORITY_ECOM"); });
+  it("renders bounded order and weight evidence in Vietnamese without technical labels", () => {
+    const message = formatNearTermFactRequest({ ...facts, orderCodes: ["A1", "A2", "A3", "A4", "A5", "A6"], currentKg: 12.7, supportingChange: "Tồn tăng từ 2 → 6 đơn" }, 240);
+    expect(message).toContain("Đang tồn: 12 đơn"); expect(message).toContain("Tổng khối lượng: 12.7 kg");
+    expect(message).toContain("+ 1 đơn khác"); expect(message).toContain("Tồn tăng từ 2 → 6 đơn");
+    expect(message).not.toMatch(/COT\/SLA|Persisted warehouse backlog risk|currentKg|riskSignals/);
+  });
+  it("states missing weight honestly and preserves the four semantic answers", () => {
+    const message = formatNearTermFactRequest({ ...facts, currentKg: null, orderCodes: ["A1"] }, 240);
+    expect(message).toContain("Tổng khối lượng: Chưa có dữ liệu kg");
+    expect(nearTermFactButtons.map(([, answer]) => answer)).toEqual(["CONFIRMED_ETA", "UNCERTAIN_ETA", "NO_SIGNIFICANT_INCOMING", "UNKNOWN"]);
+  });
   it("keeps every Lead fact callback compact, round-trippable, and legacy-compatible", () => {
     const id = "e2524b83-4462-4238-8914-cd371ab51106";
     for (const [, answer] of nearTermFactButtons) {
@@ -43,7 +54,7 @@ describe("near-term capacity decision loop", () => {
     expect(parseNearTermFactCallbackData(`opspcap:${id}`)).toBeNull();
     expect(parseNearTermFactCallbackData(`opspcap:${id}:NO_SIGNIFICANT_INCOMING`)).toBeNull();
     expect(parseNearTermFactCallbackData(`opspcap:${id}:ADD_VEHICLE`)).toBeNull();
-    expect(nearTermFactButtons.map(([label]) => label)).toEqual(["Có — ETA khá chắc chắn", "Có — ETA chưa chắc chắn", "Không có đáng kể", "Chưa xác định"]);
+    expect(nearTermFactButtons.map(([label]) => label)).toEqual(["Có — biết khá chắc giờ hàng về", "Có — nhưng chưa chắc giờ hàng về", "Không có thêm đáng kể", "Chưa xác định"]);
     expect(parseLeadDetail("KG=125.5; ETA=2026-09-10T10:00:00.000Z; TYPE=MIXED")).toMatchObject({ expectedIncomingKg: 125.5, incomingType: "MIXED" });
     expect(parseLeadDetail("KG=125; TYPE=ECOM")).toBeNull();
   });

@@ -5,17 +5,27 @@ function shown(value: number | null): string { return value == null ? "Chưa có
 
 /** Fact-only prompt: Lead is never asked to choose an operational action. */
 export function formatNearTermFactRequest(facts: CurrentRisk, windowMinutes: number) {
+  const codes = Array.isArray(facts.orderCodes) ? facts.orderCodes.filter((code): code is string => typeof code === "string" && Boolean(code.trim())) : [];
+  const shownCodes = codes.slice(0, 5);
+  const remaining = Math.max(0, codes.length - shownCodes.length);
+  const orderLines = shownCodes.length ? shownCodes.map((code) => `  - ${escape(code)}`) : ["  - Chưa có dữ liệu mã đơn"];
+  if (remaining > 0) orderLines.push(`  - + ${remaining} đơn khác`);
+  const kg = facts.currentKg == null ? "Chưa có dữ liệu" : String(facts.currentKg);
+  const riskReason = facts.currentKg == null
+    ? "Thiếu dữ liệu khối lượng; cần Lead xác nhận thêm để đánh giá năng lực xử lý"
+    : "Tồn kho đang có đơn cần xử lý; OpsPilot cần kiểm tra nguy cơ không xử lý hết hàng trong 4 giờ tới";
   return [
-    "🟠 OPSPILOT — CẦN BỔ SUNG DỮ LIỆU", "", `Kho: ${escape(facts.warehouseName)}`, "",
-    "Hiện tại:", `• Hàng cần xử lý: ${shown(facts.currentKg)} kg / ${shown(facts.currentOrders)} đơn`,
-    `• B2B: ${shown(facts.b2bOrders)} đơn`, `• COT/SLA risk: ${escape(facts.hardSlaConstraint || facts.riskSignals.join(", "))}`, "",
-    `CẦN XÁC NHẬN: Trong ${windowMinutes} phút sắp tới có thêm lượng hàng đáng kể về kho không?`,
+    "🟠 OPSPILOT — CẦN XÁC NHẬN NĂNG LỰC XỬ LÝ", "", `Kho: ${escape(facts.warehouseName)}`, "",
+    "📦 TÌNH HÌNH HIỆN TẠI", `• Đang tồn: ${shown(facts.currentOrders)} đơn`, `• Tổng khối lượng: ${kg} kg`, "• Đơn liên quan:", ...orderLines, "",
+    "⚠️ RỦI RO OPSPILOT PHÁT HIỆN", `• ${riskReason}`, ...(facts.supportingChange ? [`• ${escape(facts.supportingChange)}`] : []), "",
+    "💡 OPSPILOT CẦN LEAD XÁC NHẬN", `Trong ${Math.round(windowMinutes / 60)} giờ tới, kho có dự kiến nhận thêm lượng hàng đáng kể không?`,
+    "Thông tin này được dùng để đánh giá kho có nguy cơ không xử lý hết hàng trong thời gian tới hay không.",
   ].join("\n");
 }
 
 export const nearTermFactButtons = [
-  ["Có — ETA khá chắc chắn", "CONFIRMED_ETA"], ["Có — ETA chưa chắc chắn", "UNCERTAIN_ETA"],
-  ["Không có đáng kể", "NO_SIGNIFICANT_INCOMING"], ["Chưa xác định", "UNKNOWN"],
+  ["Có — biết khá chắc giờ hàng về", "CONFIRMED_ETA"], ["Có — nhưng chưa chắc giờ hàng về", "UNCERTAIN_ETA"],
+  ["Không có thêm đáng kể", "NO_SIGNIFICANT_INCOMING"], ["Chưa xác định", "UNKNOWN"],
 ] as const;
 
 export type NearTermFactAnswer = typeof nearTermFactButtons[number][1];

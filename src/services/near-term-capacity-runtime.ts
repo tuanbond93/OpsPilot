@@ -181,9 +181,17 @@ export class NearTermCapacityRuntimeService {
     });
     summary.incidentsAvailable = scopedIncidents.length; summary.incidentsScanned = scopedIncidents.length;
     for (const incident of scopedIncidents) {
-      const { data: history, error: historyError } = await this.db.from("incident_history").select("affected_order_count,recorded_at").eq("incident_id", incident.id).order("recorded_at", { ascending: false }).limit(1).maybeSingle();
-      if (historyError) throw historyError;
-      const facts: CurrentRisk = { warehouseId: String(incident.warehouse_id), warehouseName: String(incident.warehouse_name || incident.warehouse_id), capturedAt: history?.recorded_at || incident.last_detected_at, currentOrders: history?.affected_order_count ?? null, currentKg: null, b2bOrders: null, evidenceRefs: [`incident:${incident.id}`, ...(history ? [`incident_history:${history.recorded_at}`] : [])], riskSignals: ["KHO_TON"], hardSlaConstraint: "Persisted warehouse backlog risk" };
+        const { data: history, error: historyError } = await this.db.from("incident_history").select("affected_order_count,recorded_at,sync_run_id").eq("incident_id", incident.id).order("recorded_at", { ascending: false }).limit(1).maybeSingle();
+        if (historyError) throw historyError;
+      let orderCodes: string[] = []; let currentKg: number | null = null;
+      if (history?.sync_run_id) {
+        const { data: orders, error: orderError } = await this.db.from("order_snapshots").select("order_code,weight_kg").eq("sync_run_id", history.sync_run_id).eq("warehouse_id", String(incident.warehouse_id)).eq("reason_code", "KHO_TON");
+        if (orderError) throw orderError;
+        orderCodes = (orders || []).map((order) => String(order.order_code || "")).filter(Boolean);
+        const weights = (orders || []).map((order) => Number(order.weight_kg)).filter((weight) => Number.isFinite(weight) && weight >= 0);
+        if (weights.length === (orders || []).length) currentKg = weights.reduce((total, weight) => total + weight, 0);
+      }
+      const facts: CurrentRisk = { warehouseId: String(incident.warehouse_id), warehouseName: String(incident.warehouse_name || incident.warehouse_id), capturedAt: history?.recorded_at || incident.last_detected_at, currentOrders: history?.affected_order_count ?? null, currentKg, b2bOrders: null, orderCodes, evidenceRefs: [`incident:${incident.id}`, ...(history ? [`incident_history:${history.recorded_at}`] : [])], riskSignals: ["KHO_TON"], hardSlaConstraint: "Persisted warehouse backlog risk" };
       const candidate = detectCandidate(facts);
       if (telemetryContext) await this.writeIncidentTelemetry(telemetryContext, incident, facts, candidate, candidate ? null : "MISSING_REQUIRED_SIGNAL");
       if (!candidate) { summary.rejectedCount += 1; summary.missingSignalCount += 1; continue; }
