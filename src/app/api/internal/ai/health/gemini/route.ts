@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { authorizeApiRequest } from "@/security/api-security";
+import { authorizeApiRequest, isCronAuthorized } from "@/security/api-security";
 import { GeminiProvider } from "@/ai/gemini";
 
 export const dynamic = "force-dynamic";
@@ -14,8 +14,10 @@ function safeErrorCode(error: unknown): string {
 }
 
 export async function GET(request: NextRequest) {
-  const access = await authorizeApiRequest(request, "MANAGE_SYSTEM", { limit: 3, windowMs: 60_000 });
-  if (!access.ok) return access.response;
+  if (!isCronAuthorized(request)) {
+    const access = await authorizeApiRequest(request, "MANAGE_SYSTEM", { limit: 3, windowMs: 60_000 });
+    if (!access.ok) return access.response;
+  }
 
   try {
     const response = await new GeminiProvider().generate(
