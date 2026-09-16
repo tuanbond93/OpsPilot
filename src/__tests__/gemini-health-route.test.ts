@@ -1,19 +1,22 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { NextRequest } from "next/server";
 
 const { authorize, generate } = vi.hoisted(() => ({ authorize: vi.fn(), generate: vi.fn() }));
 const cronAuthorized = vi.hoisted(() => vi.fn(() => false));
+const fetchMock = vi.hoisted(() => vi.fn());
 
 vi.mock("@/security/api-security", () => ({ authorizeApiRequest: authorize, isCronAuthorized: cronAuthorized }));
 vi.mock("@/ai/gemini", () => ({ GeminiProvider: class { generate = generate; } }));
+vi.stubGlobal("fetch", fetchMock);
 
 import { GET } from "@/app/api/internal/ai/health/gemini/route";
 
 function request(headers: Record<string, string> = {}) {
-  return new Request("https://example.test/api/internal/ai/health/gemini", { headers }) as any;
+  return new NextRequest("https://example.test/api/internal/ai/health/gemini", { headers });
 }
 
 describe("internal Gemini health route", () => {
-  beforeEach(() => { authorize.mockReset(); cronAuthorized.mockReturnValue(false); generate.mockReset(); });
+  beforeEach(() => { process.env.GOOGLE_AI_API_KEY = "test-key"; authorize.mockReset(); cronAuthorized.mockReturnValue(false); generate.mockReset(); fetchMock.mockReset(); fetchMock.mockResolvedValue({ ok: true, json: async () => ({ models: [{ name: "models/gemini-2.0-flash", displayName: "Gemini 2.0 Flash", supportedGenerationMethods: ["generateContent"] }] }) }); });
 
   it("rejects unauthenticated requests before invoking Gemini", async () => {
     authorize.mockResolvedValue({ ok: false, response: Response.json({ error: "AUTHENTICATION_REQUIRED" }, { status: 401 }) });
@@ -47,13 +50,24 @@ describe("internal Gemini health route", () => {
     expect(generate).not.toHaveBeenCalled();
   });
 
+  it("lists sanitized models and probes only a validated requested model", async () => {
+    authorize.mockResolvedValue({ ok: true, identity: { role: "ADMIN" } });
+    generate.mockResolvedValue({ text: '{"ok":true}', model: "gemini-2.0-flash" });
+    const listResponse = await GET(new NextRequest("https://example.test/api/internal/ai/health/gemini?mode=list"));
+    expect(listResponse.status).toBe(200);
+    const probeResponse = await GET(new NextRequest("https://example.test/api/internal/ai/health/gemini?mode=probe&model=gemini-2.0-flash"));
+    expect(probeResponse.status).toBe(200);
+    expect(generate).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(await listResponse.json())).not.toContain("GOOGLE_AI_API_KEY");
+  });
+
   it("normalizes failures without exposing secrets or upstream payloads", async () => {
     authorize.mockResolvedValue({ ok: true, identity: { role: "ADMIN" } });
     generate.mockRejectedValue(new Error("Gemini API request failed (403): secret-value"));
     const response = await GET(request());
     const body = await response.json();
     expect(response.status).toBe(502);
-    expect(body).toEqual({ provider: "gemini", model: "gemini-2.5-flash", ok: false, httpStatus: 502, parseOk: false, errorCode: "UPSTREAM_HTTP_403" });
+    expect(body).toEqual({ provider: "gemini", model: "gemini-2.5-flash", ok: false, httpStatus: 403, parseOk: false, errorCode: "UPSTREAM_HTTP_403" });
     expect(JSON.stringify(body)).not.toContain("secret-value");
   });
 });
