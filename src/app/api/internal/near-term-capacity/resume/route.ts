@@ -106,6 +106,113 @@ export async function GET(request: NextRequest) {
     const { data: preCase } = await db.from("near_term_capacity_cases").select("status, active, decision_id").eq("id", caseId).maybeSingle();
     const preExecutionStatus = preCase?.status || "NOT_FOUND";
 
+    if (action === "gemini-diagnose") {
+      const apiKey = process.env.GOOGLE_AI_API_KEY;
+      const keyPresent = Boolean(apiKey && apiKey.trim().length > 0);
+      const keyLength = apiKey ? apiKey.trim().length : 0;
+      const keyPrefix = apiKey ? apiKey.trim().slice(0, 4) : null;
+      let authMode = "UNKNOWN";
+      if (keyPrefix === "AIza") authMode = "STANDARD_KEY";
+      else if (keyPrefix?.startsWith("ya29")) authMode = "AUTH_KEY";
+
+      // Probe 1: ListModels via query param (?key=)
+      let listModelsQuery: Record<string, unknown> | null = null;
+      if (apiKey) {
+        try {
+          const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?pageSize=10&key=${encodeURIComponent(apiKey)}`);
+          const text = await res.text();
+          let json: Record<string, unknown> | null = null;
+          try { json = JSON.parse(text) as Record<string, unknown>; } catch {}
+          const errorObj = json?.error as Record<string, unknown> | undefined;
+          const modelsList = json?.models as Array<Record<string, unknown>> | undefined;
+          listModelsQuery = {
+            httpStatus: res.status,
+            ok: res.ok,
+            googleErrorCode: errorObj?.code || null,
+            googleErrorStatus: errorObj?.status || null,
+            googleErrorMessage: errorObj?.message || null,
+            modelsCount: modelsList?.length || 0,
+            sampleModels: modelsList ? modelsList.slice(0, 5).map((m) => m.name) : [],
+          };
+        } catch (e: unknown) {
+          listModelsQuery = { error: e instanceof Error ? e.message : String(e) };
+        }
+      }
+
+      // Probe 2: ListModels via header (x-goog-api-key:)
+      let listModelsHeader: Record<string, unknown> | null = null;
+      if (apiKey) {
+        try {
+          const res = await fetch("https://generativelanguage.googleapis.com/v1beta/models?pageSize=10", {
+            headers: { "x-goog-api-key": apiKey },
+          });
+          const text = await res.text();
+          let json: Record<string, unknown> | null = null;
+          try { json = JSON.parse(text) as Record<string, unknown>; } catch {}
+          const errorObj = json?.error as Record<string, unknown> | undefined;
+          const modelsList = json?.models as Array<Record<string, unknown>> | undefined;
+          listModelsHeader = {
+            httpStatus: res.status,
+            ok: res.ok,
+            googleErrorCode: errorObj?.code || null,
+            googleErrorStatus: errorObj?.status || null,
+            googleErrorMessage: errorObj?.message || null,
+            modelsCount: modelsList?.length || 0,
+          };
+        } catch (e: unknown) {
+          listModelsHeader = { error: e instanceof Error ? e.message : String(e) };
+        }
+      }
+
+      // Probe 3: Minimal generation with configured AI_MODEL
+      const configuredModel = process.env.AI_MODEL || "gemini-3.6-flash";
+      let generateResult: Record<string, unknown> | null = null;
+      if (apiKey) {
+        try {
+          const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${configuredModel}:generateContent?key=${encodeURIComponent(apiKey)}`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              contents: [{ role: "user", parts: [{ text: 'Return JSON: {"ok":true}' }] }],
+              generationConfig: { maxOutputTokens: 20 },
+            }),
+          });
+          const text = await res.text();
+          let json: Record<string, unknown> | null = null;
+          try { json = JSON.parse(text) as Record<string, unknown>; } catch {}
+          const errorObj = json?.error as Record<string, unknown> | undefined;
+          const candidateObj = (json?.candidates as Array<Record<string, unknown>> | undefined)?.[0];
+          const contentObj = candidateObj?.content as Record<string, unknown> | undefined;
+          const partObj = (contentObj?.parts as Array<Record<string, unknown>> | undefined)?.[0];
+          generateResult = {
+            httpStatus: res.status,
+            ok: res.ok,
+            googleErrorCode: errorObj?.code || null,
+            googleErrorStatus: errorObj?.status || null,
+            googleErrorMessage: errorObj?.message || null,
+            responseText: partObj?.text || null,
+          };
+        } catch (e: unknown) {
+          generateResult = { error: e instanceof Error ? e.message : String(e) };
+        }
+      }
+
+      return NextResponse.json({
+        ok: true,
+        action: "gemini-diagnose",
+        timestamp: new Date().toISOString(),
+        provider: "gemini",
+        configuredModel,
+        keyPresent,
+        keyLength,
+        keyPrefix,
+        authMode,
+        listModelsQuery,
+        listModelsHeader,
+        generateResult,
+      });
+    }
+
     if (action === "resume") {
       if (preCase?.status === "DECISION_READY" || preCase?.decision_id) {
         resumeResult = { status: "ALREADY_DECIDED", caseId, decisionId: preCase.decision_id };
