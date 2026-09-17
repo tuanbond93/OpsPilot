@@ -1,7 +1,13 @@
-import type { AiRecommendation, CurrentRisk, DecisionContext, LeadFact } from "@/domain/near-term-capacity";
+import {
+  formatSemanticOrders,
+  formatSemanticWeight,
+  type AiRecommendation,
+  type CurrentRisk,
+  type DecisionContext,
+  type LeadFact,
+} from "@/domain/near-term-capacity";
 
 function escape(value: string): string { return value.replace(/[&<>]/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" })[char]!); }
-function shown(value: number | null): string { return value == null ? "Chưa có dữ liệu" : String(value); }
 
 /** Fact-only prompt: Lead is never asked to choose an operational action. */
 export function formatNearTermFactRequest(facts: CurrentRisk, windowMinutes: number) {
@@ -10,13 +16,12 @@ export function formatNearTermFactRequest(facts: CurrentRisk, windowMinutes: num
   const remaining = Math.max(0, codes.length - shownCodes.length);
   const orderLines = shownCodes.length ? shownCodes.map((code) => `  - ${escape(code)}`) : ["  - Chưa có dữ liệu mã đơn"];
   if (remaining > 0) orderLines.push(`  - + ${remaining} đơn khác`);
-  const kg = facts.currentKg == null ? "Chưa có dữ liệu" : String(facts.currentKg);
   const riskReason = facts.currentKg == null
     ? "Thiếu dữ liệu khối lượng; cần Lead xác nhận thêm để đánh giá năng lực xử lý"
     : "Tồn kho đang có đơn cần xử lý; OpsPilot cần kiểm tra nguy cơ không xử lý hết hàng trong 4 giờ tới";
   return [
     "🟠 OPSPILOT — CẦN XÁC NHẬN NĂNG LỰC XỬ LÝ", "", `Kho: ${escape(facts.warehouseName)}`, "",
-    "📦 TÌNH HÌNH HIỆN TẠI", `• Đang tồn: ${shown(facts.currentOrders)} đơn`, `• Tổng khối lượng: ${kg} kg`, "• Đơn liên quan:", ...orderLines, "",
+    "📦 TÌNH HÌNH HIỆN TẠI", `• Đang tồn: ${formatSemanticOrders(facts.currentOrders)}`, `• Tổng khối lượng: ${formatSemanticWeight(facts.currentKg)}`, "• Đơn liên quan:", ...orderLines, "",
     "⚠️ RỦI RO OPSPILOT PHÁT HIỆN", `• ${riskReason}`, ...(facts.supportingChange ? [`• ${escape(facts.supportingChange)}`] : []), "",
     "💡 OPSPILOT CẦN LEAD XÁC NHẬN", `Trong ${Math.round(windowMinutes / 60)} giờ tới, kho có dự kiến nhận thêm lượng hàng đáng kể không?`,
     "Thông tin này được dùng để đánh giá kho có nguy cơ không xử lý hết hàng trong thời gian tới hay không.",
@@ -63,7 +68,7 @@ export function formatNearTermManagerCard(warehouseName: string, facts: CurrentR
     : `Chi phí: ${decision.estimated_cost_vnd ?? "—"}; tiết kiệm: ${decision.estimated_saving_vnd ?? "—"}`;
   return [
     "🧠 OPSPILOT — QUYẾT ĐỊNH CẦN PHÊ DUYỆT", "", `📍 Kho: ${escape(warehouseName)}`, "",
-    "⚠️ Vấn đề vận hành", escape(decision.current_risk), `• Hiện tại: ${shown(facts.currentKg)} kg / ${shown(facts.currentOrders)} đơn`,
+    "⚠️ Vấn đề vận hành", escape(decision.current_risk), `• Hiện tại: ${formatSemanticWeight(facts.currentKg)} / ${formatSemanticOrders(facts.currentOrders)}`,
     `• Facts từ Lead: ${escape(lead.incoming)}${lead.expectedIncomingKg != null ? ` · ${lead.expectedIncomingKg} kg` : ""}${lead.expectedIncomingAt ? ` · ETA ${escape(lead.expectedIncomingAt)}` : ""}`, `• Bất định: ${escape(context.uncertainties.join(", ") || decision.uncertainties.join(", ") || "Không có")}`, "",
     "🤖 AI đề xuất", escape(decision.recommended_action), "",
     "📌 LÝ DO", escape(decision.reason_summary), "", "Nếu không làm:", escape(decision.expected_state_if_no_action), "",

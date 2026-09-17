@@ -258,3 +258,41 @@ Read-only evidence telemetry endpoint:
 - `ai_decision_to_manager_card`: 6,051ms (Card creation & Telegram delivery)
 - `manager_card_to_manager_action`: `PENDING_REAL_WORLD_OUTCOME`
 - `manager_action_to_resolution`: `PENDING_REAL_WORLD_OUTCOME`
+
+---
+
+## 12. Governance Learning Case — Unknown is not Zero
+
+### Incident Summary & Trace
+During the integrity audit of Golden Case #001 (`e2524b83-4462-4238-8914-cd371ab51106`), an apparent discrepancy was identified between the detection-stage facts and the AI-generated prompt:
+1. **Source Data Truth**: Database `near_term_capacity_cases.current_risk_snapshot` contained `currentOrders: 6` and `currentKg: null` (resulting from missing weight entries on individual order snapshots in `order_snapshots`).
+2. **Defect Mechanism**: In `src/services/near-term-capacity-runtime.ts` line 41, the prompt constructor used the nullish coalescing operator `context.facts.currentKg ?? 0`, injecting `"current_risk": "Tồn kho 0 kg (6 đơn)"` into the Gemini LLM prompt.
+3. **Card Presentation**: The Manager Card rendered `• Hiện tại: Chưa có dữ liệu kg / 6 đơn`, while the AI problem statement showed `Tồn kho 0 kg (6 đơn)`.
+
+### Core Operational Principle: UNKNOWN ≠ ZERO
+In enterprise logistics operations:
+- `0 kg` means the warehouse holds no backlog weight.
+- `null / undefined` means physical weight data has not yet been weighed, synced, or verified.
+- Conflating missing data with zero creates severe operational vulnerability: an autonomous agent could mistakenly treat a heavy backlog as zero weight, failing to dispatch vehicles or mistakenly clearing an overload alarm.
+
+### Evidence Lock & Historical Immutability
+- **Golden Case #001 is strictly immutable**: The production records (`DECISION_READY`, `decision_id: 92d8e19c-db9e-4840-8914-cd371ab51106`, Telegram message `1313`, Gemini generation logs) are preserved without mutation or retroactive edits.
+- The delivered card is a genuine, high-value governance artifact: a human Operations Manager reviewing the card can see that weight is missing, providing an authentic test of human governance oversight under incomplete field telemetry.
+
+### Systematic Remediation Across the Loop
+1. **Domain Semantic Formatters**:
+   - `formatSemanticWeight()`: `null`/`undefined` → `"Chưa có dữ liệu kg"`; `0` → `"0 kg"`; `450` → `"450 kg"`.
+   - `formatSemanticOrders()`: `null`/`undefined` → `"Chưa có dữ liệu đơn"`; `0` → `"0 đơn"`; `6` → `"6 đơn"`.
+   - `formatSemanticVehicles()` & `formatSemanticManpower()`: Explicit missing labels vs genuine 0 counts.
+2. **Context Fact Data Status (`FactDataStatus`)**:
+   - Explicit typed status fields (`currentKgStatus`, `currentOrdersStatus`, `expectedIncomingKgStatus`, `availableVehiclesStatus`, `availableManpowerStatus`) tagged as `"AVAILABLE" | "UNKNOWN"` in `DecisionContext` and `LeadFact`.
+3. **Deterministic Critic Guardrail (`critique()`)**:
+   - Volume-dependent interventions (`ADD_VEHICLE`, `HOLD_LOW_PRIORITY_ECOM`) are strictly vetoed with reason `INTERVENTION_ACTION_REQUIRES_KNOWN_VOLUME` whenever weight facts are missing.
+   - Reallocation actions (`REALLOCATE_AVAILABLE_CAPACITY`) are vetoed with reason `REALLOCATION_REQUIRES_AVAILABLE_CAPACITY_FACTS` whenever resource facts are missing.
+   - Non-invasive actions (`NO_ACTION_MONITOR`, `HUMAN_INVESTIGATION_REQUIRED`) remain valid under uncertainty, ensuring safe degradation.
+4. **Prompt Enforcement**:
+   - Prompt utilizes `formatOperationalRiskPromptSummary()` emitting `"Tồn kho: 6 đơn; khối lượng: CHƯA CÓ DỮ LIỆU."`.
+   - Added explicit Constraint 7: *"Missing or unknown operational facts (null or undefined) MUST be treated as UNKNOWN and NEVER inferred as numeric 0."*
+5. **Telegram Card Alignment**:
+   - Both Lead fact requests and Manager decision cards render explicit semantic placeholders, eliminating phantom zeros.
+

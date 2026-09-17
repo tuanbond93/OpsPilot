@@ -1,6 +1,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { generate } from "@/ai/provider";
-import { buildContext, critique, detectCandidate, type AiRecommendation, type CurrentRisk, type DecisionContext, type IncomingAnswer, type LeadFact } from "@/domain/near-term-capacity";
+import { buildContext, critique, detectCandidate, formatOperationalRiskPromptSummary, type AiRecommendation, type CurrentRisk, type DecisionContext, type IncomingAnswer, type LeadFact } from "@/domain/near-term-capacity";
 import { TelegramClient } from "@/integrations/telegram/telegram-client";
 import { buildNearTermFactCallbackData, formatNearTermDetailRequest, formatNearTermFactRequest, nearTermFactButtons, type NearTermFactAnswer } from "@/integrations/telegram/near-term-capacity-message";
 import { NearTermCapacityDecisionBridge } from "@/services/near-term-capacity-decision-bridge";
@@ -38,7 +38,7 @@ async function callAiRecommendation(context: DecisionContext): Promise<AiRecomme
   "recommended_action": "${primaryAction}",
   "confidence": 0.85,
   "reason_summary": "Tồn kho trong giới hạn kiểm soát và không có hàng lớn phát sinh trong 4h tới theo xác nhận từ Lead; duy trì theo dõi và xử lý theo quy trình hiện tại.",
-  "current_risk": "Tồn kho ${context.facts.currentKg ?? 0} kg (${context.facts.currentOrders ?? 0} đơn)",
+  "current_risk": "${formatOperationalRiskPromptSummary(context.facts)}",
   "expected_state_if_no_action": "Tồn kho được giải tỏa dần theo ca làm việc tiêu chuẩn.",
   "expected_state_if_action": "Đảm bảo SLA ổn định mà không phát sinh chi phí xe ngoài.",
   "key_evidence": ${JSON.stringify(evidenceRefs)},
@@ -56,7 +56,8 @@ Constraints:
 3. "confidence" MUST be a number between 0 and 1.
 4. "key_evidence" MUST cite only valid evidence refs from: ${JSON.stringify(evidenceRefs)}.
 5. "estimated_cost_vnd" and "estimated_saving_vnd" MUST both be null.
-6. "required_by" and "required_followup_at" MUST be valid ISO timestamps with required_followup_at >= required_by.`;
+6. "required_by" and "required_followup_at" MUST be valid ISO timestamps with required_followup_at >= required_by.
+7. Missing or unknown operational facts (null or undefined) MUST be treated as UNKNOWN and NEVER inferred as numeric 0.`;
 
   const response = await generate(prompt, { decisionContext: context }, { temperature: 0, maxTokens: 1000 });
   const clean = response.text.replace(/```json|```/gi, "").trim();

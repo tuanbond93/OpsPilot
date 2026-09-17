@@ -14,7 +14,25 @@ export function verifyOutcomeObservation(contract: DecisionOutcomeObservationCon
   const observed = numeric(input.observedMetrics.affectedOrders);
   let classification: DecisionOutcomeVerification["classification"] = "INCONCLUSIVE";
   let reasonCode: DecisionOutcomeVerification["reasonCode"] = "INCONCLUSIVE_METRIC_UNAVAILABLE";
-  if (baseline !== null && observed !== null) {
+  const cohort = (contract.baselineSnapshot.operationalFacts as any)?.operationalCohort;
+  if (cohort && Array.isArray(cohort.baselineCodes) && cohort.baselineCodes.length > 0) {
+    const observedOrders = (input.observedMetrics as any)?.orders;
+    if (!Array.isArray(observedOrders)) {
+      classification = "INCONCLUSIVE";
+      reasonCode = "INCONCLUSIVE_METRIC_UNAVAILABLE";
+    } else {
+      const remainingInBaseline = observedOrders.filter(
+        (o: any) => cohort.baselineCodes.includes(o.orderCode) && (o.status === "storing" || o.status === "picking")
+      );
+      if (remainingInBaseline.length === 0) {
+        classification = "SUCCESS";
+        reasonCode = "SUCCESS_RESOLVED";
+      } else {
+        classification = "FAILURE";
+        reasonCode = "FAILURE_NO_IMPROVEMENT";
+      }
+    }
+  } else if (baseline !== null && observed !== null) {
     if (observed === 0) { classification = "SUCCESS"; reasonCode = "SUCCESS_RESOLVED"; }
     else if (observed >= baseline) { classification = "FAILURE"; reasonCode = "FAILURE_NO_IMPROVEMENT"; }
     else { reasonCode = "INCONCLUSIVE_PARTIAL_IMPROVEMENT"; }

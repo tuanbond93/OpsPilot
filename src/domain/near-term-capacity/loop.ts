@@ -11,9 +11,13 @@ export type CapacityAction = typeof CAPACITY_ACTIONS[number];
 export type IncomingAnswer = "CONFIRMED_ETA" | "UNCERTAIN_ETA" | "NO_SIGNIFICANT_INCOMING" | "UNKNOWN";
 export type Outcome = "SUCCESS" | "FAILURE" | "INCONCLUSIVE";
 
+export type FactDataStatus = "AVAILABLE" | "UNKNOWN";
+
 export type CurrentRisk = {
   warehouseId: string; warehouseName: string; capturedAt: string;
   currentOrders: number | null; currentKg: number | null; b2bOrders: number | null;
+  currentKgStatus?: FactDataStatus;
+  currentOrdersStatus?: FactDataStatus;
   /** Persisted operational evidence IDs (checkpoint/incident/Rillnet snapshot). */
   evidenceRefs: string[];
   /** A conservative detector needs an existing, explainable risk signal. */
@@ -30,6 +34,9 @@ export type LeadFact = {
   incomingType?: "B2B" | "ECOM" | "MIXED" | null;
   availableVehicles?: number | null; availableManpower?: number | null;
   confidence: "HIGH" | "MEDIUM" | "LOW";
+  expectedIncomingKgStatus?: FactDataStatus;
+  availableVehiclesStatus?: FactDataStatus;
+  availableManpowerStatus?: FactDataStatus;
 };
 export type CapacityPolicy = { nearTermWindowMinutes: number; leadFactMaxAgeMinutes: number; allowedActions: readonly CapacityAction[] };
 export type DecisionContext = { decisionCaseId: string; facts: CurrentRisk; humanGroundTruth: LeadFact | null; policy: CapacityPolicy; uncertainties: string[]; allowedActions: CapacityAction[] };
@@ -41,6 +48,37 @@ export type AiRecommendation = {
   estimated_cost_vnd: number | null; estimated_saving_vnd: number | null;
 };
 export type CriticResult = { verdict: "VALID_DECISION" | "HUMAN_INVESTIGATION_REQUIRED"; reasons: string[] };
+
+/**
+ * Strict operational semantic formatters: UNKNOWN ≠ ZERO.
+ * Genuine 0 values are preserved as "0 <unit>".
+ * null / undefined values explicitly indicate missing data.
+ */
+export function formatSemanticWeight(kg: number | null | undefined, placeholder = "Chưa có dữ liệu kg"): string {
+  if (kg == null || !Number.isFinite(kg)) return placeholder;
+  return `${kg} kg`;
+}
+
+export function formatSemanticOrders(orders: number | null | undefined, placeholder = "Chưa có dữ liệu đơn"): string {
+  if (orders == null || !Number.isFinite(orders)) return placeholder;
+  return `${orders} đơn`;
+}
+
+export function formatSemanticVehicles(vehicles: number | null | undefined, placeholder = "Chưa có dữ liệu xe"): string {
+  if (vehicles == null || !Number.isFinite(vehicles)) return placeholder;
+  return `${vehicles} xe`;
+}
+
+export function formatSemanticManpower(manpower: number | null | undefined, placeholder = "Chưa có dữ liệu nhân sự"): string {
+  if (manpower == null || !Number.isFinite(manpower)) return placeholder;
+  return `${manpower} người`;
+}
+
+export function formatOperationalRiskPromptSummary(facts: Pick<CurrentRisk, "currentOrders" | "currentKg">): string {
+  const ordersText = facts.currentOrders == null ? "CHƯA CÓ DỮ LIỆU" : `${facts.currentOrders} đơn`;
+  const kgText = facts.currentKg == null ? "CHƯA CÓ DỮ LIỆU" : `${facts.currentKg} kg`;
+  return `Tồn kho: ${ordersText}; khối lượng: ${kgText}.`;
+}
 
 const finiteNonNegative = (v: unknown) => typeof v === "number" && Number.isFinite(v) && v >= 0;
 const validDate = (v: unknown) => typeof v === "string" && Number.isFinite(Date.parse(v));
@@ -62,7 +100,12 @@ export function acceptLeadFact(existing: LeadFact | null, next: LeadFact): LeadF
   if (next.expectedIncomingAt != null && !validDate(next.expectedIncomingAt)) throw new Error("INVALID_INCOMING_TIMESTAMP");
   if (next.availableVehicles != null && !finiteNonNegative(next.availableVehicles)) throw new Error("INVALID_AVAILABLE_VEHICLES");
   if (next.availableManpower != null && !finiteNonNegative(next.availableManpower)) throw new Error("INVALID_AVAILABLE_MANPOWER");
-  return Object.freeze({ ...next });
+  return Object.freeze({
+    ...next,
+    expectedIncomingKgStatus: next.expectedIncomingKg == null ? "UNKNOWN" : "AVAILABLE",
+    availableVehiclesStatus: next.availableVehicles == null ? "UNKNOWN" : "AVAILABLE",
+    availableManpowerStatus: next.availableManpower == null ? "UNKNOWN" : "AVAILABLE",
+  });
 }
 
 export function precheck(facts: CurrentRisk, lead: LeadFact | null, policy: CapacityPolicy, now = new Date()): string[] {
@@ -89,7 +132,21 @@ export function allowedActions(fact: CurrentRisk, lead: LeadFact | null, policy:
 
 export function buildContext(id: string, facts: CurrentRisk, lead: LeadFact | null, policy: CapacityPolicy, now = new Date()): DecisionContext {
   const errors = precheck(facts, lead, policy, now);
-  return { decisionCaseId: id, facts, humanGroundTruth: lead, policy, uncertainties: errors, allowedActions: allowedActions(facts, lead, policy, now) };
+  const currentKgStatus: FactDataStatus = facts.currentKg == null ? "UNKNOWN" : "AVAILABLE";
+  const currentOrdersStatus: FactDataStatus = facts.currentOrders == null ? "UNKNOWN" : "AVAILABLE";
+  const enrichedFacts: CurrentRisk = {
+    ...facts,
+    currentKgStatus,
+    currentOrdersStatus,
+  };
+  return {
+    decisionCaseId: id,
+    facts: enrichedFacts,
+    humanGroundTruth: lead,
+    policy,
+    uncertainties: errors,
+    allowedActions: allowedActions(facts, lead, policy, now),
+  };
 }
 
 export function critique(context: DecisionContext, recommendation: AiRecommendation): CriticResult {
@@ -102,6 +159,20 @@ export function critique(context: DecisionContext, recommendation: AiRecommendat
   if (!validDate(recommendation.required_by) || !validDate(recommendation.required_followup_at)) reasons.push("INVALID_REQUIRED_TIMESTAMP");
   if (validDate(recommendation.required_by) && validDate(recommendation.required_followup_at) && Date.parse(recommendation.required_followup_at) < Date.parse(recommendation.required_by)) reasons.push("FOLLOWUP_BEFORE_REQUIRED_BY");
   if (context.uncertainties.length && recommendation.recommended_action !== "HUMAN_INVESTIGATION_REQUIRED") reasons.push("CRITICAL_PRECHECK_FAILED");
+
+  // Deterministic rule: Intervention actions materially depending on missing critical facts must not pass
+  const actionRequiresVolume = recommendation.recommended_action === "ADD_VEHICLE" || recommendation.recommended_action === "HOLD_LOW_PRIORITY_ECOM";
+  const volumeMissing = context.facts.currentKg == null && (context.humanGroundTruth?.expectedIncomingKg == null);
+  if (actionRequiresVolume && volumeMissing) {
+    reasons.push("INTERVENTION_ACTION_REQUIRES_KNOWN_VOLUME");
+  }
+
+  const actionRequiresReallocation = recommendation.recommended_action === "REALLOCATE_AVAILABLE_CAPACITY";
+  const reallocationMissing = context.humanGroundTruth?.availableVehicles == null && context.humanGroundTruth?.availableManpower == null;
+  if (actionRequiresReallocation && reallocationMissing) {
+    reasons.push("REALLOCATION_REQUIRES_AVAILABLE_CAPACITY_FACTS");
+  }
+
   return { verdict: reasons.length ? "HUMAN_INVESTIGATION_REQUIRED" : "VALID_DECISION", reasons };
 }
 
