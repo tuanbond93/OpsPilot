@@ -1,5 +1,14 @@
 import type { AIProvider, AIResponse, GenerateOptions, UsageInfo } from "./types";
 
+function extractCandidateText(candidate: unknown): string {
+  const c = candidate as { content?: { parts?: Array<{ text?: string; thought?: boolean }> } } | undefined;
+  const parts = c?.content?.parts;
+  if (!Array.isArray(parts)) return "";
+  const nonThoughtPart = parts.find((p) => !p.thought && p.text);
+  if (nonThoughtPart?.text) return nonThoughtPart.text;
+  return parts.map((p) => p.text).filter(Boolean).join("\n");
+}
+
 export class GeminiProvider implements AIProvider {
   readonly name = "gemini";
 
@@ -17,7 +26,7 @@ export class GeminiProvider implements AIProvider {
     options: GenerateOptions = {}
   ): Promise<AIResponse> {
     const apiKey = this.getApiKey();
-    const model = options.model ?? process.env.AI_MODEL ?? "gemini-2.5-flash";
+    const model = options.model ?? process.env.AI_MODEL ?? "gemini-flash-lite-latest";
     const timeoutMs = options.timeoutMs ?? 20000;
     const maxRetries = options.retries ?? 1;
 
@@ -73,7 +82,7 @@ export class GeminiProvider implements AIProvider {
           const errorText = await response.text();
           if (response.status === 404) {
             const suggestedMatch = errorText.match(/models\/(gemini-[a-zA-Z0-9.-]+)/);
-            const fallbackModel = (suggestedMatch ? suggestedMatch[1] : null) || (model !== "gemini-3.6-flash" ? "gemini-3.6-flash" : null);
+            const fallbackModel = (suggestedMatch ? suggestedMatch[1] : null) || (model !== "gemini-flash-lite-latest" ? "gemini-flash-lite-latest" : null);
             if (fallbackModel && fallbackModel !== model) {
               const fallbackEndpoint = `https://generativelanguage.googleapis.com/v1beta/models/${fallbackModel}:generateContent?key=${apiKey}`;
               const fallbackResponse = await fetch(fallbackEndpoint, {
@@ -85,7 +94,7 @@ export class GeminiProvider implements AIProvider {
               if (fallbackResponse.ok) {
                 const fallbackData = await fallbackResponse.json();
                 const fallbackCandidate = fallbackData.candidates?.[0];
-                const text = fallbackCandidate?.content?.parts?.[0]?.text || "";
+                const text = extractCandidateText(fallbackCandidate);
                 const usageMetadata = fallbackData.usageMetadata;
                 return {
                   text,
@@ -104,7 +113,7 @@ export class GeminiProvider implements AIProvider {
 
         const data = await response.json();
         const candidate = data.candidates?.[0];
-        const text = candidate?.content?.parts?.[0]?.text || "";
+        const text = extractCandidateText(candidate);
 
         const usageMetadata = data.usageMetadata;
         const usage: UsageInfo = {

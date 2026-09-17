@@ -17,9 +17,9 @@ describe("GeminiProvider model and request contract", () => {
 
     const response = await new GeminiProvider().generate("return json", undefined, { temperature: 0, maxTokens: 10 });
 
-    expect(response.model).toBe("gemini-2.5-flash");
+    expect(response.model).toBe("gemini-flash-lite-latest");
     expect(JSON.parse(response.text)).toEqual({ ok: true });
-    expect(fetchMock.mock.calls[0][0]).toContain("/v1beta/models/gemini-2.5-flash:generateContent");
+    expect(fetchMock.mock.calls[0][0]).toContain("/v1beta/models/gemini-flash-lite-latest:generateContent");
     expect(fetchMock.mock.calls[0][1].method).toBe("POST");
   });
 
