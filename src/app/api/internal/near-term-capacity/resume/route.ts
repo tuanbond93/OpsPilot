@@ -243,7 +243,9 @@ export async function GET(request: NextRequest) {
         { count: totalOrdersCount },
         { count: ordersWithWeight },
         { count: ordersWithoutWeight },
-        { data: roster },
+        { data: members },
+        { data: scopes },
+        { data: groups },
         { data: topics },
         { data: detectorCandidates },
       ] = await Promise.all([
@@ -252,8 +254,10 @@ export async function GET(request: NextRequest) {
         db.from("order_snapshots").select("*", { count: "exact", head: true }),
         db.from("order_snapshots").select("*", { count: "exact", head: true }).not("weight_kg", "is", null),
         db.from("order_snapshots").select("*", { count: "exact", head: true }).is("weight_kg", null),
-        db.from("telegram_pilot_roster").select("*"),
-        db.from("telegram_pilot_forum_topics").select("*"),
+        db.from("telegram_pilot_members").select("*"),
+        db.from("telegram_user_scopes").select("*"),
+        db.from("telegram_pilot_groups").select("*"),
+        db.from("telegram_pilot_topics").select("*"),
         db.from("near_term_capacity_detector_telemetry").select("warehouse, incident_key, affected_order_count, current_kg, checkpoint_at").eq("detector_result", "CANDIDATE"),
       ]);
 
@@ -268,7 +272,9 @@ export async function GET(request: NextRequest) {
           withoutWeight: ordersWithoutWeight || 0,
           sample: sampleOrders || [],
         },
-        pilotRoster: roster || [],
+        pilotMembers: members || [],
+        pilotScopes: scopes || [],
+        pilotGroups: groups || [],
         pilotTopics: topics || [],
         detectorCandidates: detectorCandidates || [],
       });
