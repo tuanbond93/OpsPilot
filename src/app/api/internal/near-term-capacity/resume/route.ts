@@ -204,6 +204,23 @@ export async function GET(request: NextRequest) {
       });
     }
 
+    if (action === "audit-details") {
+      const [ { data: incident }, { data: incidentHistories }, { data: checkpoints }, { data: allCases } ] = await Promise.all([
+        db.from("incidents").select("*").eq("id", "d0f4e03d-2568-490e-957f-b12c13fe1660").maybeSingle(),
+        db.from("incident_history").select("*").eq("incident_id", "d0f4e03d-2568-490e-957f-b12c13fe1660"),
+        db.from("warehouse_checkpoints").select("*").eq("warehouse_id", "21161000").order("created_at", { ascending: false }).limit(5),
+        db.from("near_term_capacity_cases").select("id, warehouse_id, warehouse_name, current_risk_snapshot, created_at, status").limit(10),
+      ]);
+      return NextResponse.json({
+        ok: true,
+        incident,
+        incidentHistories,
+        checkpoints,
+        allCases,
+        case: preCase,
+      });
+    }
+
     if (action === "resume") {
       if (preCase?.status === "DECISION_READY" || preCase?.decision_id) {
         resumeResult = { status: "ALREADY_DECIDED", caseId, decisionId: preCase.decision_id };
