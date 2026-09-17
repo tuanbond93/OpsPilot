@@ -1,10 +1,10 @@
 # OpsPilot — Level C System Submission Evidence
 
-> **System Status**: Level C Operational Decision System (Gate 2 Governed)  
+> **System Status**: Level C Operational Decision System (Gate 2 Governed — Machine Loop Complete)  
 > **Production URL**: `https://opspilot-tau-lyart.vercel.app`  
 > **Production Branch**: `codex/level-c-gate2-capacity-manager-decision`  
-> **Production Commit**: `5823638`  
-> **Production Deployment ID**: `dpl_4EMFPtYbFVDASucVvgvnyMKueamu`  
+> **Production Commit**: `70daaeb`  
+> **Production Deployment ID**: `dpl_9XiiYQWpPCjvCYo98fUdKiJwe4a5`  
 > **Database Ref**: `elwnbwimgzijuelfjdsq` (Supabase PostgreSQL)  
 > **Evaluation Date**: 2026-09-17  
 > **Submission Target**: Level C Operational Decision System Verification
@@ -112,17 +112,17 @@ flowchart TD
 | **T1: Fact Request Sent** | `2026-09-16T07:05:05.750774Z` | `FACT_REQUEST_SENT` | `phase2_checkpoint` | Telegram topic ID: `30`, Telegram message ID: `1272`, Member ID: `07a450b9-86e1-437d-a3c9-55c5ebd952a9`. Interactive buttons delivered to warehouse lead. |
 | **T2: Lead Ground Truth Received** | `2026-09-16T08:03:23.339771Z` | `FACT_INITIAL_RESPONSE_RECEIVED` | `telegram:07a450b9-...` | Warehouse Lead clicked button: `NO_SIGNIFICANT_INCOMING` (`Không có thêm đáng kể`). Telegram update ID: `550963292`. |
 | **T3: Fact Persisted in DB** | `2026-09-16T08:03:24.839887Z` | `FACT_RECEIVED` | `telegram:07a450b9-...` | Fact record inserted in `near_term_capacity_fact_responses`. Case status transitioned to `FACT_CAPTURED` (`lead_fact_snapshot.capturedAt: 2026-09-16T08:03:23.470Z`). |
-| **T4: Governed Resume Triggered** | `2026-09-17T09:59:30.155343Z` | `AI_DECISION_RESUME_STARTED` | `system_governed:e2524...` | Single-case governed resume executed via `/api/internal/near-term-capacity/resume`. Reference timestamp preserved from Lead fact. |
-| **T5: AI Reasoning Generated** | `2026-09-17T09:59:31.319690Z` | `AI_DECISION_FAILED` | `system_governed:e2524...` | Upstream LLM provider access blocked: Google Gemini returned HTTP 403 `PERMISSION_DENIED` (`Your project has been denied access`); OpenAI returned HTTP 429 (`credit_balance_exhausted`). System safely logged failure and preserved case in `HUMAN_INVESTIGATION_REQUIRED`. |
-| **T6: Critic Verification** | `PENDING_REAL_WORLD_OUTCOME` | `CRITIC_VERIFIED` | `near_term_capacity_critic` | Pending valid AI generation from authenticated LLM quota. Domain rules enforce: action strictly bounded to `["NO_ACTION_MONITOR"]`, financial values null. |
-| **T7: Status Transition** | `PENDING_REAL_WORLD_OUTCOME` | `DECISION_READY` | `near_term_capacity_runtime` | Pending Critic verdict `VALID_DECISION`. Currently preserved safely in `HUMAN_INVESTIGATION_REQUIRED` without data loss or corruption. |
-| **T8: Manager Card Sent** | `PENDING_REAL_WORLD_OUTCOME` | `MANAGER_CARD_DISPATCHED` | `NearTermCapacityDecisionBridge` | Pending `DECISION_READY` state. Unique index `one_manager_request_per_near_term_capacity_case` ready for idempotent dispatch. |
-| **T9: Governed Execution** | `PENDING_REAL_WORLD_OUTCOME` | `OUTCOME_VERIFIED` | Regional Logistics Manager | Pending Manager inline approval/rejection. |
+| **T4: Governed Resume Triggered** | `2026-09-17T10:58:16.236188Z` | `AI_DECISION_RESUME_STARTED` | `system_governed:e2524...` | Single-case governed resume executed via `/api/internal/near-term-capacity/resume`. Reference timestamp preserved from Lead fact. |
+| **T5: AI Reasoning Generated** | `2026-09-17T10:58:18.083956Z` | `AI_DECISION_CREATED` | `system_governed:e2524...` | Google Gemini Free Tier (`gemini-flash-lite-latest`) successfully generated recommendation: `NO_ACTION_MONITOR` (confidence: 0.85, reason: "Tồn kho trong giới hạn kiểm soát và không có hàng lớn phát sinh trong 4h tới theo xác nhận từ Lead"). |
+| **T6: Critic Verification** | `2026-09-17T10:58:18.083956Z` | `CRITIC_VERIFIED` | `near_term_capacity_critic` | Deterministic Critic evaluated context & AI output. Verdict: `VALID_DECISION` (0 rule violations, action strictly in allowed policy whitelist). |
+| **T7: Status Transition** | `2026-09-17T10:58:18.322234Z` | `DECISION_READY` | `near_term_capacity_runtime` | Case status transitioned to `DECISION_READY`. Decision record created in `decisions` table: ID `92d8e19c-db9e-4840-891f-a90d5c38df6c` (`status: READY_FOR_REVIEW`, `mode: HUMAN_APPROVAL`). |
+| **T8: Manager Card Sent** | `2026-09-17T10:58:24.134444Z` | `MANAGER_DECISION_CARD_SENT` | `NearTermCapacityDecisionBridge` | Telegram Manager Decision Card dispatched with inline `✅ APPROVE` / `❌ REJECT` buttons. Chat ID: `-1004329996332`, Topic ID: `111`, Telegram Message ID: `1313`. Decision request ID: `533661b4-a3d1-407b-8ea9-4ab3e3d5d8a1`. |
+| **T9: Governed Execution** | `PENDING_REAL_WORLD_OUTCOME` | `OUTCOME_PENDING` | Regional Logistics Manager | Awaiting human manager interaction in Telegram (`✅ APPROVE` / `❌ REJECT`). No simulated bypass. |
 
 ### Duplicate Activity Verification
 - **Active cases for Yên Bái warehouse**: `1` (Unique partial index `one_active_case_per_warehouse` verified)
-- **Decisions created for this case**: `0` (Zero premature decisions)
-- **Manager cards sent for this case**: `0` (Zero premature cards)
+- **Decisions created for this case**: `1` (Decision ID `92d8e19c-db9e-4840-891f-a90d5c38df6c`)
+- **Manager cards sent for this case**: `1` (Telegram Message ID `1313`)
 - **Duplicate Activity Verdict**: `CLEAN` (`duplicateActivity: false`)
 
 ---
