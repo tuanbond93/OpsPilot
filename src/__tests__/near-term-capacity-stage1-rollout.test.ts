@@ -84,6 +84,7 @@ describe("Near-Term Capacity Stage 1 Multi-Warehouse Rollout", () => {
 
   // Test 1: Yên Bái active does not block Lào Cai
   it("1. Yên Bái active does not block Lào Cai candidate creation", async () => {
+    process.env.NEAR_TERM_CAPACITY_MULTI_WAREHOUSE_ENABLED = "true";
     const insertedCases: any[] = [];
     const mockTelegram = {
       sendToChat: vi.fn(async () => ({ messageId: 9999 })),
@@ -403,6 +404,7 @@ describe("Near-Term Capacity Stage 1 Multi-Warehouse Rollout", () => {
 
   // Test 5: At most one NEW governed case is created per checkpoint execution
   it("5. At most one NEW governed case is created per checkpoint execution (deterministic backlog ranking)", async () => {
+    process.env.NEAR_TERM_CAPACITY_MULTI_WAREHOUSE_ENABLED = "true";
     const insertedCases: any[] = [];
     const mockTelegram = {
       sendToChat: vi.fn(async () => ({ messageId: 8888 })),
@@ -795,9 +797,27 @@ describe("Near-Term Capacity Stage 1 Multi-Warehouse Rollout", () => {
     expect(STAGE_1_PILOT_WAREHOUSES[0]).toBe(YEN_BAI);
   });
 
-  // Test 13: Kill switch disables new governed creation safely
-  it("13. Kill switch disables new governed creation safely", async () => {
+  // Test 13: Strict Default-Off boolean parsing contract
+  it("13. Multi-warehouse strictly defaults to OFF and only enables on exact 'true'", () => {
+    delete process.env.NEAR_TERM_CAPACITY_MULTI_WAREHOUSE_ENABLED;
+    expect(isMultiWarehouseEnabled()).toBe(false); // missing -> DISABLED
+
     process.env.NEAR_TERM_CAPACITY_MULTI_WAREHOUSE_ENABLED = "false";
+    expect(isMultiWarehouseEnabled()).toBe(false); // false -> DISABLED
+
+    process.env.NEAR_TERM_CAPACITY_MULTI_WAREHOUSE_ENABLED = "true";
+    expect(isMultiWarehouseEnabled()).toBe(true); // true -> ENABLED
+
+    // Malformed values must all resolve to DISABLED
+    for (const val of ["1", "yes", "TRUE", "True", "enabled", "on", "undefined", "null", "false ", " true"]) {
+      process.env.NEAR_TERM_CAPACITY_MULTI_WAREHOUSE_ENABLED = val;
+      expect(isMultiWarehouseEnabled()).toBe(false);
+    }
+  });
+
+  // Test 14: Kill switch disables new governed creation safely (when missing or false)
+  it("14. Kill switch disables new governed creation safely when missing or false", async () => {
+    delete process.env.NEAR_TERM_CAPACITY_MULTI_WAREHOUSE_ENABLED; // missing = default OFF
     expect(isMultiWarehouseEnabled()).toBe(false);
 
     const insertedCases: any[] = [];
@@ -823,7 +843,7 @@ describe("Near-Term Capacity Stage 1 Multi-Warehouse Rollout", () => {
     const runtime = new NearTermCapacityRuntimeService({ from } as any, mockTelegram as any);
     const result = await runtime.runCheckpoint("test_stage1");
 
-    // With kill switch enabled, any active case in system blocks governed candidate creation
+    // With kill switch enabled (default OFF), any active case in system blocks governed candidate creation
     expect(result).toMatchObject({
       status: "ACTIVE_CASE_EXISTS",
       fact_requests_sent: 0,

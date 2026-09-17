@@ -22,7 +22,7 @@ export function isStage1PilotWarehouse(warehouseId: string): boolean {
 }
 
 export function isMultiWarehouseEnabled(): boolean {
-  return process.env.NEAR_TERM_CAPACITY_MULTI_WAREHOUSE_ENABLED !== "false";
+  return process.env.NEAR_TERM_CAPACITY_MULTI_WAREHOUSE_ENABLED === "true";
 }
 const policy = { nearTermWindowMinutes: 240, leadFactMaxAgeMinutes: 60, allowedActions: ["NO_ACTION_MONITOR", "ADD_VEHICLE", "HOLD_LOW_PRIORITY_ECOM", "ADD_MANPOWER", "REALLOCATE_AVAILABLE_CAPACITY", "HUMAN_INVESTIGATION_REQUIRED"] as const };
 type CaseRow = { id: string; warehouse_id: string; warehouse_name: string; current_risk_snapshot: CurrentRisk; lead_fact_snapshot: LeadFact | null; status: string; active: boolean };

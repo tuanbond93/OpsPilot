@@ -1,9 +1,16 @@
 import { NextRequest, NextResponse } from "next/server";
 import { authorizeApiRequest, isCronAuthorized } from "@/security/api-security";
 import { createAdminClient } from "@/connectors/supabase";
-import { NearTermCapacityRuntimeService } from "@/services/near-term-capacity-runtime";
+import {
+  NearTermCapacityRuntimeService,
+  STAGE_1_PILOT_WAREHOUSES,
+  isMultiWarehouseEnabled,
+  selectScopedLeadRecipient,
+} from "@/services/near-term-capacity-runtime";
 import { computeEvidenceMetrics, explainAuditRootCauses } from "@/services/near-term-capacity-evidence";
 import { NearTermCapacityShadowService } from "@/services/near-term-capacity-shadow";
+import { getManagerDecisionDestination } from "@/services/decision-telegram-shadow";
+import { resolveAuthorizedRecipients, resolveProvince } from "@/notifications/gateway/scope-resolver";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 
 export const dynamic = "force-dynamic";
@@ -301,6 +308,309 @@ export async function GET(request: NextRequest) {
         metrics,
         reviewPack,
         recordsSample: records.slice(0, 10),
+      });
+    }
+
+    if (action === "stage1-audit" || action === "apply-migration-077") {
+      const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+      const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+      let migrationApplied = false;
+      let migrationError: string | null = null;
+
+      if (action === "apply-migration-077") {
+        try {
+          if (supabaseUrl && serviceRoleKey) {
+            const sql = `
+              DROP INDEX IF EXISTS one_active_near_term_capacity_case;
+              CREATE UNIQUE INDEX IF NOT EXISTS one_active_near_term_capacity_case_per_warehouse
+                ON near_term_capacity_cases (warehouse_id)
+                WHERE active = true;
+            `;
+            const res = await fetch(`${supabaseUrl}/pg/query`, {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                apikey: serviceRoleKey,
+                Authorization: `Bearer ${serviceRoleKey}`,
+              },
+              body: JSON.stringify({ query: sql }),
+            });
+            if (res.ok) {
+              migrationApplied = true;
+            } else {
+              migrationError = `HTTP ${res.status}: ${await res.text()}`;
+            }
+          } else {
+            migrationError = "Missing supabaseUrl or serviceRoleKey";
+          }
+        } catch (e) {
+          migrationError = e instanceof Error ? e.message : String(e);
+        }
+      }
+
+      // 1. Audit active cases in DB
+      const { data: activeCases } = await db
+        .from("near_term_capacity_cases")
+        .select("id, warehouse_id, warehouse_name, status, active, decision_id, created_at")
+        .eq("active", true);
+
+      const activeList = activeCases || [];
+      const activeWarehouseCounts: Record<string, number> = {};
+      for (const c of activeList) {
+        activeWarehouseCounts[c.warehouse_id] = (activeWarehouseCounts[c.warehouse_id] || 0) + 1;
+      }
+      const duplicateWarehouses = Object.entries(activeWarehouseCounts).filter(([_, count]) => count > 1);
+
+      // 2. Audit DB Indexes via Transactional Constraint Probe
+      const probeId1 = "00000000-0000-4000-8000-000000000001";
+      const probeId2 = "00000000-0000-4000-8000-000000000002";
+
+      await db.from("near_term_capacity_cases").delete().in("id", [probeId1, probeId2]);
+
+      let oldGlobalIndexPresent: "YES" | "NO" = "NO";
+      let newPerWarehouseIndexPresent: "YES" | "NO" = "NO";
+      let probeMethod = "";
+      const rawProbeErrors: Record<string, string | null> = { probeDiffWarehouse: null, probeSameWarehouse: null };
+
+      // Probe A: Insert active case with distinct warehouse ('99999999')
+      const probeA = await db.from("near_term_capacity_cases").insert({
+        id: probeId1,
+        warehouse_id: "99999999",
+        warehouse_name: "CONCURRENCY_AUDIT_PROBE_DIFF_WH",
+        current_risk_snapshot: {
+          warehouseId: "99999999",
+          warehouseName: "CONCURRENCY_AUDIT_PROBE_DIFF_WH",
+          currentOrders: 1,
+          currentKg: 10,
+          riskSignals: ["KHO_TON"],
+          hardSlaConstraint: "PROBE",
+          capturedAt: new Date().toISOString(),
+        },
+        status: "DETECTED",
+        active: true,
+      });
+
+      if (probeA.error) {
+        const msg = probeA.error.message || "";
+        const details = probeA.error.details || "";
+        rawProbeErrors.probeDiffWarehouse = `${msg} [${details}]`;
+        if (msg.includes("one_active_near_term_capacity_case") || details.includes("one_active_near_term_capacity_case")) {
+          oldGlobalIndexPresent = "YES";
+          newPerWarehouseIndexPresent = "NO";
+          probeMethod = "Transactional DB constraint probe: second active case with distinct warehouse_id ('99999999') was rejected by PostgreSQL unique constraint 'one_active_near_term_capacity_case'. Proves OLD global unique index is actively enforced.";
+        } else {
+          probeMethod = `Probe A rejected with unexpected error: ${msg}`;
+        }
+      } else {
+        // Probe A succeeded! Old global index is NOT present.
+        oldGlobalIndexPresent = "NO";
+        await db.from("near_term_capacity_cases").delete().eq("id", probeId1);
+
+        // Probe B: Insert active case with the SAME warehouse as Golden Case ('21161000')
+        const probeB = await db.from("near_term_capacity_cases").insert({
+          id: probeId2,
+          warehouse_id: "21161000",
+          warehouse_name: "CONCURRENCY_AUDIT_PROBE_SAME_WH",
+          current_risk_snapshot: {
+            warehouseId: "21161000",
+            warehouseName: "CONCURRENCY_AUDIT_PROBE_SAME_WH",
+            currentOrders: 1,
+            currentKg: 10,
+            riskSignals: ["KHO_TON"],
+            hardSlaConstraint: "PROBE",
+            capturedAt: new Date().toISOString(),
+          },
+          status: "DETECTED",
+          active: true,
+        });
+
+        if (probeB.error) {
+          const msg = probeB.error.message || "";
+          const details = probeB.error.details || "";
+          rawProbeErrors.probeSameWarehouse = `${msg} [${details}]`;
+          if (msg.includes("one_active_near_term_capacity_case_per_warehouse") || details.includes("one_active_near_term_capacity_case_per_warehouse")) {
+            newPerWarehouseIndexPresent = "YES";
+            probeMethod = "Transactional DB constraint probe: distinct warehouse allowed; duplicate active case for warehouse_id '21161000' was rejected by PostgreSQL unique constraint 'one_active_near_term_capacity_case_per_warehouse'. Proves Migration 077 is executed and actively enforced.";
+          } else {
+            probeMethod = `Probe B rejected with unexpected error: ${msg}`;
+          }
+        } else {
+          await db.from("near_term_capacity_cases").delete().eq("id", probeId2);
+          newPerWarehouseIndexPresent = "NO";
+          probeMethod = "Transactional DB constraint probe: second active case for same warehouse was permitted without constraint rejection.";
+        }
+      }
+
+      // Also attempt pg_indexes query via /pg/query if available
+      let catalogIndexes: any = null;
+      try {
+        if (supabaseUrl && serviceRoleKey) {
+          const catRes = await fetch(`${supabaseUrl}/pg/query`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              apikey: serviceRoleKey,
+              Authorization: `Bearer ${serviceRoleKey}`,
+            },
+            body: JSON.stringify({
+              query: "SELECT indexname, indexdef FROM pg_indexes WHERE tablename = 'near_term_capacity_cases';",
+            }),
+          });
+          if (catRes.ok) {
+            catalogIndexes = await catRes.json();
+          }
+        }
+      } catch {}
+
+      // 3. Pilot Routing Pre-flight
+      let mgrDest: any = null;
+      try {
+        mgrDest = getManagerDecisionDestination();
+      } catch (e) {
+        mgrDest = { error: e instanceof Error ? e.message : String(e) };
+      }
+
+      const PILOT_WAREHOUSE_NAMES: Record<string, string> = {
+        "21161000": "Kho Giao Hàng Nặng - TP Yên Bái - Yên Bái",
+        "21158000": "Kho Giao Hàng Nặng - TP Lào Cai - Lào Cai",
+        "21160000": "Kho Giao Hàng Nặng - Việt Trì - Phú Thọ",
+      };
+
+      const pilotRoutingResults = await Promise.all(
+        STAGE_1_PILOT_WAREHOUSES.map(async (warehouseId) => {
+          const warehouseName = PILOT_WAREHOUSE_NAMES[warehouseId] || `Warehouse ${warehouseId}`;
+          const province = resolveProvince({ warehouseId, warehouse: warehouseName });
+          const scope = await resolveAuthorizedRecipients(db, { warehouseId, warehouse: warehouseName });
+          const groupIds = [...new Set(scope.managers.map((m) => m.groupId))];
+          const [{ data: groups }, { data: topics }] = await Promise.all([
+            db.from("telegram_pilot_groups").select("id,telegram_chat_id,status").in("id", groupIds).eq("status", "ACTIVE"),
+            db.from("telegram_pilot_topics").select("group_id,message_thread_id,province_name,is_manager_decision,status").in("group_id", groupIds).eq("status", "ACTIVE"),
+          ]);
+          const lead = selectScopedLeadRecipient({
+            scopedManagers: scope.managers,
+            groups: (groups || []) as any[],
+            topics: (topics || []) as any[],
+            province,
+          });
+
+          const routingPass = Boolean(
+            lead && lead.chatId && lead.messageThreadId &&
+            mgrDest && mgrDest.chatId && mgrDest.messageThreadId
+          );
+
+          return {
+            warehouseId,
+            warehouseName,
+            province,
+            leadRecipientId: lead ? `${lead.member.memberId} (chat ${lead.chatId}, thread ${lead.messageThreadId})` : null,
+            leadMemberId: lead?.member?.memberId || null,
+            leadChatId: lead?.chatId || null,
+            leadMessageThreadId: lead?.messageThreadId || null,
+            managerRecipientId: mgrDest?.chatId ? `Topic ${mgrDest.messageThreadId} in Chat ${mgrDest.chatId}` : null,
+            managerScopeCode: mgrDest?.scopeCode || null,
+            managerChatId: mgrDest?.chatId || null,
+            managerMessageThreadId: mgrDest?.messageThreadId || null,
+            routingStatus: routingPass ? ("PASS" as const) : ("FAIL" as const),
+          };
+        })
+      );
+
+      // 4. Golden Case #001 Status
+      const [
+        { data: goldenCaseRow },
+        { data: goldenRequests },
+        { data: goldenDecisions },
+        { data: goldenEvents },
+      ] = await Promise.all([
+        db.from("near_term_capacity_cases").select("*").eq("id", GOLDEN_CASE_ID).maybeSingle(),
+        db.from("telegram_decision_requests").select("*").eq("capacity_case_id", GOLDEN_CASE_ID),
+        db.from("decisions").select("*").eq("source_links->>capacityCaseId", GOLDEN_CASE_ID),
+        db.from("near_term_capacity_events").select("*").eq("case_id", GOLDEN_CASE_ID).order("created_at", { ascending: true }),
+      ]);
+
+      const latestReq = (goldenRequests || [])[0] || null;
+      const latestDec = (goldenDecisions || [])[0] || null;
+      const eventsList = goldenEvents || [];
+      const managerActionEvt = eventsList.find((e) => e.event_type === "MANAGER_APPROVED" || e.event_type === "MANAGER_REJECTED");
+
+      let managerDecisionStatus = "PENDING_REAL_WORLD_OUTCOME";
+      if (managerActionEvt) {
+        managerDecisionStatus = managerActionEvt.event_type;
+      } else if (latestReq?.status === "SENT") {
+        managerDecisionStatus = "PENDING (Card sent, waiting for manager action)";
+      } else if (latestReq?.status) {
+        managerDecisionStatus = latestReq.status;
+      }
+
+      const goldenCaseIntact = Boolean(
+        goldenCaseRow &&
+        goldenCaseRow.id === GOLDEN_CASE_ID &&
+        goldenCaseRow.warehouse_id === "21161000" &&
+        latestReq?.telegram_message_id === 1313
+      );
+
+      // 5. Multi-warehouse Kill Switch State
+      const rawEnvValue = process.env.NEAR_TERM_CAPACITY_MULTI_WAREHOUSE_ENABLED ?? null;
+      const resolvedMode = isMultiWarehouseEnabled() ? "ENABLED" : "DISABLED";
+
+      return NextResponse.json({
+        ok: true,
+        action,
+        timestamp: new Date().toISOString(),
+        migrationAction: {
+          applied: migrationApplied,
+          error: migrationError,
+        },
+        databaseInvariantAudit: {
+          oldGlobalIndexPresent,
+          newPerWarehouseIndexPresent,
+          indexAuditMethod: probeMethod,
+          rawProbeErrors,
+          catalogIndexes,
+          activeCasesCount: activeList.length,
+          activeCasesDetail: activeList.map((c) => ({
+            id: c.id,
+            warehouseId: c.warehouse_id,
+            warehouseName: c.warehouse_name,
+            status: c.status,
+            active: c.active,
+            decisionId: c.decision_id,
+            createdAt: c.created_at,
+          })),
+          duplicateActivePerWarehouseDetected: duplicateWarehouses.length > 0 ? "YES" : "NO",
+        },
+        killSwitchSafety: {
+          codeDefaultWhenMissing: "DISABLED",
+          codeBehaviorMalformedValue: "DISABLED",
+          productionEnvCurrentValue: rawEnvValue,
+          resolvedRuntimeMode: resolvedMode,
+        },
+        preFlightPilotRouting: {
+          pilotWarehousesCount: STAGE_1_PILOT_WAREHOUSES.length,
+          warehouses: pilotRoutingResults,
+          nonPilotBehavior: "SHADOW_ONLY",
+        },
+        goldenCaseStatus: {
+          caseId: GOLDEN_CASE_ID,
+          warehouseId: goldenCaseRow?.warehouse_id || null,
+          telegramMessageId: latestReq?.telegram_message_id || null,
+          managerDecisionStatus,
+          immutabilityPreserved: goldenCaseIntact ? "YES" : "NO",
+          caseStatus: goldenCaseRow?.status || null,
+          decisionId: latestDec?.id || null,
+          recommendedAction: latestDec?.recommended_action || null,
+        },
+        activationDecision: {
+          migrationExecuted: newPerWarehouseIndexPresent === "YES" && oldGlobalIndexPresent === "NO" ? "YES" : "NO",
+          activationSafeToProceed:
+            newPerWarehouseIndexPresent === "YES" &&
+            oldGlobalIndexPresent === "NO" &&
+            duplicateWarehouses.length === 0 &&
+            pilotRoutingResults.every((r) => r.routingStatus === "PASS"),
+          stage1Activated: resolvedMode === "ENABLED",
+          newActiveCasesAllowedConcurrently: resolvedMode === "ENABLED" ? 3 : 1,
+        },
       });
     }
 
