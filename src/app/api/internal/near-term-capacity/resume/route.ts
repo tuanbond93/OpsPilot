@@ -207,8 +207,12 @@ export async function GET(request: NextRequest) {
     }
 
     if (action === "shadow-replay") {
+      const limitParam = request.nextUrl.searchParams.get("limit");
+      const offsetParam = request.nextUrl.searchParams.get("offset");
+      const limit = limitParam ? parseInt(limitParam, 10) : undefined;
+      const offset = offsetParam ? parseInt(offsetParam, 10) : undefined;
       const shadowService = new NearTermCapacityShadowService(db);
-      const replayResult = await shadowService.replayAllHistoricalCandidates();
+      const replayResult = await shadowService.replayAllHistoricalCandidates({ limit, offset });
       const metrics = shadowService.getShadowMetrics(replayResult.records);
       const reviewPack = shadowService.generateReviewPack(replayResult.records);
 
@@ -218,6 +222,9 @@ export async function GET(request: NextRequest) {
         timestamp: new Date().toISOString(),
         summary: {
           total: replayResult.total,
+          processed: replayResult.processed,
+          offset: replayResult.offset,
+          limit: replayResult.limit,
           aiSuccess: replayResult.aiSuccess,
           aiFailure: replayResult.aiFailure,
           criticPass: replayResult.criticPass,

@@ -84,8 +84,11 @@ export class NearTermCapacityShadowService {
   /**
    * Replays historical candidates identified from telemetry checkpoints
    */
-  async replayAllHistoricalCandidates(): Promise<{
+  async replayAllHistoricalCandidates(options?: { limit?: number; offset?: number }): Promise<{
     total: number;
+    processed: number;
+    offset: number;
+    limit: number;
     aiSuccess: number;
     aiFailure: number;
     criticPass: number;
@@ -104,7 +107,11 @@ export class NearTermCapacityShadowService {
       throw error;
     }
 
-    const candidates = telemetryRows || [];
+    const allCandidates = telemetryRows || [];
+    const offset = Math.max(0, options?.offset ?? 0);
+    const limit = options?.limit != null && options.limit > 0 ? options.limit : allCandidates.length;
+    const candidates = allCandidates.slice(offset, offset + limit);
+
     const records: ShadowDecisionRecord[] = [];
     let aiSuccess = 0;
     let aiFailure = 0;
@@ -143,7 +150,10 @@ export class NearTermCapacityShadowService {
     }
 
     return {
-      total: records.length,
+      total: allCandidates.length,
+      processed: records.length,
+      offset,
+      limit,
       aiSuccess,
       aiFailure,
       criticPass,
