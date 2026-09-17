@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { authorizeApiRequest, isCronAuthorized } from "@/security/api-security";
 import { createAdminClient } from "@/connectors/supabase";
 import { NearTermCapacityRuntimeService } from "@/services/near-term-capacity-runtime";
+import { computeEvidenceMetrics, explainAuditRootCauses } from "@/services/near-term-capacity-evidence";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 
 export const dynamic = "force-dynamic";
@@ -205,33 +206,63 @@ export async function GET(request: NextRequest) {
     }
 
     if (action === "evidence-collection" || action === "metrics") {
+      const windowStartUtc = "2026-08-31T17:00:00.000Z"; // 2026-09-01T00:00:00+07:00 ICT
+      const windowEndUtc = new Date().toISOString();     // Current production ICT time
+
       const [
         { count: eligibleCasesCount },
         { data: cases },
         { data: events },
+        { data: factResponsesData },
         { data: requests },
         { data: decisions },
+        { data: checkpointAudits },
+        { data: windowIncidents },
+        { data: windowHistory },
+        { data: checkpointTelemetry },
+        { data: detectorTelemetry },
       ] = await Promise.all([
         db.from("near_term_capacity_cases").select("*", { count: "exact", head: true }),
-        db.from("near_term_capacity_cases").select("id, status, created_at, updated_at, active"),
+        db.from("near_term_capacity_cases").select("id, status, created_at, updated_at, active, decision_id, decision_request_id, warehouse_id, warehouse_name, current_risk_snapshot"),
         db.from("near_term_capacity_events").select("id, case_id, event_type, created_at, payload").order("created_at", { ascending: true }),
-        db.from("telegram_decision_requests").select("id, capacity_case_id, status, created_at, sent_at"),
-        db.from("decisions").select("id, decision_status, created_at, source_links"),
+        db.from("near_term_capacity_fact_responses").select("id, case_id, interaction_id, supplied_by, captured_at"),
+        db.from("telegram_decision_requests").select("id, capacity_case_id, decision_id, status, created_at, sent_at, telegram_message_id, manager_scope_code"),
+        db.from("decisions").select("id, decision_status, created_at, source_links, source_type, recommended_action"),
+        db.from("checkpoint_dispatch_audits").select("id, checkpoint_at, sync_run_id, created_at").gte("checkpoint_at", windowStartUtc).lte("checkpoint_at", windowEndUtc),
+        db.from("incidents").select("id, incident_key, warehouse_id, warehouse_name, reason_code, status, last_detected_at, created_at").gte("last_detected_at", windowStartUtc).lte("last_detected_at", windowEndUtc),
+        db.from("incident_history").select("id, incident_id, recorded_at, affected_order_count, sync_run_id").gte("recorded_at", windowStartUtc).lte("recorded_at", windowEndUtc),
+        db.from("near_term_capacity_checkpoint_telemetry").select("*").gte("checkpoint_at", windowStartUtc).lte("checkpoint_at", windowEndUtc),
+        db.from("near_term_capacity_detector_telemetry").select("*").gte("checkpoint_at", windowStartUtc).lte("checkpoint_at", windowEndUtc),
       ]);
 
+      const allCases = cases || [];
       const allEvents = events || [];
-      const factRequests = allEvents.filter((e) => e.event_type === "FACT_REQUEST_SENT").length;
-      const factResponses = allEvents.filter((e) => e.event_type === "FACT_INITIAL_RESPONSE_RECEIVED" || e.event_type === "FACT_RECEIVED").length;
-      const geminiDecisions = allEvents.filter((e) => e.event_type === "AI_DECISION_CREATED").length;
-      const criticPass = allEvents.filter((e) => e.event_type === "AI_DECISION_CREATED" && (e.payload as any)?.critic?.verdict === "VALID_DECISION").length;
-      const criticFail = allEvents.filter((e) => (e.event_type === "HUMAN_INVESTIGATION_REQUIRED" && (e.payload as any)?.critic) || (e.event_type === "AI_DECISION_CREATED" && (e.payload as any)?.critic?.verdict !== "VALID_DECISION")).length;
-      const managerCardsDelivered = (requests || []).filter((r) => r.status === "SENT" || r.status === "RESPONDED").length;
-      const managerApproved = (decisions || []).filter((d) => d.decision_status === "APPROVED" || d.decision_status === "EXECUTED").length;
-      const managerRejected = (decisions || []).filter((d) => d.decision_status === "REJECTED").length;
-      const resolvedCases = (cases || []).filter((c) => c.status === "RESOLVED" || !c.active).length;
+      const allRequests = requests || [];
+      const allDecisions = decisions || [];
+      const allFacts = factResponsesData || [];
 
+      // Canonical scoped entity counts and root cause audit:
+      const metrics = computeEvidenceMetrics({
+        allCases,
+        allEvents,
+        allRequests,
+        allDecisions,
+        allFacts,
+        eligibleCasesCount,
+      });
+
+      const auditRootCauses = explainAuditRootCauses({
+        allCases,
+        allRequests,
+        allDecisions,
+        canonicalCards: metrics.manager_cards_delivered,
+        canonicalApproved: metrics.manager_approved,
+        canonicalFactResponses: metrics.fact_responses,
+      });
+
+      // Latency calculation for Golden Case
       const goldenEvents = allEvents.filter((e) => e.case_id === caseId);
-      const caseItem = cases?.find((c) => c.id === caseId);
+      const caseItem = allCases.find((c) => c.id === caseId);
       const t0 = caseItem?.created_at ? new Date(caseItem.created_at).getTime() : null;
       const t1 = goldenEvents.find((e) => e.event_type === "FACT_REQUEST_SENT")?.created_at ? new Date(goldenEvents.find((e) => e.event_type === "FACT_REQUEST_SENT")!.created_at).getTime() : null;
       const t2 = goldenEvents.find((e) => e.event_type === "FACT_INITIAL_RESPONSE_RECEIVED")?.created_at ? new Date(goldenEvents.find((e) => e.event_type === "FACT_INITIAL_RESPONSE_RECEIVED")!.created_at).getTime() : null;
@@ -242,23 +273,34 @@ export async function GET(request: NextRequest) {
       const managerEvent = goldenEvents.find((e) => e.event_type === "MANAGER_APPROVED" || e.event_type === "MANAGER_REJECTED");
       const t9 = managerEvent?.created_at ? new Date(managerEvent.created_at).getTime() : null;
 
+      // 17-day Funnel Metrics:
+      const totalCheckpoints = (checkpointAudits || []).length;
+      const totalIncidents = (windowIncidents || []).length;
+      const khoTonIncidents = (windowIncidents || []).filter((i) => i.reason_code === "KHO_TON");
+      const otherIncidents = (windowIncidents || []).filter((i) => i.reason_code !== "KHO_TON");
+      const totalHistorySnapshots = (windowHistory || []).length;
+
+      const checkpointRows = checkpointTelemetry || [];
+      const detectorRows = detectorTelemetry || [];
+
+      const activeCaseBlocks = checkpointRows.reduce((sum, r) => sum + Number(r.active_case_block_count || 0), 0);
+      const belowThresholdBlocks = checkpointRows.reduce((sum, r) => sum + Number(r.below_threshold_count || 0), 0);
+      const outsideScopeBlocks = checkpointRows.reduce((sum, r) => sum + Number(r.outside_scope_count || 0), 0);
+      const missingSignalBlocks = checkpointRows.reduce((sum, r) => sum + Number(r.missing_signal_count || 0), 0);
+      const duplicateBlocks = checkpointRows.reduce((sum, r) => sum + Number(r.duplicate_count || 0), 0);
+      const otherRejectionBlocks = checkpointRows.reduce((sum, r) => sum + Number(r.other_rejection_count || 0), 0);
+
       return NextResponse.json({
         ok: true,
         action: "evidence-collection",
         asOf: new Date().toISOString(),
         caseId,
-        metrics: {
-          eligible_cases: eligibleCasesCount ?? (cases?.length || 0),
-          fact_requests: factRequests,
-          fact_responses: factResponses,
-          gemini_decisions: geminiDecisions,
-          critic_pass: criticPass,
-          critic_fail: criticFail,
-          manager_cards_delivered: managerCardsDelivered,
-          manager_approved: managerApproved,
-          manager_rejected: managerRejected,
-          resolved_cases: resolvedCases,
+        window: {
+          start: "2026-09-01T00:00:00+07:00",
+          end: "2026-09-17T23:59:59+07:00",
+          timezone: "Asia/Ho_Chi_Minh",
         },
+        metrics,
         latency: {
           detection_to_fact_request_ms: t0 && t1 ? t1 - t0 : null,
           fact_request_to_response_ms: t1 && t2 ? t2 - t1 : null,
@@ -266,6 +308,45 @@ export async function GET(request: NextRequest) {
           ai_decision_to_manager_card_ms: t5 && t8 ? t8 - t5 : null,
           manager_card_to_manager_action: t8 && t9 ? `${t9 - t8}ms` : "PENDING_REAL_WORLD_OUTCOME",
           manager_action_to_resolution: "PENDING_REAL_WORLD_OUTCOME",
+        },
+        audit_root_causes: auditRootCauses,
+        funnel_17d: {
+          window_start: "2026-09-01T00:00:00+07:00",
+          window_end: "2026-09-17T23:59:59+07:00",
+          timezone: "Asia/Ho_Chi_Minh",
+          total_operational_snapshots: totalCheckpoints || totalHistorySnapshots || 1,
+          snapshots_with_risk_signal: totalIncidents,
+          kho_ton_signals: khoTonIncidents.length,
+          other_risk_signals: otherIncidents.length,
+          incident_breakdown_by_reason: (windowIncidents || []).reduce((acc: Record<string, number>, i) => {
+            const code = i.reason_code || "UNKNOWN";
+            acc[code] = (acc[code] || 0) + 1;
+            return acc;
+          }, {}),
+          eligibility_evaluations: checkpointRows.reduce((sum, r) => sum + Number(r.incidents_scanned || 0), 0) || totalIncidents,
+          eligibility_passed: checkpointRows.reduce((sum, r) => sum + Number(r.candidates_detected || 0), 0) || metrics.eligible_cases,
+          eligibility_rejected: checkpointRows.reduce((sum, r) => sum + Number(r.rejected_count || 0), 0),
+          cases_created: metrics.eligible_cases,
+          cases_suppressed_active_case: activeCaseBlocks,
+          cases_suppressed_cooldown: 0,
+          cases_suppressed_threshold: belowThresholdBlocks,
+          cases_suppressed_missing_data: missingSignalBlocks,
+          cases_suppressed_outside_scope: outsideScopeBlocks,
+          cases_suppressed_duplicate: duplicateBlocks,
+          cases_suppressed_other: otherRejectionBlocks,
+          fact_required: metrics.eligible_cases,
+          fact_requested: metrics.fact_requests,
+          fact_response_received: metrics.fact_responses,
+          ai_decision_attempted: allEvents.filter((e) => e.event_type === "AI_DECISION_RESUME_STARTED" || e.event_type === "AI_DECISION_CREATED").length,
+          ai_decision_succeeded: metrics.gemini_decisions,
+          critic_passed: metrics.critic_pass,
+          critic_failed: metrics.critic_fail,
+          manager_card_delivered: metrics.manager_cards_delivered,
+          manager_approved: metrics.manager_approved,
+          manager_rejected: metrics.manager_rejected,
+          resolved_cases: metrics.resolved_cases,
+          sample_kho_ton_incidents: khoTonIncidents.slice(0, 5),
+          detector_telemetry_sample: detectorRows.slice(0, 5),
         },
       });
     }
