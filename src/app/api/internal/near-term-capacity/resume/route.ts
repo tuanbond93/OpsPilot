@@ -115,85 +115,76 @@ export async function GET(request: NextRequest) {
       if (keyPrefix === "AIza") authMode = "STANDARD_KEY";
       else if (keyPrefix?.startsWith("ya29")) authMode = "AUTH_KEY";
 
-      // Probe 1: ListModels via query param (?key=)
+      // Probe 1: List all models
+      let allModels: Array<Record<string, unknown>> = [];
       let listModelsQuery: Record<string, unknown> | null = null;
       if (apiKey) {
         try {
-          const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?pageSize=10&key=${encodeURIComponent(apiKey)}`);
+          const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?pageSize=50&key=${encodeURIComponent(apiKey)}`);
           const text = await res.text();
           let json: Record<string, unknown> | null = null;
           try { json = JSON.parse(text) as Record<string, unknown>; } catch {}
           const errorObj = json?.error as Record<string, unknown> | undefined;
-          const modelsList = json?.models as Array<Record<string, unknown>> | undefined;
+          const modelsList = (json?.models as Array<Record<string, unknown>> | undefined) || [];
+          allModels = modelsList;
           listModelsQuery = {
             httpStatus: res.status,
             ok: res.ok,
             googleErrorCode: errorObj?.code || null,
             googleErrorStatus: errorObj?.status || null,
             googleErrorMessage: errorObj?.message || null,
-            modelsCount: modelsList?.length || 0,
-            sampleModels: modelsList ? modelsList.slice(0, 5).map((m) => m.name) : [],
+            modelsCount: modelsList.length,
+            models: modelsList.map((m) => ({
+              name: m.name,
+              displayName: m.displayName,
+              supportedMethods: m.supportedGenerationMethods,
+            })),
           };
         } catch (e: unknown) {
           listModelsQuery = { error: e instanceof Error ? e.message : String(e) };
         }
       }
 
-      // Probe 2: ListModels via header (x-goog-api-key:)
-      let listModelsHeader: Record<string, unknown> | null = null;
+      // Probe each candidate model with generateContent
+      const candidateModels = [
+        "gemini-2.5-flash",
+        "gemini-2.5-pro",
+        "gemini-3.6-flash",
+        "gemini-3.8-flash",
+        "gemma-4-26b-a4b-it",
+      ];
+      const probeResults: Array<Record<string, unknown>> = [];
       if (apiKey) {
-        try {
-          const res = await fetch("https://generativelanguage.googleapis.com/v1beta/models?pageSize=10", {
-            headers: { "x-goog-api-key": apiKey },
-          });
-          const text = await res.text();
-          let json: Record<string, unknown> | null = null;
-          try { json = JSON.parse(text) as Record<string, unknown>; } catch {}
-          const errorObj = json?.error as Record<string, unknown> | undefined;
-          const modelsList = json?.models as Array<Record<string, unknown>> | undefined;
-          listModelsHeader = {
-            httpStatus: res.status,
-            ok: res.ok,
-            googleErrorCode: errorObj?.code || null,
-            googleErrorStatus: errorObj?.status || null,
-            googleErrorMessage: errorObj?.message || null,
-            modelsCount: modelsList?.length || 0,
-          };
-        } catch (e: unknown) {
-          listModelsHeader = { error: e instanceof Error ? e.message : String(e) };
-        }
-      }
-
-      // Probe 3: Minimal generation with configured AI_MODEL
-      const configuredModel = process.env.AI_MODEL || "gemini-3.6-flash";
-      let generateResult: Record<string, unknown> | null = null;
-      if (apiKey) {
-        try {
-          const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${configuredModel}:generateContent?key=${encodeURIComponent(apiKey)}`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              contents: [{ role: "user", parts: [{ text: 'Return JSON: {"ok":true}' }] }],
-              generationConfig: { maxOutputTokens: 20 },
-            }),
-          });
-          const text = await res.text();
-          let json: Record<string, unknown> | null = null;
-          try { json = JSON.parse(text) as Record<string, unknown>; } catch {}
-          const errorObj = json?.error as Record<string, unknown> | undefined;
-          const candidateObj = (json?.candidates as Array<Record<string, unknown>> | undefined)?.[0];
-          const contentObj = candidateObj?.content as Record<string, unknown> | undefined;
-          const partObj = (contentObj?.parts as Array<Record<string, unknown>> | undefined)?.[0];
-          generateResult = {
-            httpStatus: res.status,
-            ok: res.ok,
-            googleErrorCode: errorObj?.code || null,
-            googleErrorStatus: errorObj?.status || null,
-            googleErrorMessage: errorObj?.message || null,
-            responseText: partObj?.text || null,
-          };
-        } catch (e: unknown) {
-          generateResult = { error: e instanceof Error ? e.message : String(e) };
+        for (const cand of candidateModels) {
+          try {
+            const modelName = cand.replace(/^models\//, "");
+            const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${encodeURIComponent(apiKey)}`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                contents: [{ role: "user", parts: [{ text: 'Return JSON: {"ok":true}' }] }],
+                generationConfig: { maxOutputTokens: 20 },
+              }),
+            });
+            const text = await res.text();
+            let json: Record<string, unknown> | null = null;
+            try { json = JSON.parse(text) as Record<string, unknown>; } catch {}
+            const errorObj = json?.error as Record<string, unknown> | undefined;
+            const candidateObj = (json?.candidates as Array<Record<string, unknown>> | undefined)?.[0];
+            const contentObj = candidateObj?.content as Record<string, unknown> | undefined;
+            const partObj = (contentObj?.parts as Array<Record<string, unknown>> | undefined)?.[0];
+            probeResults.push({
+              model: modelName,
+              httpStatus: res.status,
+              ok: res.ok,
+              googleErrorCode: errorObj?.code || null,
+              googleErrorStatus: errorObj?.status || null,
+              googleErrorMessage: errorObj?.message || null,
+              responseText: partObj?.text || null,
+            });
+          } catch (e: unknown) {
+            probeResults.push({ model: cand, error: e instanceof Error ? e.message : String(e) });
+          }
         }
       }
 
@@ -202,14 +193,12 @@ export async function GET(request: NextRequest) {
         action: "gemini-diagnose",
         timestamp: new Date().toISOString(),
         provider: "gemini",
-        configuredModel,
         keyPresent,
         keyLength,
         keyPrefix,
         authMode,
         listModelsQuery,
-        listModelsHeader,
-        generateResult,
+        probeResults,
       });
     }
 
