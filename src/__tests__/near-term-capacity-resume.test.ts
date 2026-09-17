@@ -24,7 +24,7 @@ vi.mock("@/services/near-term-capacity-decision-bridge", () => ({
 }));
 
 import { NearTermCapacityRuntimeService } from "@/services/near-term-capacity-runtime";
-import { POST } from "@/app/api/internal/near-term-capacity/resume/route";
+import { GET, POST } from "@/app/api/internal/near-term-capacity/resume/route";
 import type { CurrentRisk, LeadFact } from "@/domain/near-term-capacity";
 
 const sampleRisk: CurrentRisk = {
@@ -331,5 +331,11 @@ describe("Internal resume API endpoint", () => {
     expect(response.status).toBe(400);
     const body = await response.json();
     expect(body.error).toBe("INVALID_CASE_ID");
+  });
+
+  it("rejects GET with invalid UUID caseId", async () => {
+    const invalidRequest = new NextRequest("https://example.test/api/internal/near-term-capacity/resume?caseId=invalid-id");
+    const response = await GET(invalidRequest);
+    expect(response.status).toBe(400);
   });
 });
