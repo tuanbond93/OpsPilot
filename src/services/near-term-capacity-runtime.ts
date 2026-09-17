@@ -4,6 +4,7 @@ import { buildContext, critique, detectCandidate, formatOperationalRiskPromptSum
 import { TelegramClient } from "@/integrations/telegram/telegram-client";
 import { buildNearTermFactCallbackData, formatNearTermDetailRequest, formatNearTermFactRequest, nearTermFactButtons, type NearTermFactAnswer } from "@/integrations/telegram/near-term-capacity-message";
 import { NearTermCapacityDecisionBridge } from "@/services/near-term-capacity-decision-bridge";
+import { NearTermCapacityShadowService } from "@/services/near-term-capacity-shadow";
 import { resolveAuthorizedRecipients, resolveProvince, type ResolvedRecipient, type ScopeResolutionResult } from "@/notifications/gateway/scope-resolver";
 
 export const NEAR_TERM_SHADOW_MODE = "SHADOW_DECISION_WITH_LIVE_FACT_COLLECTION" as const;
@@ -240,6 +241,18 @@ export class NearTermCapacityRuntimeService {
       if (telemetryContext) await this.writeIncidentTelemetry(telemetryContext, incident, facts, candidate, candidate ? null : "MISSING_REQUIRED_SIGNAL");
       if (!candidate) { summary.rejectedCount += 1; summary.missingSignalCount += 1; continue; }
       summary.candidatesDetected += 1;
+      void new NearTermCapacityShadowService(this.db).observeLiveCandidate({
+        checkpointAt: facts.capturedAt,
+        syncRunId: telemetryContext?.syncRunId || "live-checkpoint",
+        incidentKey: String(incident.incident_key || `${facts.warehouseId}:KHO_TON`),
+        warehouse: facts.warehouseName,
+        warehouseId: facts.warehouseId,
+        province: resolveProvince({ warehouseId: facts.warehouseId, warehouse: facts.warehouseName }),
+        affectedOrderCount: facts.currentOrders,
+        currentKg: facts.currentKg,
+        evidenceRefs: facts.evidenceRefs,
+        riskSignals: facts.riskSignals,
+      }).catch((e) => console.warn("Live shadow observation failed fail-soft:", e));
       const resolvedScope = scopeByIncident.get(`${facts.warehouseId}:${facts.warehouseName}`);
       const recipient = await this.recipient(facts.warehouseId, facts.warehouseName, resolvedScope); if (!recipient) { summary.outsideScopeCount += 1; continue; }
       const { data: created, error: createError } = await this.db.from("near_term_capacity_cases").insert({ warehouse_id: facts.warehouseId, warehouse_name: facts.warehouseName, current_risk_snapshot: facts, status: "FACT_REQUESTED", active: true }).select("*").single();

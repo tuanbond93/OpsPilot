@@ -3,6 +3,7 @@ import { authorizeApiRequest, isCronAuthorized } from "@/security/api-security";
 import { createAdminClient } from "@/connectors/supabase";
 import { NearTermCapacityRuntimeService } from "@/services/near-term-capacity-runtime";
 import { computeEvidenceMetrics, explainAuditRootCauses } from "@/services/near-term-capacity-evidence";
+import { NearTermCapacityShadowService } from "@/services/near-term-capacity-shadow";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 
 export const dynamic = "force-dynamic";
@@ -202,6 +203,53 @@ export async function GET(request: NextRequest) {
         authMode,
         listModelsQuery,
         probeResults,
+      });
+    }
+
+    if (action === "shadow-replay") {
+      const shadowService = new NearTermCapacityShadowService(db);
+      const replayResult = await shadowService.replayAllHistoricalCandidates();
+      const metrics = shadowService.getShadowMetrics(replayResult.records);
+      const reviewPack = shadowService.generateReviewPack(replayResult.records);
+
+      return NextResponse.json({
+        ok: true,
+        action: "shadow-replay",
+        timestamp: new Date().toISOString(),
+        summary: {
+          total: replayResult.total,
+          aiSuccess: replayResult.aiSuccess,
+          aiFailure: replayResult.aiFailure,
+          criticPass: replayResult.criticPass,
+          criticFail: replayResult.criticFail,
+        },
+        metrics,
+        reviewPack,
+        records: replayResult.records,
+      });
+    }
+
+    if (action === "shadow-evidence") {
+      const shadowService = new NearTermCapacityShadowService(db);
+      let records: any[] = [];
+      try {
+        const { data: dbRecords } = await db
+          .from("near_term_capacity_shadow_decisions")
+          .select("*")
+          .order("observed_at", { ascending: false });
+        records = (dbRecords || []) as any[];
+      } catch {}
+
+      const metrics = shadowService.getShadowMetrics(records);
+      const reviewPack = shadowService.generateReviewPack(records);
+
+      return NextResponse.json({
+        ok: true,
+        action: "shadow-evidence",
+        timestamp: new Date().toISOString(),
+        metrics,
+        reviewPack,
+        recordsSample: records.slice(0, 10),
       });
     }
 
