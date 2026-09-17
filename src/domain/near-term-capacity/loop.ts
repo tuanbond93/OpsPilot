@@ -75,8 +75,8 @@ export function precheck(facts: CurrentRisk, lead: LeadFact | null, policy: Capa
   return errors;
 }
 
-export function allowedActions(fact: CurrentRisk, lead: LeadFact | null, policy: CapacityPolicy): CapacityAction[] {
-  if (precheck(fact, lead, policy).length) return ["HUMAN_INVESTIGATION_REQUIRED"];
+export function allowedActions(fact: CurrentRisk, lead: LeadFact | null, policy: CapacityPolicy, now = new Date()): CapacityAction[] {
+  if (precheck(fact, lead, policy, now).length) return ["HUMAN_INVESTIGATION_REQUIRED"];
   if (lead!.incoming === "NO_SIGNIFICANT_INCOMING") return ["NO_ACTION_MONITOR"];
   const permitted = new Set(policy.allowedActions);
   const actions: CapacityAction[] = ["NO_ACTION_MONITOR", "HUMAN_INVESTIGATION_REQUIRED"];
@@ -87,9 +87,9 @@ export function allowedActions(fact: CurrentRisk, lead: LeadFact | null, policy:
   return [...new Set(actions)];
 }
 
-export function buildContext(id: string, facts: CurrentRisk, lead: LeadFact | null, policy: CapacityPolicy): DecisionContext {
-  const errors = precheck(facts, lead, policy);
-  return { decisionCaseId: id, facts, humanGroundTruth: lead, policy, uncertainties: errors, allowedActions: allowedActions(facts, lead, policy) };
+export function buildContext(id: string, facts: CurrentRisk, lead: LeadFact | null, policy: CapacityPolicy, now = new Date()): DecisionContext {
+  const errors = precheck(facts, lead, policy, now);
+  return { decisionCaseId: id, facts, humanGroundTruth: lead, policy, uncertainties: errors, allowedActions: allowedActions(facts, lead, policy, now) };
 }
 
 export function critique(context: DecisionContext, recommendation: AiRecommendation): CriticResult {

@@ -259,4 +259,55 @@ export class NearTermCapacityRuntimeService {
     }
     return { status, recommendation: critic.verdict === "VALID_DECISION" ? ai.recommended_action : null };
   }
+  async resumeInvestigationAiDecision(caseId: string, actor = "near_term_capacity_recovery") {
+    const { data: row, error } = await this.db.from("near_term_capacity_cases").select("*").eq("id", caseId).eq("active", true).maybeSingle();
+    if (error) throw error;
+    if (!row) return { status: "CASE_NOT_FOUND" as const, caseId };
+
+    if (row.status === "DECISION_READY" || row.decision_id) {
+      return { status: "ALREADY_DECIDED" as const, caseId: row.id, decisionId: row.decision_id, recommendation: row.ai_recommendation?.recommended_action ?? null };
+    }
+
+    if (row.status !== "HUMAN_INVESTIGATION_REQUIRED") {
+      return { status: "NOT_IN_RECOVERABLE_STATE" as const, caseId: row.id, currentStatus: row.status };
+    }
+
+    const lead = row.lead_fact_snapshot as LeadFact | null;
+    if (!lead) {
+      return { status: "MISSING_LEAD_FACT" as const, caseId: row.id };
+    }
+
+    const referenceTime = lead?.capturedAt ? new Date(lead.capturedAt) : new Date();
+    const context = (row.decision_context && Array.isArray(row.decision_context.uncertainties) && row.decision_context.uncertainties.length === 0)
+      ? row.decision_context
+      : buildContext(row.id, row.current_risk_snapshot, lead, policy, referenceTime);
+    if (context.uncertainties.length) {
+      await this.db.from("near_term_capacity_cases").update({ decision_context: context, updated_at: new Date().toISOString() }).eq("id", row.id);
+      await this.event(row.id, "HUMAN_INVESTIGATION_REQUIRED", actor, { reasons: context.uncertainties });
+      return { status: "HUMAN_INVESTIGATION_REQUIRED" as const, uncertainties: context.uncertainties };
+    }
+
+    await this.event(row.id, "AI_DECISION_RESUME_STARTED", actor, { interactionId: row.id });
+
+    let ai: AiRecommendation;
+    try {
+      const response = await generate("Return only the Phase 2 AiRecommendation JSON. Choose one allowed action, cite only evidence refs, and set both financial values null.", { decisionContext: context }, { temperature: 0, maxTokens: 1000 });
+      ai = JSON.parse(response.text.replace(/```json|```/gi, "").trim()) as AiRecommendation;
+    } catch (error) {
+      await this.db.from("near_term_capacity_cases").update({ decision_context: context, updated_at: new Date().toISOString() }).eq("id", row.id);
+      await this.event(row.id, "AI_DECISION_FAILED", actor, { reason: error instanceof Error ? error.message : String(error) });
+      return { status: "HUMAN_INVESTIGATION_REQUIRED" as const, error: error instanceof Error ? error.message : String(error) };
+    }
+
+    const critic = critique(context, ai);
+    const status = critic.verdict === "VALID_DECISION" ? "DECISION_READY" : "HUMAN_INVESTIGATION_REQUIRED";
+    await this.db.from("near_term_capacity_cases").update({ decision_context: context, ai_recommendation: ai, critic_result: critic, status, updated_at: new Date().toISOString() }).eq("id", row.id);
+    await this.event(row.id, critic.verdict === "VALID_DECISION" ? "AI_DECISION_CREATED" : "HUMAN_INVESTIGATION_REQUIRED", actor, { critic, mode: NEAR_TERM_SHADOW_MODE });
+
+    let bridgeResult: unknown = null;
+    if (critic.verdict === "VALID_DECISION" && ai.recommended_action !== "HUMAN_INVESTIGATION_REQUIRED") {
+      bridgeResult = await new NearTermCapacityDecisionBridge(this.db, this.telegram).createAndDispatch({ ...row, lead_fact_snapshot: lead, decision_context: context, ai_recommendation: ai, critic_result: critic }, actor);
+    }
+    return { status, caseId: row.id, recommendation: critic.verdict === "VALID_DECISION" ? ai.recommended_action : null, criticVerdict: critic.verdict, bridgeResult };
+  }
 }
