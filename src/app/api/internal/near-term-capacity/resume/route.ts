@@ -311,44 +311,7 @@ export async function GET(request: NextRequest) {
       });
     }
 
-    if (action === "stage1-audit" || action === "apply-migration-077") {
-      const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-      const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-
-      let migrationApplied = false;
-      let migrationError: string | null = null;
-
-      if (action === "apply-migration-077") {
-        try {
-          if (supabaseUrl && serviceRoleKey) {
-            const sql = `
-              DROP INDEX IF EXISTS one_active_near_term_capacity_case;
-              CREATE UNIQUE INDEX IF NOT EXISTS one_active_near_term_capacity_case_per_warehouse
-                ON near_term_capacity_cases (warehouse_id)
-                WHERE active = true;
-            `;
-            const res = await fetch(`${supabaseUrl}/pg/query`, {
-              method: "POST",
-              headers: {
-                "Content-Type": "application/json",
-                apikey: serviceRoleKey,
-                Authorization: `Bearer ${serviceRoleKey}`,
-              },
-              body: JSON.stringify({ query: sql }),
-            });
-            if (res.ok) {
-              migrationApplied = true;
-            } else {
-              migrationError = `HTTP ${res.status}: ${await res.text()}`;
-            }
-          } else {
-            migrationError = "Missing supabaseUrl or serviceRoleKey";
-          }
-        } catch (e) {
-          migrationError = e instanceof Error ? e.message : String(e);
-        }
-      }
-
+    if (action === "stage1-audit") {
       // 1. Audit active cases in DB
       const { data: activeCases } = await db
         .from("near_term_capacity_cases")
@@ -363,58 +326,32 @@ export async function GET(request: NextRequest) {
       const duplicateWarehouses = Object.entries(activeWarehouseCounts).filter(([_, count]) => count > 1);
 
       // 2. Audit DB Indexes via Transactional Constraint Probe
+      // Three probe IDs:
+      // - probeId1 creates an active case for WH1 ("99999001")
+      // - probeId2 tests whether a different WH2 ("99999002") can also be active concurrently
+      // - probeId3 tests whether duplicate active cases for the same WH1 ("99999001") are blocked
       const probeId1 = "00000000-0000-4000-8000-000000000001";
       const probeId2 = "00000000-0000-4000-8000-000000000002";
-
-      await db.from("near_term_capacity_cases").delete().in("id", [probeId1, probeId2]);
+      const probeId3 = "00000000-0000-4000-8000-000000000003";
 
       let oldGlobalIndexPresent: "YES" | "NO" = "NO";
       let newPerWarehouseIndexPresent: "YES" | "NO" = "NO";
+      let differentWarehouseAllowed: "YES" | "NO" = "NO";
+      let sameWarehouseDuplicateBlocked: "YES" | "NO" = "NO";
       let probeMethod = "";
       const rawProbeErrors: Record<string, string | null> = { probeDiffWarehouse: null, probeSameWarehouse: null };
 
-      // Probe A: Insert active case with distinct warehouse ('99999999')
-      const probeA = await db.from("near_term_capacity_cases").insert({
-        id: probeId1,
-        warehouse_id: "99999999",
-        warehouse_name: "CONCURRENCY_AUDIT_PROBE_DIFF_WH",
-        current_risk_snapshot: {
-          warehouseId: "99999999",
-          warehouseName: "CONCURRENCY_AUDIT_PROBE_DIFF_WH",
-          currentOrders: 1,
-          currentKg: 10,
-          riskSignals: ["KHO_TON"],
-          hardSlaConstraint: "PROBE",
-          capturedAt: new Date().toISOString(),
-        },
-        status: "FACT_REQUESTED",
-        active: true,
-      });
+      try {
+        await db.from("near_term_capacity_cases").delete().in("id", [probeId1, probeId2, probeId3]);
 
-      if (probeA.error) {
-        const msg = probeA.error.message || "";
-        const details = probeA.error.details || "";
-        rawProbeErrors.probeDiffWarehouse = `${msg} [${details}]`;
-        if (msg.includes("one_active_near_term_capacity_case") || details.includes("one_active_near_term_capacity_case")) {
-          oldGlobalIndexPresent = "YES";
-          newPerWarehouseIndexPresent = "NO";
-          probeMethod = "Transactional DB constraint probe: second active case with distinct warehouse_id ('99999999') was rejected by PostgreSQL unique constraint 'one_active_near_term_capacity_case'. Proves OLD global unique index is actively enforced.";
-        } else {
-          probeMethod = `Probe A rejected with unexpected error: ${msg}`;
-        }
-      } else {
-        // Probe A succeeded! Old global index is NOT present.
-        oldGlobalIndexPresent = "NO";
-        await db.from("near_term_capacity_cases").delete().eq("id", probeId1);
-
-        // Probe B: Insert active case with the SAME warehouse as Golden Case ('21161000')
-        const probeB = await db.from("near_term_capacity_cases").insert({
-          id: probeId2,
-          warehouse_id: "21161000",
-          warehouse_name: "CONCURRENCY_AUDIT_PROBE_SAME_WH",
+        // Step A: Insert baseline active case for warehouse 99999001
+        await db.from("near_term_capacity_cases").insert({
+          id: probeId1,
+          warehouse_id: "99999001",
+          warehouse_name: "CONCURRENCY_AUDIT_PROBE_WH1",
           current_risk_snapshot: {
-            warehouseId: "21161000",
-            warehouseName: "CONCURRENCY_AUDIT_PROBE_SAME_WH",
+            warehouseId: "99999001",
+            warehouseName: "CONCURRENCY_AUDIT_PROBE_WH1",
             currentOrders: 1,
             currentKg: 10,
             riskSignals: ["KHO_TON"],
@@ -425,43 +362,80 @@ export async function GET(request: NextRequest) {
           active: true,
         });
 
-        if (probeB.error) {
-          const msg = probeB.error.message || "";
-          const details = probeB.error.details || "";
-          rawProbeErrors.probeSameWarehouse = `${msg} [${details}]`;
-          if (msg.includes("one_active_near_term_capacity_case_per_warehouse") || details.includes("one_active_near_term_capacity_case_per_warehouse")) {
-            newPerWarehouseIndexPresent = "YES";
-            probeMethod = "Transactional DB constraint probe: distinct warehouse allowed; duplicate active case for warehouse_id '21161000' was rejected by PostgreSQL unique constraint 'one_active_near_term_capacity_case_per_warehouse'. Proves Migration 077 is executed and actively enforced.";
+        // Step B: Probe Different Warehouse (99999002) while 99999001 is active
+        const probeDiff = await db.from("near_term_capacity_cases").insert({
+          id: probeId2,
+          warehouse_id: "99999002",
+          warehouse_name: "CONCURRENCY_AUDIT_PROBE_WH2",
+          current_risk_snapshot: {
+            warehouseId: "99999002",
+            warehouseName: "CONCURRENCY_AUDIT_PROBE_WH2",
+            currentOrders: 1,
+            currentKg: 10,
+            riskSignals: ["KHO_TON"],
+            hardSlaConstraint: "PROBE",
+            capturedAt: new Date().toISOString(),
+          },
+          status: "FACT_REQUESTED",
+          active: true,
+        });
+
+        if (probeDiff.error) {
+          const msg = probeDiff.error.message || "";
+          const details = probeDiff.error.details || "";
+          rawProbeErrors.probeDiffWarehouse = `${msg} [${details}]`;
+          if (msg.includes("one_active_near_term_capacity_case") || details.includes("one_active_near_term_capacity_case")) {
+            oldGlobalIndexPresent = "YES";
+            differentWarehouseAllowed = "NO";
+            newPerWarehouseIndexPresent = "NO";
+            sameWarehouseDuplicateBlocked = "YES";
+            probeMethod = "Transactional DB constraint probe: concurrent active case for distinct warehouse_id ('99999002') was rejected by PostgreSQL unique constraint 'one_active_near_term_capacity_case'. Proves OLD global unique index is actively enforced.";
           } else {
-            probeMethod = `Probe B rejected with unexpected error: ${msg}`;
+            probeMethod = `Probe diff warehouse rejected with unexpected error: ${msg}`;
           }
         } else {
+          oldGlobalIndexPresent = "NO";
+          differentWarehouseAllowed = "YES";
           await db.from("near_term_capacity_cases").delete().eq("id", probeId2);
-          newPerWarehouseIndexPresent = "NO";
-          probeMethod = "Transactional DB constraint probe: second active case for same warehouse was permitted without constraint rejection.";
-        }
-      }
 
-      // Also attempt pg_indexes query via /pg/query if available
-      let catalogIndexes: any = null;
-      try {
-        if (supabaseUrl && serviceRoleKey) {
-          const catRes = await fetch(`${supabaseUrl}/pg/query`, {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              apikey: serviceRoleKey,
-              Authorization: `Bearer ${serviceRoleKey}`,
+          // Step C: Probe Duplicate Same Warehouse (99999001) while 99999001 is active
+          const probeSame = await db.from("near_term_capacity_cases").insert({
+            id: probeId3,
+            warehouse_id: "99999001",
+            warehouse_name: "CONCURRENCY_AUDIT_PROBE_WH1_DUP",
+            current_risk_snapshot: {
+              warehouseId: "99999001",
+              warehouseName: "CONCURRENCY_AUDIT_PROBE_WH1_DUP",
+              currentOrders: 1,
+              currentKg: 10,
+              riskSignals: ["KHO_TON"],
+              hardSlaConstraint: "PROBE",
+              capturedAt: new Date().toISOString(),
             },
-            body: JSON.stringify({
-              query: "SELECT indexname, indexdef FROM pg_indexes WHERE tablename = 'near_term_capacity_cases';",
-            }),
+            status: "FACT_REQUESTED",
+            active: true,
           });
-          if (catRes.ok) {
-            catalogIndexes = await catRes.json();
+
+          if (probeSame.error) {
+            const msg = probeSame.error.message || "";
+            const details = probeSame.error.details || "";
+            rawProbeErrors.probeSameWarehouse = `${msg} [${details}]`;
+            if (msg.includes("one_active_near_term_capacity_case_per_warehouse") || details.includes("one_active_near_term_capacity_case_per_warehouse")) {
+              newPerWarehouseIndexPresent = "YES";
+              sameWarehouseDuplicateBlocked = "YES";
+              probeMethod = "Transactional DB constraint probe: distinct warehouse allowed concurrently; duplicate active case for same warehouse_id ('99999001') was rejected by PostgreSQL unique constraint 'one_active_near_term_capacity_case_per_warehouse'. Proves Migration 077 is executed and actively enforced.";
+            } else {
+              probeMethod = `Probe same warehouse rejected with unexpected error: ${msg}`;
+            }
+          } else {
+            newPerWarehouseIndexPresent = "NO";
+            sameWarehouseDuplicateBlocked = "NO";
+            probeMethod = "Transactional DB constraint probe: duplicate active case for same warehouse was permitted without constraint rejection.";
           }
         }
-      } catch {}
+      } finally {
+        await db.from("near_term_capacity_cases").delete().in("id", [probeId1, probeId2, probeId3]);
+      }
 
       // 3. Pilot Routing Pre-flight
       let mgrDest: any = null;
@@ -558,16 +532,27 @@ export async function GET(request: NextRequest) {
         ok: true,
         action,
         timestamp: new Date().toISOString(),
-        migrationAction: {
-          applied: migrationApplied,
-          error: migrationError,
+        preMigrationSafety: {
+          activeCasesCount: activeList.length,
+          activeCasesDetail: activeList.map((c) => ({
+            id: c.id,
+            warehouseId: c.warehouse_id,
+            warehouseName: c.warehouse_name,
+            status: c.status,
+            active: c.active,
+            decisionId: c.decision_id,
+            createdAt: c.created_at,
+          })),
+          duplicateActivePerWarehouseDetected: duplicateWarehouses.length > 0 ? "YES" : "NO",
+          duplicateWarehouses,
         },
         databaseInvariantAudit: {
           oldGlobalIndexPresent,
           newPerWarehouseIndexPresent,
+          differentWarehouseAllowed,
+          sameWarehouseDuplicateBlocked,
           indexAuditMethod: probeMethod,
           rawProbeErrors,
-          catalogIndexes,
           activeCasesCount: activeList.length,
           activeCasesDetail: activeList.map((c) => ({
             id: c.id,
