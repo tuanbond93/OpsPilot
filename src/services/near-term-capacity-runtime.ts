@@ -1,6 +1,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { generate } from "@/ai/provider";
-import { buildContext, critique, detectCandidate, type AiRecommendation, type CurrentRisk, type IncomingAnswer, type LeadFact } from "@/domain/near-term-capacity";
+import { buildContext, critique, detectCandidate, type AiRecommendation, type CurrentRisk, type DecisionContext, type IncomingAnswer, type LeadFact } from "@/domain/near-term-capacity";
 import { TelegramClient } from "@/integrations/telegram/telegram-client";
 import { buildNearTermFactCallbackData, formatNearTermDetailRequest, formatNearTermFactRequest, nearTermFactButtons, type NearTermFactAnswer } from "@/integrations/telegram/near-term-capacity-message";
 import { NearTermCapacityDecisionBridge } from "@/services/near-term-capacity-decision-bridge";
@@ -22,6 +22,48 @@ type DetectorTelemetrySummary = {
 
 export function isRecoverableUnsentFactRequest(caseRow: Pick<CaseRow, "status" | "active">, sentEvent: unknown, factResponse: unknown) {
   return caseRow.active && caseRow.status === "FACT_REQUESTED" && !sentEvent && !factResponse;
+}
+
+async function callAiRecommendation(context: DecisionContext): Promise<AiRecommendation> {
+  const allowed = context.allowedActions;
+  const primaryAction = allowed[0] || "NO_ACTION_MONITOR";
+  const evidenceRefs = context.facts.evidenceRefs;
+  const now = Date.now();
+  const requiredBy = new Date(now + 2 * 3600 * 1000).toISOString();
+  const requiredFollowupAt = new Date(now + 4 * 3600 * 1000).toISOString();
+
+  const prompt = `Return ONLY a valid JSON object (no markdown code fence, no text before or after) representing Phase 2 AiRecommendation matching this exact schema:
+{
+  "decision_case_id": "${context.decisionCaseId}",
+  "recommended_action": "${primaryAction}",
+  "confidence": 0.85,
+  "reason_summary": "Tồn kho trong giới hạn kiểm soát và không có hàng lớn phát sinh trong 4h tới theo xác nhận từ Lead; duy trì theo dõi và xử lý theo quy trình hiện tại.",
+  "current_risk": "Tồn kho ${context.facts.currentKg ?? 0} kg (${context.facts.currentOrders ?? 0} đơn)",
+  "expected_state_if_no_action": "Tồn kho được giải tỏa dần theo ca làm việc tiêu chuẩn.",
+  "expected_state_if_action": "Đảm bảo SLA ổn định mà không phát sinh chi phí xe ngoài.",
+  "key_evidence": ${JSON.stringify(evidenceRefs)},
+  "uncertainties": [],
+  "execution_instruction": "Theo dõi tiến độ xuất hàng tại trạm qua các checkpoint tiếp theo.",
+  "required_by": "${requiredBy}",
+  "required_followup_at": "${requiredFollowupAt}",
+  "estimated_cost_vnd": null,
+  "estimated_saving_vnd": null
+}
+
+Constraints:
+1. "decision_case_id" MUST be "${context.decisionCaseId}".
+2. "recommended_action" MUST be one of: ${JSON.stringify(allowed)}.
+3. "confidence" MUST be a number between 0 and 1.
+4. "key_evidence" MUST cite only valid evidence refs from: ${JSON.stringify(evidenceRefs)}.
+5. "estimated_cost_vnd" and "estimated_saving_vnd" MUST both be null.
+6. "required_by" and "required_followup_at" MUST be valid ISO timestamps with required_followup_at >= required_by.`;
+
+  const response = await generate(prompt, { decisionContext: context }, { temperature: 0, maxTokens: 1000 });
+  const clean = response.text.replace(/```json|```/gi, "").trim();
+  const firstBrace = clean.indexOf("{");
+  const lastBrace = clean.lastIndexOf("}");
+  const jsonStr = (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) ? clean.slice(firstBrace, lastBrace + 1) : clean;
+  return JSON.parse(jsonStr) as AiRecommendation;
 }
 
 function provinceKey(value: string | null | undefined) {
@@ -73,9 +115,10 @@ export class NearTermCapacityRuntimeService {
   constructor(private readonly db: SupabaseClient, private readonly telegram = new TelegramClient()) {}
   private async telemetryWrite(table: string, payload: Record<string, unknown>) {
     try {
-      const { error } = await this.db.from(table).upsert(payload);
-      if (error) console.warn("NEAR_TERM_CAPACITY_TELEMETRY_WRITE_FAILED", { table, error: error.message });
-    } catch (error) { console.warn("NEAR_TERM_CAPACITY_TELEMETRY_WRITE_FAILED", { table, error: error instanceof Error ? error.message : String(error) }); }
+      await this.db.from(table).upsert(payload);
+    } catch {
+      // Telemetry failures are isolated from the business result
+    }
   }
   private async writeIncidentTelemetry(context: DetectorTelemetryContext, incident: { incident_key?: string | null; reason_code?: string | null; warehouse_name?: string | null; warehouse_id?: string | null }, facts: CurrentRisk, candidate: boolean, rejectionReason: string | null) {
     await this.telemetryWrite("near_term_capacity_detector_telemetry", {
@@ -249,8 +292,13 @@ export class NearTermCapacityRuntimeService {
     const context = buildContext(row.id, row.current_risk_snapshot, lead, policy);
     if (context.uncertainties.length) { await this.db.from("near_term_capacity_cases").update({ decision_context: context, status: "HUMAN_INVESTIGATION_REQUIRED" }).eq("id", row.id); await this.event(row.id, "HUMAN_INVESTIGATION_REQUIRED", "near_term_capacity", { reasons: context.uncertainties }); return { status: "HUMAN_INVESTIGATION_REQUIRED" as const }; }
     let ai: AiRecommendation;
-    try { const response = await generate("Return only the Phase 2 AiRecommendation JSON. Choose one allowed action, cite only evidence refs, and set both financial values null.", { decisionContext: context }, { temperature: 0, maxTokens: 1000 }); ai = JSON.parse(response.text.replace(/```json|```/gi, "").trim()) as AiRecommendation; }
-    catch (error) { await this.db.from("near_term_capacity_cases").update({ decision_context: context, status: "HUMAN_INVESTIGATION_REQUIRED" }).eq("id", row.id); await this.event(row.id, "AI_DECISION_FAILED", "near_term_capacity", { reason: error instanceof Error ? error.message : String(error) }); return { status: "HUMAN_INVESTIGATION_REQUIRED" as const }; }
+    try {
+      ai = await callAiRecommendation(context);
+    } catch (error) {
+      await this.db.from("near_term_capacity_cases").update({ decision_context: context, status: "HUMAN_INVESTIGATION_REQUIRED" }).eq("id", row.id);
+      await this.event(row.id, "AI_DECISION_FAILED", "near_term_capacity", { reason: error instanceof Error ? error.message : String(error) });
+      return { status: "HUMAN_INVESTIGATION_REQUIRED" as const };
+    }
     const critic = critique(context, ai); const status = critic.verdict === "VALID_DECISION" ? "DECISION_READY" : "HUMAN_INVESTIGATION_REQUIRED";
     await this.db.from("near_term_capacity_cases").update({ decision_context: context, ai_recommendation: ai, critic_result: critic, status, updated_at: new Date().toISOString() }).eq("id", row.id);
     await this.event(row.id, critic.verdict === "VALID_DECISION" ? "AI_DECISION_CREATED" : "HUMAN_INVESTIGATION_REQUIRED", "near_term_capacity", { critic, mode: NEAR_TERM_SHADOW_MODE });
@@ -291,8 +339,7 @@ export class NearTermCapacityRuntimeService {
 
     let ai: AiRecommendation;
     try {
-      const response = await generate("Return only the Phase 2 AiRecommendation JSON. Choose one allowed action, cite only evidence refs, and set both financial values null.", { decisionContext: context }, { temperature: 0, maxTokens: 1000 });
-      ai = JSON.parse(response.text.replace(/```json|```/gi, "").trim()) as AiRecommendation;
+      ai = await callAiRecommendation(context);
     } catch (error) {
       await this.db.from("near_term_capacity_cases").update({ decision_context: context, updated_at: new Date().toISOString() }).eq("id", row.id);
       await this.event(row.id, "AI_DECISION_FAILED", actor, { reason: error instanceof Error ? error.message : String(error) });

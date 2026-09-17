@@ -122,5 +122,19 @@ export const generate = async (
   }
 
   const provider = getAIProvider(options.provider);
-  return provider.generate(promptText, input, options);
+  try {
+    return await provider.generate(promptText, input, options);
+  } catch (primaryErr) {
+    const fallbackName = provider.name === "openai" ? "gemini" : "openai";
+    const hasFallbackKey = fallbackName === "gemini" ? Boolean(process.env.GOOGLE_AI_API_KEY) : Boolean(process.env.OPENAI_API_KEY);
+    if (hasFallbackKey) {
+      try {
+        const fallback = getAIProvider(fallbackName);
+        return await fallback.generate(promptText, input, options);
+      } catch {
+        // If fallback also fails, throw the original primary error
+      }
+    }
+    throw primaryErr;
+  }
 };

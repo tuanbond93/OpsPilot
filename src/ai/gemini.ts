@@ -71,6 +71,30 @@ export class GeminiProvider implements AIProvider {
 
         if (!response.ok) {
           const errorText = await response.text();
+          if (response.status === 404 && model !== "gemini-1.5-flash") {
+            const fallbackEndpoint = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`;
+            const fallbackResponse = await fetch(fallbackEndpoint, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(payload),
+              signal: controller.signal,
+            });
+            if (fallbackResponse.ok) {
+              const fallbackData = await fallbackResponse.json();
+              const fallbackCandidate = fallbackData.candidates?.[0];
+              const text = fallbackCandidate?.content?.parts?.[0]?.text || "";
+              const usageMetadata = fallbackData.usageMetadata;
+              return {
+                text,
+                usage: {
+                  promptTokens: usageMetadata?.promptTokenCount,
+                  completionTokens: usageMetadata?.candidatesTokenCount,
+                  totalTokens: usageMetadata?.totalTokenCount,
+                },
+                model: "gemini-1.5-flash",
+              };
+            }
+          }
           throw new Error(`Gemini API request failed (${response.status}): ${errorText}`);
         }
 
