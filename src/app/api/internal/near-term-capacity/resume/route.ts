@@ -204,20 +204,69 @@ export async function GET(request: NextRequest) {
       });
     }
 
-    if (action === "audit-details") {
-      const [ { data: incident }, { data: incidentHistories }, { data: checkpoints }, { data: allCases } ] = await Promise.all([
-        db.from("incidents").select("*").eq("id", "d0f4e03d-2568-490e-957f-b12c13fe1660").maybeSingle(),
-        db.from("incident_history").select("*").eq("incident_id", "d0f4e03d-2568-490e-957f-b12c13fe1660"),
-        db.from("warehouse_checkpoints").select("*").eq("warehouse_id", "21161000").order("created_at", { ascending: false }).limit(5),
-        db.from("near_term_capacity_cases").select("id, warehouse_id, warehouse_name, current_risk_snapshot, created_at, status").limit(10),
+    if (action === "evidence-collection" || action === "metrics") {
+      const [
+        { count: eligibleCasesCount },
+        { data: cases },
+        { data: events },
+        { data: requests },
+        { data: decisions },
+      ] = await Promise.all([
+        db.from("near_term_capacity_cases").select("*", { count: "exact", head: true }),
+        db.from("near_term_capacity_cases").select("id, status, created_at, updated_at, active"),
+        db.from("near_term_capacity_events").select("id, case_id, event_type, created_at, payload").order("created_at", { ascending: true }),
+        db.from("telegram_decision_requests").select("id, capacity_case_id, status, created_at, sent_at"),
+        db.from("decisions").select("id, decision_status, created_at, source_links"),
       ]);
+
+      const allEvents = events || [];
+      const factRequests = allEvents.filter((e) => e.event_type === "FACT_REQUEST_SENT").length;
+      const factResponses = allEvents.filter((e) => e.event_type === "FACT_INITIAL_RESPONSE_RECEIVED" || e.event_type === "FACT_RECEIVED").length;
+      const geminiDecisions = allEvents.filter((e) => e.event_type === "AI_DECISION_CREATED").length;
+      const criticPass = allEvents.filter((e) => e.event_type === "AI_DECISION_CREATED" && (e.payload as any)?.critic?.verdict === "VALID_DECISION").length;
+      const criticFail = allEvents.filter((e) => (e.event_type === "HUMAN_INVESTIGATION_REQUIRED" && (e.payload as any)?.critic) || (e.event_type === "AI_DECISION_CREATED" && (e.payload as any)?.critic?.verdict !== "VALID_DECISION")).length;
+      const managerCardsDelivered = (requests || []).filter((r) => r.status === "SENT" || r.status === "RESPONDED").length;
+      const managerApproved = (decisions || []).filter((d) => d.decision_status === "APPROVED" || d.decision_status === "EXECUTED").length;
+      const managerRejected = (decisions || []).filter((d) => d.decision_status === "REJECTED").length;
+      const resolvedCases = (cases || []).filter((c) => c.status === "RESOLVED" || !c.active).length;
+
+      const goldenEvents = allEvents.filter((e) => e.case_id === caseId);
+      const caseItem = cases?.find((c) => c.id === caseId);
+      const t0 = caseItem?.created_at ? new Date(caseItem.created_at).getTime() : null;
+      const t1 = goldenEvents.find((e) => e.event_type === "FACT_REQUEST_SENT")?.created_at ? new Date(goldenEvents.find((e) => e.event_type === "FACT_REQUEST_SENT")!.created_at).getTime() : null;
+      const t2 = goldenEvents.find((e) => e.event_type === "FACT_INITIAL_RESPONSE_RECEIVED")?.created_at ? new Date(goldenEvents.find((e) => e.event_type === "FACT_INITIAL_RESPONSE_RECEIVED")!.created_at).getTime() : null;
+      const lastResume = goldenEvents.filter((e) => e.event_type === "AI_DECISION_RESUME_STARTED").pop();
+      const t_resume = lastResume?.created_at ? new Date(lastResume.created_at).getTime() : null;
+      const t5 = goldenEvents.find((e) => e.event_type === "AI_DECISION_CREATED")?.created_at ? new Date(goldenEvents.find((e) => e.event_type === "AI_DECISION_CREATED")!.created_at).getTime() : null;
+      const t8 = goldenEvents.find((e) => e.event_type === "MANAGER_DECISION_CARD_SENT")?.created_at ? new Date(goldenEvents.find((e) => e.event_type === "MANAGER_DECISION_CARD_SENT")!.created_at).getTime() : null;
+      const managerEvent = goldenEvents.find((e) => e.event_type === "MANAGER_APPROVED" || e.event_type === "MANAGER_REJECTED");
+      const t9 = managerEvent?.created_at ? new Date(managerEvent.created_at).getTime() : null;
+
       return NextResponse.json({
         ok: true,
-        incident,
-        incidentHistories,
-        checkpoints,
-        allCases,
-        case: preCase,
+        action: "evidence-collection",
+        asOf: new Date().toISOString(),
+        caseId,
+        metrics: {
+          eligible_cases: eligibleCasesCount ?? (cases?.length || 0),
+          fact_requests: factRequests,
+          fact_responses: factResponses,
+          gemini_decisions: geminiDecisions,
+          critic_pass: criticPass,
+          critic_fail: criticFail,
+          manager_cards_delivered: managerCardsDelivered,
+          manager_approved: managerApproved,
+          manager_rejected: managerRejected,
+          resolved_cases: resolvedCases,
+        },
+        latency: {
+          detection_to_fact_request_ms: t0 && t1 ? t1 - t0 : null,
+          fact_request_to_response_ms: t1 && t2 ? t2 - t1 : null,
+          response_to_ai_decision_ms: t_resume && t5 ? t5 - t_resume : (t2 && t5 ? t5 - t2 : null),
+          ai_decision_to_manager_card_ms: t5 && t8 ? t8 - t5 : null,
+          manager_card_to_manager_action: t8 && t9 ? `${t9 - t8}ms` : "PENDING_REAL_WORLD_OUTCOME",
+          manager_action_to_resolution: "PENDING_REAL_WORLD_OUTCOME",
+        },
       });
     }
 

@@ -104,20 +104,21 @@ flowchart TD
 - **Current Active**: `true`
 - **Database Table**: `near_term_capacity_cases`
 
-### Full Timeline: T0 Through T9 (Production Database Audit)
+### Full Timeline: T0 Through T10 (Production Database Audit)
 
 | Step | Timestamp (UTC) | State / Event | Actor | Real Production Evidence & Details |
 | :--- | :--- | :--- | :--- | :--- |
-| **T0: Risk Detected** | `2026-09-16T03:06:31.735013Z` | Case Created (`FACT_REQUESTED`) | `phase2_checkpoint` | Backlog: 15 orders, 450.0 kg; Signals: `["KHO_TON"]`; Evidence refs: `["incidents:e2524b83...", "checkpoints:096e5792..."]`. |
+| **T0: Risk Detected** | `2026-09-16T03:06:31.735013Z` | Case Created (`FACT_REQUESTED`) | `phase2_checkpoint` | Backlog: 6 orders, unspecified weight (`currentKg: null`, rendered as "Chưa có dữ liệu" / 0 kg); Signals: `["KHO_TON"]`; Evidence refs: `["incident:d0f4e03d-2568-490e-957f-b12c13fe1660", "incident_history:2026-09-16T03:00:01.832+00:00"]`. |
 | **T1: Fact Request Sent** | `2026-09-16T07:05:05.750774Z` | `FACT_REQUEST_SENT` | `phase2_checkpoint` | Telegram topic ID: `30`, Telegram message ID: `1272`, Member ID: `07a450b9-86e1-437d-a3c9-55c5ebd952a9`. Interactive buttons delivered to warehouse lead. |
 | **T2: Lead Ground Truth Received** | `2026-09-16T08:03:23.339771Z` | `FACT_INITIAL_RESPONSE_RECEIVED` | `telegram:07a450b9-...` | Warehouse Lead clicked button: `NO_SIGNIFICANT_INCOMING` (`Không có thêm đáng kể`). Telegram update ID: `550963292`. |
-| **T3: Fact Persisted in DB** | `2026-09-16T08:03:24.839887Z` | `FACT_RECEIVED` | `telegram:07a450b9-...` | Fact record inserted in `near_term_capacity_fact_responses`. Case status transitioned to `FACT_CAPTURED` (`lead_fact_snapshot.capturedAt: 2026-09-16T08:03:23.470Z`). |
+| **T3: Context Locked** | `2026-09-16T08:03:24.839887Z` | `FACT_RECEIVED` | `telegram:07a450b9-...` | Fact record inserted in `near_term_capacity_fact_responses`. Case transitioned to `FACT_CAPTURED`. Context deterministically locked to historical reference time `2026-09-16T08:03:23.470Z`. |
 | **T4: Governed Resume Triggered** | `2026-09-17T10:58:16.236188Z` | `AI_DECISION_RESUME_STARTED` | `system_governed:e2524...` | Single-case governed resume executed via `/api/internal/near-term-capacity/resume`. Reference timestamp preserved from Lead fact. |
-| **T5: AI Reasoning Generated** | `2026-09-17T10:58:18.083956Z` | `AI_DECISION_CREATED` | `system_governed:e2524...` | Google Gemini Free Tier (`gemini-flash-lite-latest`) successfully generated recommendation: `NO_ACTION_MONITOR` (confidence: 0.85, reason: "Tồn kho trong giới hạn kiểm soát và không có hàng lớn phát sinh trong 4h tới theo xác nhận từ Lead"). |
+| **T5: Gemini AI Reasoning Generated** | `2026-09-17T10:58:18.083956Z` | `AI_DECISION_CREATED` | `system_governed:e2524...` | Google Gemini Free Tier (`gemini-flash-lite-latest`) successfully generated recommendation: `NO_ACTION_MONITOR` (confidence: 0.85, reason: "Tồn kho trong giới hạn kiểm soát và không có hàng lớn phát sinh trong 4h tới theo xác nhận từ Lead"). |
 | **T6: Critic Verification** | `2026-09-17T10:58:18.083956Z` | `CRITIC_VERIFIED` | `near_term_capacity_critic` | Deterministic Critic evaluated context & AI output. Verdict: `VALID_DECISION` (0 rule violations, action strictly in allowed policy whitelist). |
-| **T7: Status Transition** | `2026-09-17T10:58:18.322234Z` | `DECISION_READY` | `near_term_capacity_runtime` | Case status transitioned to `DECISION_READY`. Decision record created in `decisions` table: ID `92d8e19c-db9e-4840-891f-a90d5c38df6c` (`status: READY_FOR_REVIEW`, `mode: HUMAN_APPROVAL`). |
-| **T8: Manager Card Sent** | `2026-09-17T10:58:24.134444Z` | `MANAGER_DECISION_CARD_SENT` | `NearTermCapacityDecisionBridge` | Telegram Manager Decision Card dispatched with inline `✅ APPROVE` / `❌ REJECT` buttons. Chat ID: `-1004329996332`, Topic ID: `111`, Telegram Message ID: `1313`. Decision request ID: `533661b4-a3d1-407b-8ea9-4ab3e3d5d8a1`. |
-| **T9: Governed Execution** | `PENDING_REAL_WORLD_OUTCOME` | `OUTCOME_PENDING` | Regional Logistics Manager | Awaiting human manager interaction in Telegram (`✅ APPROVE` / `❌ REJECT`). No simulated bypass. |
+| **T7: DECISION_READY** | `2026-09-17T10:58:18.322234Z` | `DECISION_READY` | `near_term_capacity_runtime` | Case status transitioned to `DECISION_READY`. Decision record created in `decisions` table: ID `92d8e19c-db9e-4840-891f-a90d5c38df6c` (`status: READY_FOR_REVIEW`, `mode: HUMAN_APPROVAL`). |
+| **T8: Manager Card Delivered** | `2026-09-17T10:58:24.134444Z` | `MANAGER_DECISION_CARD_SENT` | `NearTermCapacityDecisionBridge` | Telegram Manager Decision Card dispatched with inline `✅ APPROVE` / `❌ REJECT` buttons. Chat ID: `-1004329996332`, Topic ID: `111`, Telegram Message ID: `1313`. Decision request ID: `533661b4-a3d1-407b-8ea9-4ab3e3d5d8a1`. |
+| **T9: Real Manager Action** | `PENDING_REAL_WORLD_OUTCOME` | `OUTCOME_PENDING` | Regional Logistics Manager | Awaiting physical human manager interaction in Telegram Topic 111 (`✅ APPROVE` / `❌ REJECT`). No simulated bypass. |
+| **T10: Observed Operational Outcome** | `PENDING_REAL_WORLD_OUTCOME` | `OUTCOME_PENDING` | Post-Decision Checkpoint | Next operational checkpoint observation after human manager decision. |
 
 ### Duplicate Activity Verification
 - **Active cases for Yên Bái warehouse**: `1` (Unique partial index `one_active_case_per_warehouse` verified)
@@ -174,14 +175,14 @@ All business, operational, and monetary claims across the OpsPilot system docume
 
 | Claim ID | Claim Description | Value / Scope | Classification | Evidentiary Basis / Formula / Source |
 | :--- | :--- | :--- | :--- | :--- |
-| **CLM-01** | Golden Case Backlog Identification | 15 orders, 450.0 kg | `[MEASURED]` | Database record `near_term_capacity_cases.current_risk_snapshot` for case `e2524b83-4462-4238-8914-cd371ab51106`. |
+| **CLM-01** | Golden Case Backlog Identification | 6 orders, unspecified weight (`currentKg: null`) | `[MEASURED]` | Database record `near_term_capacity_cases.current_risk_snapshot` for case `e2524b83-4462-4238-8914-cd371ab51106`. |
 | **CLM-02** | Lead Ground Truth Response | `NO_SIGNIFICANT_INCOMING` | `[MEASURED]` | Database record `near_term_capacity_fact_responses` at `2026-09-16T08:03:23.339771Z`. |
 | **CLM-03** | Lead Information Completeness | 100% of cases requiring fact capture Lead response | `[MEASURED]` | Enforced by domain state machine: `persistAndDecide()` cannot proceed without `LeadFact` object. |
 | **CLM-04** | Duplicate Dispatch Prevention | 0 duplicates across cases, decisions, and cards | `[MEASURED]` | Database unique constraints `one_active_case_per_warehouse`, `one_decision_per_near_term_capacity_case`, `one_manager_request_per_near_term_capacity_case`. |
 | **CLM-05** | Fail-Soft Architecture on Upstream Provider Outage | Zero data corruption, fail-soft to `HUMAN_INVESTIGATION_REQUIRED` | `[MEASURED]` | Verified in production execution at `2026-09-17T09:59:31.319690Z`: `AI_DECISION_FAILED` recorded, case status preserved. |
 | **CLM-06** | End-to-End Decision Latency | < 3 minutes (trigger to manager card) | `[MODELED]` | Modeled from automated trigger-to-card pipeline execution benchmark (< 180s) vs manual baseline. |
 | **CLM-07** | Manual Dispatch Cycle Time Baseline | 45–90 minutes per capacity incident | `[ASSUMPTION]` | Dispatcher operational interview baseline for heavy freight operations in Northern Vietnam. |
-| **CLM-08** | Avoided SLA Penalties (Overload Prevention) | 1,200,000 – 2,250,000 VND per intercepted incident | `[MODELED]` | Formula: `currentOrders (15)` × `penalty_per_order (80,000 – 150,000 VND)`. |
+| **CLM-08** | Avoided SLA Penalties (Overload Prevention) | 480,000 – 900,000 VND per intercepted incident | `[MODELED]` | Formula: `currentOrders (6)` × `penalty_per_order (80,000 – 150,000 VND)`. |
 | **CLM-09** | Heavy Freight Delivery SLA Late Fine | 80,000 – 150,000 VND per order | `[ASSUMPTION]` | Standard heavy cargo (GHN Nặng) contractual SLA penalty clauses. |
 | **CLM-10** | Avoided Unnecessary Charter Truck Cost | 1,200,000 – 2,500,000 VND per avoided dispatch | `[MODELED]` | Avoided on-demand spot-market charter rental by confirming `NO_SIGNIFICANT_INCOMING` and choosing `NO_ACTION_MONITOR`. |
 | **CLM-11** | Spot-Market Charter Truck Cost (Yên Bái - Hà Nội) | 1,200,000 – 2,500,000 VND per trip | `[ASSUMPTION]` | Market tariff for 1.5–2.5 ton dedicated charter freight on regional highway corridor. |
@@ -222,7 +223,7 @@ All business, operational, and monetary claims across the OpsPilot system docume
 | **Full Audit Trail** | Immutable PostgreSQL events | **PASS** | `near_term_capacity_events` table (8 events logged) |
 | **Test Suite Coverage** | Unit, integration, security | **PASS** | 811 tests passing across 126 test files |
 | **TypeScript & Lint** | Clean zero-warning baseline | **PASS** | `tsc --noEmit` & `npm run lint` clean |
-| **Production Deployment** | Canonical Vercel release | **PASS** | `https://opspilot-tau-lyart.vercel.app` (`dpl_4EMFPtYbFVDASucVvgvnyMKueamu`) |
+| **Production Deployment** | Canonical Vercel release | **PASS** | `https://opspilot-tau-lyart.vercel.app` (`dpl_9XiiYQWpPCjvCYo98fUdKiJwe4a5`) |
 
 ---
 
@@ -230,3 +231,30 @@ All business, operational, and monetary claims across the OpsPilot system docume
 
 - **Gate 2 (Current Baseline)**: AI decision generation → Critic verification → Telegram Manager Decision Card → Governed Human Approval.
 - **Gate 3 (Execution Automation)**: Upon Telegram Manager `APPROVE` callback, automatically trigger the downstream WMS/TMS dispatch adapter (generate digital work-order and notify warehouse floor), completing the full loop from signal to execution without human keyboard touch.
+
+---
+
+## 11. Continuous Evidence Collection Mode (Through 2026-10-01)
+
+Read-only evidence telemetry endpoint:
+`GET https://opspilot-tau-lyart.vercel.app/api/internal/near-term-capacity/resume?action=evidence-collection`
+
+### Monitored Metrics
+- `eligible_cases`
+- `fact_requests`
+- `fact_responses`
+- `gemini_decisions`
+- `critic_pass`
+- `critic_fail`
+- `manager_cards_delivered`
+- `manager_approved`
+- `manager_rejected`
+- `resolved_cases`
+
+### Measured Operational Latencies
+- `detection_to_fact_request`: 14,314s (~3h 58m)
+- `fact_request_to_response`: 3,498s (~58m)
+- `response_to_ai_decision`: 1,848ms (AI inference on resume)
+- `ai_decision_to_manager_card`: 6,051ms (Card creation & Telegram delivery)
+- `manager_card_to_manager_action`: `PENDING_REAL_WORLD_OUTCOME`
+- `manager_action_to_resolution`: `PENDING_REAL_WORLD_OUTCOME`
