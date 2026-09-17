@@ -5,7 +5,7 @@ import { GeminiProvider } from "@/ai/gemini";
 export const dynamic = "force-dynamic";
 
 const MODEL = "gemini-2.5-flash";
-const MAX_MODELS = 20;
+const MAX_MODELS = 50;
 const MAX_PROBES = 5;
 
 type ListedModel = { name?: string; displayName?: string; supportedGenerationMethods?: string[] };
@@ -23,7 +23,7 @@ function safeErrorCode(error: unknown): string {
 async function listModels(): Promise<ListedModel[]> {
   const key = process.env.GOOGLE_AI_API_KEY;
   if (!key) throw new Error("Missing GOOGLE_AI_API_KEY environment variable");
-  const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(key)}`, { method: "GET" });
+  const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?pageSize=50&key=${encodeURIComponent(key)}`, { method: "GET" });
   if (!response.ok) throw new Error(`Gemini API request failed (${response.status})`);
   const data = await response.json() as { models?: ListedModel[] };
   return (data.models || []).slice(0, MAX_MODELS);
@@ -45,7 +45,7 @@ async function probeModel(model: string) {
   try {
     const response = await new GeminiProvider().generate('Return JSON only: {"ok":true}', undefined, { model, temperature: 0, maxTokens: 32, timeoutMs: 20_000, retries: 0 });
     let parsed: unknown;
-    try { parsed = JSON.parse(response.text.trim()); } catch { parsed = null; }
+    try { parsed = JSON.parse(response.text.replace(/```json|```/gi, "").trim()); } catch { parsed = null; }
     const ok = Boolean(parsed && typeof parsed === "object" && (parsed as { ok?: unknown }).ok === true);
     return { provider: "gemini", model, ok, httpStatus: 200, parseOk: parsed !== null, errorCode: ok ? null : "INVALID_HEALTH_RESPONSE" };
   } catch (error) {
