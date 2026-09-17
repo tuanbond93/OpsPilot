@@ -145,14 +145,16 @@ export async function GET(request: NextRequest) {
         }
       }
 
-      // Probe each candidate model with generateContent
-      const candidateModels = [
-        "gemini-2.5-flash",
-        "gemini-2.5-pro",
-        "gemini-3.6-flash",
-        "gemini-3.8-flash",
-        "gemma-4-26b-a4b-it",
-      ];
+      const requestedModel = searchParams.get("model")?.trim();
+      const candidateModels = requestedModel
+        ? [requestedModel]
+        : [
+            "gemini-flash-latest",
+            "gemini-3.5-flash",
+            "gemini-3.1-flash-lite",
+            "gemini-3.6-flash",
+            "gemini-2.5-flash",
+          ];
       const probeResults: Array<Record<string, unknown>> = [];
       if (apiKey) {
         for (const cand of candidateModels) {
