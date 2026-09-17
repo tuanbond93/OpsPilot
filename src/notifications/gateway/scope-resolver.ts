@@ -103,6 +103,23 @@ function normalizeProvince(value: string | null | undefined): string {
 }
 
 /**
+ * Region code mapping.
+ * Codes are used in roster scopes: MB01, MB02, MB03, MB04, MT, MD, MTAY, etc.
+ */
+export function getRegionCode(regionName: string | null | undefined): string | null {
+  if (!regionName) return null;
+  const normalized = normalizeProvince(regionName);
+  if (normalized === "mien bac 3" || normalized === "mb03" || normalized === "mb3") return "MB03";
+  if (normalized === "mien bac 1" || normalized === "mb01" || normalized === "mb1") return "MB01";
+  if (normalized === "mien bac 2" || normalized === "mb02" || normalized === "mb2") return "MB02";
+  if (normalized === "mien bac 4" || normalized === "mb04" || normalized === "mb4") return "MB04";
+  if (normalized === "mien trung" || normalized === "mt") return "MT";
+  if (normalized === "mien dong" || normalized === "md") return "MD";
+  if (normalized === "mien tay" || normalized === "mtay") return "MTAY";
+  return null;
+}
+
+/**
  * Check if a scope matches the given context.
  * DENY BY DEFAULT - only explicit matches authorize.
  */
@@ -118,7 +135,7 @@ function scopeMatchesContext(
     case "ALL":
       return { matches: true, reason: "scope_all" };
     case "REGION":
-      if (region && normalizeProvince(scope.scope_code) === normalizeProvince(region)) {
+      if (region && [region, getRegionCode(region)].some((value) => value && normalizeProvince(scope.scope_code) === normalizeProvince(value))) {
         return { matches: true, reason: `scope_region:${scope.scope_code}` };
       }
       return { matches: false, reason: "region_mismatch" };

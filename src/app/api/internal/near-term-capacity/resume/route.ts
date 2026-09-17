@@ -387,7 +387,7 @@ export async function GET(request: NextRequest) {
           hardSlaConstraint: "PROBE",
           capturedAt: new Date().toISOString(),
         },
-        status: "DETECTED",
+        status: "FACT_REQUESTED",
         active: true,
       });
 
@@ -421,7 +421,7 @@ export async function GET(request: NextRequest) {
             hardSlaConstraint: "PROBE",
             capturedAt: new Date().toISOString(),
           },
-          status: "DETECTED",
+          status: "FACT_REQUESTED",
           active: true,
         });
 
