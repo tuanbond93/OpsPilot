@@ -363,27 +363,49 @@ In enterprise logistics operations:
 
 ---
 
-## 16. GLOBAL ACTIVE LOCK AUDIT & EXPANSION PROPOSAL
+## 16. GLOBAL ACTIVE LOCK CORRECTION & MIGRATION 077
 
-### Contract Audit
-- **Current Database Contract**: `CREATE UNIQUE INDEX one_active_near_term_capacity_case ON near_term_capacity_cases ((active)) WHERE active;`
-- **Max Active Cases System-Wide**: `1`
-- **Max Active Cases Per Warehouse**: `1` (if no other warehouse is active globally, otherwise `0`)
-- **Intended Domain Contract**: `1` active case per warehouse (`UNIQUE(warehouse_id) WHERE active = true`)
-- **Classification**: `GLOBAL_ACTIVE_LOCK_DESIGN: LIKELY_IMPLEMENTATION_DEFECT`
-- **Production Schema Mutated in This Run**: `NO` (migration strictly proposed, not executed)
+### Contract Defect Root Cause & Resolution
+- **Defect Identified**: `CREATE UNIQUE INDEX one_active_near_term_capacity_case ON near_term_capacity_cases ((active)) WHERE active;` indexed a boolean constant `true`, creating a global lock of at most 1 active case across the entire system.
+- **Corrected Contract**: `CREATE UNIQUE INDEX one_active_near_term_capacity_case_per_warehouse ON near_term_capacity_cases (warehouse_id) WHERE active = true;`
+- **Migration Prepared & Verified**: `src/database/migrations/077_near_term_capacity_warehouse_concurrency.sql`
+- **Active Case Pre-Migration State**: Exactly 1 active case exists in production (`e2524b83-4462-4238-8914-cd371ab51106`, Yên Bái). Zero conflicts exist, ensuring non-blocking, completely safe index migration.
+- **Reversible Rollback SQL**: Included in Migration 077.
 
-### Bounded Expansion Proposal (Next Owner Decision)
-- **Proposed Production Concurrency Key**: `warehouse_id`
-- **Proposed Pilot Scope**: 12 designated pilot heavy-goods warehouses
-- **Expected Real Cases Per Day**: ~1.2 cases/day
-- **Expected Manager Cards Per Day**: ~1.2 cards/day
-- **Safety Controls**:
-  1. Strict per-warehouse uniqueness prevents duplicate cases for the same hub.
-  2. Rate limit: Maximum 1 new governed case per hour across system.
-  3. Critic volume check blocks physical interventions when weight is missing.
-- **Rollback Plan**: Revert index to `((active)) WHERE active;` via idempotent migration.
-- **Migration Prepared**: `src/database/migrations/077_near_term_capacity_warehouse_concurrency.sql`
-- **Production Expansion Executed in This Run**: `NO`
+---
+
+## 17. STAGE 1 GOVERNED MULTI-WAREHOUSE ROLLOUT
+
+> [!IMPORTANT]
+> Stage 1 is strictly limited to maximum 3 pilot warehouses with active Lead/Manager routing. It does NOT enable broad multi-warehouse rollout or loosen any operational threshold.
+
+### Stage 1 Pilot Warehouse Selection (Maximum 3 Hubs)
+1. **Pilot Warehouse 1 (Baseline)**:
+   - **Warehouse ID**: `21161000`
+   - **Warehouse Name**: Kho Giao Hàng Nặng - TP Yên Bái - Yên Bái
+   - **Routing**: Group `-1004329996332`, Lead Topic `30` (Yên Bái), Manager Topic `111` (Decisions)
+   - **Governed Status**: Golden Case #001 (`e2524b83-4462-4238-8914-cd371ab51106`) immutable and active.
+2. **Pilot Warehouse 2**:
+   - **Warehouse ID**: `21158000`
+   - **Warehouse Name**: Kho Giao Hàng Nặng - TP Lào Cai - Lào Cai
+   - **Routing**: Group `-1004329996332`, Lead Topic `2` (Lào Cai), Manager Topic `111` (Decisions)
+   - **Operational Role**: High-volume MB03 northern frontier heavy delivery hub.
+3. **Pilot Warehouse 3**:
+   - **Warehouse ID**: `21160000`
+   - **Warehouse Name**: Kho Giao Hàng Nặng - Việt Trì - Phú Thọ
+   - **Routing**: Group `-1004329996332`, Lead Topic `12` (Phú Thọ), Manager Topic `111` (Decisions)
+   - **Operational Role**: Key MB03 linehaul transit and heavy delivery hub.
+
+### Rollout Governance & Safety Controls
+1. **Pilot Gating**: Non-pilot warehouses (all warehouses outside the 3 pilot hubs) remain strictly **shadow-only**. They trigger live shadow observations but NEVER create governed cases or send Telegram messages.
+2. **Per-Warehouse Active Concurrency**: Max 1 active case per warehouse. An active case at Yên Bái does not block Lào Cai or Phú Thọ.
+3. **Cadence Limiting**: At most **1 NEW governed case** created per checkpoint execution. When multiple pilot warehouses have eligible candidates in a single checkpoint, they are ranked deterministically by affected order count (highest backlog first, warehouseId ascending tie-breaker). Non-selected candidates remain live shadow observations.
+4. **24-Hour Cooldown**: Warehouses with a case created within the past 24 hours are suppressed from creating new cases.
+5. **Kill Switch**: Controlled via `NEAR_TERM_CAPACITY_MULTI_WAREHOUSE_ENABLED`. Setting to `"false"` immediately reverts runtime to single-case global lock behavior.
+6. **Immutable Evidence Preservation**: Golden Case #001 (`e2524b83-4462-4238-8914-cd371ab51106`) remains untouched.
+7. **Semantic Safety**: `UNKNOWN != ZERO` preserved across all prompt formats and Telegram cards.
+8. **Review Pack**: 21-case replayed review pack persisted in repository at `docs/level-c/SHADOW_REVIEW_PACK.md`.
+9. **Verification**: 13 automated unit tests implemented and passing in `src/__tests__/near-term-capacity-stage1-rollout.test.ts`.
+
 
 

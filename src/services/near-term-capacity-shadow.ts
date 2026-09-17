@@ -1,5 +1,6 @@
 import { type SupabaseClient } from "@supabase/supabase-js";
 import { generate } from "@/ai/provider";
+import { logger } from "@/observability/logger";
 import {
   buildContext,
   critique,
@@ -103,7 +104,7 @@ export class NearTermCapacityShadowService {
       .order("checkpoint_at", { ascending: true });
 
     if (error) {
-      console.error("Failed to query detector telemetry for historical replay:", error);
+      logger.error("Failed to query detector telemetry for historical replay:", { error });
       throw error;
     }
 
@@ -406,7 +407,7 @@ export class NearTermCapacityShadowService {
         { onConflict: "source_candidate_id,source_mode" }
       );
     } catch (e) {
-      console.warn("Could not upsert into near_term_capacity_shadow_decisions (persisted in cache):", e);
+      logger.warn("Could not upsert into near_term_capacity_shadow_decisions (persisted in cache):", { error: e });
     }
 
     return record;
