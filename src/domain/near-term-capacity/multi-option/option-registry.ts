@@ -98,73 +98,88 @@ export function generateCandidateOptions(
     }
   }
 
-  const addVehicleCost = evaluateOptionCost("ADD_VEHICLE", facts, lead, vehicleEvidence?.rate);
   const addVehicleCapacity = evaluateOptionCapacity("ADD_VEHICLE", facts, lead, vehicleEvidence?.capacity);
   const addVehicleSla = evaluateOptionSla("ADD_VEHICLE", facts, lead, rootCause);
-  const costDiff = computeProjectedCostDifference(addVehicleCost, noActionCost);
 
-  let addVehicleEconomicStatus: EconomicStatus = "UNKNOWN";
-  let addVehicleEconomicReason: string | null = "Chưa có biểu phí định mức xe ngoài hoặc ngưỡng kinh tế quy chuẩn để đối soát";
-  let addVehicleEconomicEvidence: string | null = "Thiếu biểu phí xe ngoài để tính toán hiệu quả kinh tế";
+  const candidateRates =
+    vehicleEvidence?.rates && vehicleEvidence.rates.length > 0
+      ? vehicleEvidence.rates
+      : vehicleEvidence?.rate
+      ? [vehicleEvidence.rate]
+      : [null];
 
-  if (
-    addVehicleCost.evidence_status === "UNKNOWN" ||
-    addVehicleCost.incremental_cost_vnd === null ||
-    addVehicleCapacity.status === "UNKNOWN" ||
-    addVehicleCapacity.added_kg === null
-  ) {
-    addVehicleEconomicStatus = "UNKNOWN";
-    addVehicleEconomicReason = "Chưa có biểu phí định mức hoặc tải trọng xe chuẩn hóa để đối soát hiệu quả kinh tế";
-    addVehicleEconomicEvidence = "Thiếu dữ liệu kinh tế/năng lực quy chuẩn";
-  } else {
-    const backlogKg = facts.currentKg ?? 0;
-    if (backlogKg <= 0) {
-      addVehicleEconomicStatus = "NOT_JUSTIFIED";
-      addVehicleEconomicReason = `Chi phí ${addVehicleCost.incremental_cost_vnd.toLocaleString("vi-VN")} đ phát sinh không cần thiết vì tồn kho (${backlogKg} kg) không có khoảng trống năng lực đáng kể.`;
-      addVehicleEconomicEvidence = `Biểu phí ${addVehicleCost.source}: chi phí vượt quá nhu cầu giải tỏa`;
+  for (const rateItem of candidateRates) {
+    const addVehicleCost = evaluateOptionCost("ADD_VEHICLE", facts, lead, rateItem);
+    const costDiff = computeProjectedCostDifference(addVehicleCost, noActionCost);
+
+    let addVehicleEconomicStatus: EconomicStatus = "UNKNOWN";
+    let addVehicleEconomicReason: string | null = "Chưa có biểu phí định mức xe ngoài hoặc ngưỡng kinh tế quy chuẩn để đối soát";
+    let addVehicleEconomicEvidence: string | null = "Thiếu biểu phí xe ngoài để tính toán hiệu quả kinh tế";
+
+    if (
+      addVehicleCost.evidence_status === "UNKNOWN" ||
+      addVehicleCost.incremental_cost_vnd === null ||
+      addVehicleCapacity.status === "UNKNOWN" ||
+      addVehicleCapacity.added_kg === null
+    ) {
+      addVehicleEconomicStatus = "UNKNOWN";
+      addVehicleEconomicReason = "Chưa có biểu phí định mức hoặc tải trọng xe chuẩn hóa để đối soát hiệu quả kinh tế";
+      addVehicleEconomicEvidence = "Thiếu dữ liệu kinh tế/năng lực quy chuẩn";
     } else {
-      addVehicleEconomicStatus = "JUSTIFIED";
-      addVehicleEconomicReason = `Chi phí can thiệp dự kiến ${addVehicleCost.incremental_cost_vnd.toLocaleString("vi-VN")} đ bù đắp khoảng trống năng lực (${addVehicleCapacity.added_kg} kg bổ sung) theo biểu phí định mức đã ban hành.`;
-      addVehicleEconomicEvidence = `Căn cứ biểu phí ${addVehicleCost.source} và tải trọng quy chuẩn ${addVehicleCapacity.status}`;
+      const backlogKg = facts.currentKg ?? 0;
+      if (backlogKg <= 0) {
+        addVehicleEconomicStatus = "NOT_JUSTIFIED";
+        addVehicleEconomicReason = `Chi phí ${addVehicleCost.incremental_cost_vnd.toLocaleString("vi-VN")} đ phát sinh không cần thiết vì tồn kho (${backlogKg} kg) không có khoảng trống năng lực đáng kể.`;
+        addVehicleEconomicEvidence = `Biểu phí ${addVehicleCost.source}: chi phí vượt quá nhu cầu giải tỏa`;
+      } else {
+        addVehicleEconomicStatus = "JUSTIFIED";
+        addVehicleEconomicReason = `Chi phí can thiệp dự kiến ${addVehicleCost.incremental_cost_vnd.toLocaleString("vi-VN")} đ bù đắp khoảng trống năng lực (${addVehicleCapacity.added_kg} kg bổ sung) theo biểu phí định mức đã ban hành.`;
+        addVehicleEconomicEvidence = `Căn cứ biểu phí ${addVehicleCost.source} và tải trọng quy chuẩn ${addVehicleCapacity.status}`;
+      }
     }
-  }
 
-  options.push({
-    option_id: "OPT_ADD_VEHICLE",
-    option_type: "ADD_VEHICLE",
-    description: "Điều động thêm phương tiện vận tải tăng cường để giải tỏa lượng hàng dồn ứ.",
-    feasibility_status: addVehicleFeasibility,
-    feasibility_reason: addVehicleFeasibilityReason,
-    feasibility_evidence: addVehicleFeasibilityEvidence,
-    infeasible_reason: addVehicleFeasibility === "INFEASIBLE" ? addVehicleFeasibilityReason : null,
-    economic: {
-      status: addVehicleEconomicStatus,
-      reason: addVehicleEconomicReason,
-    },
-    economic_status: addVehicleEconomicStatus,
-    economic_reason: addVehicleEconomicReason,
-    economic_evidence: addVehicleEconomicEvidence,
-    feasible: addVehicleFeasibility === "FEASIBLE",
-    evidence_refs: facts.evidenceRefs || [],
-    cost: addVehicleCost,
-    capacity: addVehicleCapacity,
-    sla: addVehicleSla,
-    projected_incremental_cost_difference: costDiff.difference_vnd,
-    projected_cost_difference_display: costDiff.display,
-    operational_effect: {
-      description: "Bổ sung xe để tăng năng lực xuất hàng ra khỏi trạm trong ca.",
-    },
-    assumptions: ["Có xe ngoài hoặc xe trung chuyển khả dụng trong khu vực"],
-    unknowns: [
-      ...(addVehicleCost.evidence_status === "UNKNOWN" ? ["Chưa có biểu phí xe ngoài được chuẩn hóa"] : []),
-      ...(!availability || availability.evidence_status === "UNKNOWN" ? ["Chưa có dữ liệu định vị và thời gian xe có thể đến trạm"] : []),
-      ...(addVehicleCapacity.status === "UNKNOWN" ? ["Chưa xác định tải trọng xe khả dụng"] : []),
-    ],
-    risks: [
-      "Chi phí xe ngoài chưa xác định có thể gây lãng phí nếu tải gom thực tế không đủ",
-    ],
-    confidence: isSmallBacklog ? 0.3 : 0.4,
-  });
+    const supplierSlug = rateItem?.supplier_name
+      ? `_${rateItem.supplier_name.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toUpperCase().replace(/[^A-Z0-9]/g, "_").replace(/_+/g, "_")}`
+      : "";
+    const supplierLabel = rateItem?.supplier_name ? ` (${rateItem.supplier_name})` : "";
+
+    options.push({
+      option_id: candidateRates.length > 1 ? `OPT_ADD_VEHICLE${supplierSlug}` : "OPT_ADD_VEHICLE",
+      option_type: "ADD_VEHICLE",
+      description: `Điều động thêm phương tiện vận tải tăng cường${supplierLabel} để giải tỏa lượng hàng dồn ứ.`,
+      feasibility_status: addVehicleFeasibility,
+      feasibility_reason: addVehicleFeasibilityReason,
+      feasibility_evidence: addVehicleFeasibilityEvidence,
+      infeasible_reason: addVehicleFeasibility === "INFEASIBLE" ? addVehicleFeasibilityReason : null,
+      economic: {
+        status: addVehicleEconomicStatus,
+        reason: addVehicleEconomicReason,
+      },
+      economic_status: addVehicleEconomicStatus,
+      economic_reason: addVehicleEconomicReason,
+      economic_evidence: addVehicleEconomicEvidence,
+      feasible: addVehicleFeasibility === "FEASIBLE",
+      evidence_refs: facts.evidenceRefs || [],
+      cost: addVehicleCost,
+      capacity: addVehicleCapacity,
+      sla: addVehicleSla,
+      projected_incremental_cost_difference: costDiff.difference_vnd,
+      projected_cost_difference_display: costDiff.display,
+      operational_effect: {
+        description: "Bổ sung xe để tăng năng lực xuất hàng ra khỏi trạm trong ca.",
+      },
+      assumptions: ["Có xe ngoài hoặc xe trung chuyển khả dụng trong khu vực"],
+      unknowns: [
+        ...(addVehicleCost.evidence_status === "UNKNOWN" ? ["Chưa có biểu phí xe ngoài được chuẩn hóa"] : []),
+        ...(!availability || availability.evidence_status === "UNKNOWN" ? ["Chưa có dữ liệu định vị và thời gian xe có thể đến trạm"] : []),
+        ...(addVehicleCapacity.status === "UNKNOWN" ? ["Chưa xác định tải trọng xe khả dụng"] : []),
+      ],
+      risks: [
+        "Chi phí xe ngoài chưa xác định có thể gây lãng phí nếu tải gom thực tế không đủ",
+      ],
+      confidence: isSmallBacklog ? 0.3 : 0.4,
+    });
+  }
 
   // 3. REALLOCATE_EXISTING_CAPACITY
   // Missing inter-warehouse route telemetry means feasibility is UNKNOWN, NOT INFEASIBLE.

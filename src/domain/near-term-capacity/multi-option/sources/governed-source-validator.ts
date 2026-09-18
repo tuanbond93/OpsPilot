@@ -11,8 +11,10 @@
  * - Rejects duplicate conflicting active governed rates
  */
 
-export const ALLOWED_RATE_BASES = ["TRIP", "DAY", "HOUR", "KG"] as const;
+export const ALLOWED_RATE_BASES = ["TRIP", "DAY", "HOUR", "KG", "MONTH"] as const;
 export type AllowedRateBasis = typeof ALLOWED_RATE_BASES[number];
+
+export type ProvenanceStatus = "OWNER_CONFIRMED_PENDING_DOCUMENT" | "DOCUMENT_VERIFIED";
 
 export interface CandidateVehicleClass {
   vehicle_class: string;
@@ -22,6 +24,7 @@ export interface CandidateVehicleClass {
   effective_at: string;
   expires_at?: string | null;
   source_ref: string;
+  provenance_status?: ProvenanceStatus;
 }
 
 export interface CandidateVehicleRate {
@@ -32,9 +35,10 @@ export interface CandidateVehicleRate {
   rate_basis: AllowedRateBasis;
   effective_at: string;
   expires_at?: string | null;
-  contract_ref: string;
+  contract_ref?: string | null;
   source_ref: string;
   supplier_name?: string | null;
+  provenance_status?: ProvenanceStatus;
 }
 
 export interface CandidateVehicleAvailability {
@@ -94,10 +98,12 @@ export function validateCandidateVehicleClass(c: CandidateVehicleClass): Validat
     }
   }
 
+  const provenanceStatus: ProvenanceStatus = c.provenance_status || "DOCUMENT_VERIFIED";
+
   return {
     valid: errors.length === 0,
     errors,
-    sanitized: errors.length === 0 ? { ...c, vehicle_class: vehicleClass, source_ref: sourceRef } : undefined,
+    sanitized: errors.length === 0 ? { ...c, vehicle_class: vehicleClass, source_ref: sourceRef, provenance_status: provenanceStatus } : undefined,
   };
 }
 
@@ -128,9 +134,10 @@ export function validateCandidateVehicleRate(
     errors.push(`INVALID_RATE_BASIS: rate_basis must be one of ${ALLOWED_RATE_BASES.join(", ")}.`);
   }
 
+  const provenanceStatus: ProvenanceStatus = r.provenance_status || "DOCUMENT_VERIFIED";
   const contractRef = (r.contract_ref || "").trim();
-  if (!contractRef) {
-    errors.push("MISSING_PROVENANCE: contract_ref is strictly required on all governed rate records.");
+  if (provenanceStatus === "DOCUMENT_VERIFIED" && !contractRef) {
+    errors.push("MISSING_PROVENANCE: contract_ref is strictly required on DOCUMENT_VERIFIED governed rate records.");
   }
 
   const sourceRef = (r.source_ref || "").trim();
@@ -152,22 +159,31 @@ export function validateCandidateVehicleRate(
     }
   }
 
-  // Conflict detection: ambiguous overlapping active rates for same warehouse + class + route
+  // Conflict detection: ambiguous overlapping active rates for same warehouse + class + route + supplier + contract
   if (existingActiveRates && existingActiveRates.length > 0) {
-    const routeKey = (r.route_or_area || "GLOBAL").toUpperCase();
+    const routeKey = (r.route_or_area || "GLOBAL").trim().toUpperCase();
+    const supplierKey = (r.supplier_name || "UNSPECIFIED").trim().toUpperCase();
+    const contractKey = (contractRef || "PENDING_DOCUMENT").trim().toUpperCase();
+
     const conflict = existingActiveRates.find((existing) => {
-      const existingRoute = (existing.route_or_area || "GLOBAL").toUpperCase();
+      const existingRoute = (existing.route_or_area || "GLOBAL").trim().toUpperCase();
+      const existingSupplier = (existing.supplier_name || "UNSPECIFIED").trim().toUpperCase();
+      const existingContract = (existing.contract_ref || "PENDING_DOCUMENT").trim().toUpperCase();
+
       const isSameScope =
         existing.warehouse_id === warehouseId &&
         existing.vehicle_class.toUpperCase() === vehicleClass.toUpperCase() &&
-        existingRoute === routeKey;
+        existingRoute === routeKey &&
+        existingSupplier === supplierKey &&
+        existingContract === contractKey;
+
       const isUnexpired = !existing.expires_at || new Date(existing.expires_at).getTime() > Date.now();
       return isSameScope && isUnexpired;
     });
 
     if (conflict) {
       errors.push(
-        `CONFLICTING_ACTIVE_RATE: An active rate already exists for warehouse ${warehouseId}, class ${vehicleClass}, route ${routeKey} (contract_ref: ${conflict.contract_ref}).`
+        `CONFLICTING_ACTIVE_RATE: An active rate already exists for warehouse ${warehouseId}, class ${vehicleClass}, route ${routeKey}, supplier ${supplierKey}, contract ${contractKey}.`
       );
     }
   }
@@ -181,8 +197,9 @@ export function validateCandidateVehicleRate(
             ...r,
             warehouse_id: warehouseId,
             vehicle_class: vehicleClass,
-            contract_ref: contractRef,
+            contract_ref: contractRef || null,
             source_ref: sourceRef,
+            provenance_status: provenanceStatus,
           }
         : undefined,
   };

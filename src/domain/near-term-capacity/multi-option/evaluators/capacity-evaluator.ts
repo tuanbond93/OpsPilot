@@ -93,7 +93,12 @@ export function evaluateOptionCapacity(
           resulting_capacity_kg: resultingCapKg,
           capacity_gap_before: gapBeforeDisplay,
           capacity_gap_after: gapAfterDisplay,
-          status: capacityEvidence.evidence_status === "GOVERNED" ? "GOVERNED" : "MEASURED",
+          status:
+            capacityEvidence.evidence_status === "OWNER_CONFIRMED"
+              ? "OWNER_CONFIRMED"
+              : capacityEvidence.evidence_status === "GOVERNED"
+              ? "GOVERNED"
+              : "MEASURED",
         };
       }
 

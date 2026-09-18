@@ -34,7 +34,7 @@ export interface DecisionOptionEconomic {
   reason: string | null;
 }
 
-export type OptionCostStatus = "MEASURED" | "GOVERNED_RATE" | "MODELED" | "UNKNOWN";
+export type OptionCostStatus = "MEASURED" | "GOVERNED_RATE" | "OWNER_CONFIRMED" | "MODELED" | "UNKNOWN";
 
 export interface DecisionOptionCost {
   incremental_cost_vnd: number | null;
@@ -45,7 +45,7 @@ export interface DecisionOptionCost {
   notes?: string;
 }
 
-export type OptionCapacityStatus = "MEASURED" | "GOVERNED" | "MODELED" | "UNKNOWN";
+export type OptionCapacityStatus = "MEASURED" | "GOVERNED" | "OWNER_CONFIRMED" | "MODELED" | "UNKNOWN";
 
 export interface DecisionOptionCapacity {
   current_capacity_kg: number | null;

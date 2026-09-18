@@ -47,12 +47,13 @@ Mỗi dòng quy định đơn giá thuê hoặc điều động xe tăng cườn
 | `vehicle_class` | Chuỗi (TEXT) | **Bắt buộc** | Phân hạng xe (phải khớp với `vehicle_class` đã khai báo trong bảng `governed_vehicle_classes`). |
 | `route_or_area` | Chuỗi (TEXT) | Tùy chọn | Tuyến đường hoặc cự ly áp dụng (VD: `NOI_TINH`, `LIEN_TINH_DUOI_100KM`, `TRUNG_CHUYEN`). Để trống nếu áp dụng chung. |
 | `rate_vnd` | Số nguyên (BIGINT) | **Bắt buộc** | Chi phí định mức tính bằng VNĐ, $\ge 0$. |
-| `rate_basis` | Chuỗi (ENUM) | **Bắt buộc** | Cơ sở tính giá: chỉ chấp nhận một trong các giá trị: `TRIP` (chuyến), `DAY` (ngày), `HOUR` (giờ), `KG` (theo kg). |
+| `rate_basis` | Chuỗi (ENUM) | **Bắt buộc** | Cơ sở tính giá: chấp nhận: `TRIP` (chuyến), `DAY` (ngày), `HOUR` (giờ), `KG` (theo kg), `MONTH` (theo tháng). Lưu ý: Biểu phí tháng giữ nguyên định mức `MONTH`, tuyệt đối không tự ý chia 30 sang ngày. |
 | `effective_at` | Thời gian (ISO 8601) | **Bắt buộc** | Thời điểm biểu phí bắt đầu có hiệu lực. |
 | `expires_at` | Thời gian (ISO 8601) | Tùy chọn | Thời điểm biểu phí hết hạn. Quá thời điểm này, hệ thống sẽ đánh dấu `STALE` và không sử dụng để ra quyết định. |
 | `supplier_name` | Chuỗi (TEXT) | Tùy chọn | Tên đơn vị vận tải / đối tác cung cấp dịch vụ xe ngoài. |
-| `contract_ref` | Chuỗi (TEXT) | **Bắt buộc** | Mã số hợp đồng nguyên tắc hoặc phụ lục hợp đồng vận tải (VD: `HD-XE-NGOAI-2026-042/PL01`). |
-| `source_ref` | Chuỗi (TEXT) | **Bắt buộc** | Mã quyết định phê duyệt biểu phí từ Ban Giám đốc hoặc Phòng Mua hàng. |
+| `contract_ref` | Chuỗi (TEXT) | Có điều kiện | Mã số hợp đồng nguyên tắc hoặc phụ lục hợp đồng vận tải. Bắt buộc khi `provenance_status = DOCUMENT_VERIFIED`. Được phép NULL khi `provenance_status = OWNER_CONFIRMED_PENDING_DOCUMENT` (số liệu do Owner xác nhận nhưng chưa đính kèm văn bản hợp đồng). |
+| `source_ref` | Chuỗi (TEXT) | **Bắt buộc** | Mã quyết định phê duyệt, căn cứ phê duyệt hoặc mã xác nhận của Owner (VD: `OWNER_CONFIRMED:OPS_OWNER:2026-09-18`). |
+| `provenance_status` | Chuỗi (ENUM) | **Bắt buộc** | Trạng thái chứng minh nguồn: `DOCUMENT_VERIFIED` (đã có hợp đồng/văn bản pháp lý) hoặc `OWNER_CONFIRMED_PENDING_DOCUMENT` (Owner xác nhận vận hành tạm thời, chưa có số hợp đồng). |
 
 ### Ví dụ minh họa (CHỈ ĐỂ THAM KHẢO, KHÔNG IMPORT VÀO PROD):
 ```csv

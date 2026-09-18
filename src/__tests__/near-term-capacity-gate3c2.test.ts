@@ -316,7 +316,7 @@ describe("OpsPilot Level C Gate 3C.2A — Governed Vehicle Source Infrastructure
       rate_vnd: 2000000,
       rate_basis: "TRIP" as const,
       effective_at: "2026-09-18T00:00:00Z",
-      contract_ref: "HD-NEW-CONFLICT",
+      contract_ref: "HD-OLD",
       source_ref: "QD-NEW",
     };
 
