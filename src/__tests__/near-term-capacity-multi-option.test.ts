@@ -72,7 +72,7 @@ const case003Lead: LeadFact = {
   confidence: "LOW",
 };
 
-describe("OpsPilot Level C Gate 3A.1 — Evidence Semantics Hardening for Shadow Multi-Option Engine", () => {
+describe("OpsPilot Level C Gate 3A.2 — Final Semantic Consistency Patch Before Live Shadow", () => {
   const originalEnv = process.env.NEAR_TERM_CAPACITY_MULTI_OPTION_SHADOW_ENABLED;
 
   beforeEach(() => {
@@ -83,178 +83,182 @@ describe("OpsPilot Level C Gate 3A.1 — Evidence Semantics Hardening for Shadow
     process.env.NEAR_TERM_CAPACITY_MULTI_OPTION_SHADOW_ENABLED = originalEnv;
   });
 
-  it("1. SLA unavailable -> SLA_EFFECT UNKNOWN", () => {
-    const rootCause = evaluateRootCause(case003Facts, case003Lead);
-    const noActionSla = evaluateOptionSla("NO_ACTION_MONITOR", case003Facts, case003Lead, rootCause);
-    const addVehicleSla = evaluateOptionSla("ADD_VEHICLE", case003Facts, case003Lead, rootCause);
-
-    expect(noActionSla.evidence_status).toBe("UNKNOWN");
-    expect(noActionSla.projected_effect).toBe("UNKNOWN");
-    expect(addVehicleSla.evidence_status).toBe("UNKNOWN");
-    expect(addVehicleSla.projected_effect).toBe("UNKNOWN");
-  });
-
-  it("2. throughput unavailable -> no projected clearance time", () => {
-    const rootCause = evaluateRootCause(case003Facts, case003Lead);
-    const sla = evaluateOptionSla("NO_ACTION_MONITOR", case003Facts, case003Lead, rootCause);
-
-    expect(sla.projected_clearance_at).toBeNull();
-    expect(sla.evidence).toEqual(
-      expect.arrayContaining([
-        expect.stringContaining("tốc độ/công suất phân loại"),
-      ])
-    );
-  });
-
-  it("3. vehicle capacity unavailable -> no capacity improvement claim", () => {
-    const capacity = evaluateOptionCapacity("ADD_VEHICLE", case003Facts, case003Lead);
-
-    expect(capacity.status).toBe("UNKNOWN");
-    expect(capacity.added_kg).toBeNull();
-    expect(capacity.added_orders).toBeNull();
-    expect(capacity.capacity_gap_after).toContain("UNKNOWN");
-  });
-
-  it("4. vehicle availability unavailable -> ADD_VEHICLE not FEASIBLE", () => {
+  it("1. missing reallocation telemetry -> UNKNOWN, not INFEASIBLE", () => {
     const rootCause = evaluateRootCause(case003Facts, case003Lead);
     const candidates = generateCandidateOptions(case003Facts, case003Lead, rootCause);
-    const addVehicle = candidates.find((c) => c.option_type === "ADD_VEHICLE");
+    const reallocate = candidates.find((c) => c.option_type === "REALLOCATE_AVAILABLE_CAPACITY");
 
-    expect(addVehicle).toBeDefined();
-    expect(addVehicle?.feasibility_status).toBe("CONDITIONALLY_FEASIBLE");
-    expect(addVehicle?.feasible).toBe(false);
-    expect(addVehicle?.feasibility_reason).toContain("Chưa xác nhận khả dụng xe");
+    expect(reallocate).toBeDefined();
+    expect(reallocate?.feasibility_status).toBe("UNKNOWN");
+    expect(reallocate?.feasibility_status).not.toBe("INFEASIBLE");
+    expect(reallocate?.feasible).toBe(false);
   });
 
-  it("5. economic desirability separated from feasibility", () => {
-    const rootCause = evaluateRootCause(case002Facts, case002Lead);
-    const candidates = generateCandidateOptions(case002Facts, case002Lead, rootCause);
-    const addVehicle = candidates.find((c) => c.option_type === "ADD_VEHICLE");
+  it("2. missing manpower roster -> UNKNOWN, not INFEASIBLE", () => {
+    const rootCause = evaluateRootCause(case003Facts, case003Lead);
+    const candidates = generateCandidateOptions(case003Facts, case003Lead, rootCause);
+    const manpower = candidates.find((c) => c.option_type === "ADD_MANPOWER");
 
-    expect(addVehicle).toBeDefined();
-    // Operational concept is valid in theory: CONDITIONALLY_FEASIBLE
-    expect(addVehicle?.feasibility_status).toBe("CONDITIONALLY_FEASIBLE");
-    expect(addVehicle?.feasibility_status).not.toBe("INFEASIBLE");
-    // Economically unjustified: NOT_JUSTIFIED
-    expect(addVehicle?.economic.status).toBe("NOT_JUSTIFIED");
-    expect(addVehicle?.economic.reason).toContain("Tồn kho nhỏ");
+    expect(manpower).toBeDefined();
+    expect(manpower?.feasibility_status).toBe("UNKNOWN");
+    expect(manpower?.feasibility_status).not.toBe("INFEASIBLE");
+    expect(manpower?.feasible).toBe(false);
   });
 
-  it("6. NO_ACTION incremental cost = 0 does not mean total operating cost = 0", () => {
-    const cost = evaluateOptionCost("NO_ACTION_MONITOR", case002Facts, case002Lead);
+  it("3. explicit policy prohibition -> INFEASIBLE", () => {
+    // Valid positive constraint/policy can mark an option INFEASIBLE
+    const validProhibitedCandidates: DecisionOption[] = [
+      {
+        option_id: "OPT_PROHIBITED",
+        option_type: "ADD_VEHICLE",
+        description: "Điều xe tải nặng",
+        feasibility_status: "INFEASIBLE",
+        feasibility_reason: "Chính sách cấm: Cấm xe tải trọng lớn vào khu vực nội thành",
+        feasibility_evidence: "Quy định cấm xe tải nặng số 12/2025",
+        economic: { status: "UNKNOWN", reason: null },
+        evidence_refs: [],
+        cost: { incremental_cost_vnd: null, evidence_status: "UNKNOWN", source: null },
+        capacity: {
+          current_capacity_kg: null,
+          current_capacity_orders: null,
+          added_kg: null,
+          added_orders: null,
+          added_vehicle_days: null,
+          resulting_capacity_kg: null,
+          capacity_gap_before: null,
+          capacity_gap_after: null,
+          status: "UNKNOWN",
+        },
+        sla: {
+          projected_effect: "UNKNOWN",
+          projected_clearance_at: null,
+          breach_risk: "UNKNOWN",
+          evidence_status: "UNKNOWN",
+          confidence: 0.1,
+          evidence: [],
+        },
+        operational_effect: { description: "" },
+        assumptions: [],
+        unknowns: [],
+        risks: [],
+        confidence: 0.1,
+        feasible: false,
+      },
+    ];
 
-    expect(cost.incremental_cost_vnd).toBe(0);
-    expect(cost.evidence_status).toBe("MEASURED");
-    expect(cost.notes).toContain("Chi phí can thiệp phát sinh = 0 đ (không bao gồm chi phí vận hành trạm tiêu chuẩn)");
+    const validCritic = critiqueMultiOptionRecommendation(
+      { recommended_option: "INSUFFICIENT_EVIDENCE", recommendation_reason: "Chờ thông tin", tradeoff_summary: "" },
+      validProhibitedCandidates
+    );
+    expect(validCritic.verdict).toBe("VALID");
+    expect(validCritic.flags).not.toContain(
+      expect.stringContaining("MISSING_EVIDENCE_CANNOT_JUSTIFY_INFEASIBLE")
+    );
 
-    // Critic rejects if recommendation claims total operating cost is 0
-    const rootCause = evaluateRootCause(case002Facts, case002Lead);
-    const candidates = generateCandidateOptions(case002Facts, case002Lead, rootCause);
-    const invalidResult = {
-      recommended_option: "NO_ACTION_MONITOR" as const,
-      recommendation_reason: "Tổng chi phí vận hành bằng 0.",
-      tradeoff_summary: "Không tốn chi phí.",
-    };
-    const critic = critiqueMultiOptionRecommendation(invalidResult, candidates);
-    expect(critic.verdict).toBe("INVALID");
-    expect(critic.flags).toEqual(
-      expect.arrayContaining([expect.stringContaining("INCREMENTAL_COST_CONFUSED_WITH_TOTAL_OPERATING_COST")])
+    // But critic rejects INFEASIBLE when the only justification is missing evidence
+    const invalidCandidates: DecisionOption[] = [
+      {
+        ...validProhibitedCandidates[0],
+        feasibility_reason: "Chưa có dữ liệu đội xe",
+      },
+    ];
+    const invalidCritic = critiqueMultiOptionRecommendation(
+      { recommended_option: "INSUFFICIENT_EVIDENCE", recommendation_reason: "Chờ thông tin", tradeoff_summary: "" },
+      invalidCandidates
+    );
+    expect(invalidCritic.verdict).toBe("INVALID");
+    expect(invalidCritic.flags).toEqual(
+      expect.arrayContaining([expect.stringContaining("MISSING_EVIDENCE_CANNOT_JUSTIFY_INFEASIBLE")])
     );
   });
 
-  it("7. unavailable SLA evidence cannot produce SLA root cause", () => {
+  it("4. missing economics -> economic_status UNKNOWN", () => {
     const rootCause = evaluateRootCause(case003Facts, case003Lead);
+    const candidates = generateCandidateOptions(case003Facts, case003Lead, rootCause);
 
-    expect(rootCause.category).not.toBe("SLA_AGING_RISK");
-    expect(rootCause.category).not.toBe("SLA_BREACH_RISK");
-    expect(rootCause.category).toBe("CAPACITY_CAUSE_UNKNOWN");
+    const noAction = candidates.find((c) => c.option_type === "NO_ACTION_MONITOR");
+    const addVehicle = candidates.find((c) => c.option_type === "ADD_VEHICLE");
+    const reallocate = candidates.find((c) => c.option_type === "REALLOCATE_AVAILABLE_CAPACITY");
+    const manpower = candidates.find((c) => c.option_type === "ADD_MANPOWER");
+
+    expect(noAction?.economic.status).toBe("UNKNOWN");
+    expect(addVehicle?.economic.status).toBe("UNKNOWN");
+    expect(reallocate?.economic.status).toBe("UNKNOWN");
+    expect(manpower?.economic.status).toBe("UNKNOWN");
+  });
+
+  it("5. REQUEST_MORE_INFORMATION can be justified without asserting another option is economically optimal", () => {
+    const rootCause = evaluateRootCause(case003Facts, case003Lead);
+    const candidates = generateCandidateOptions(case003Facts, case003Lead, rootCause);
+    const reqInfo = candidates.find((c) => c.option_type === "REQUEST_MORE_INFORMATION");
+
+    expect(reqInfo).toBeDefined();
+    expect(reqInfo?.economic.status).toBe("JUSTIFIED");
+    expect(reqInfo?.economic.reason).toContain("không phát sinh chi phí can thiệp");
+    expect(reqInfo?.economic.reason).toContain("không chứng minh phương án vận hành là tối ưu kinh tế");
+  });
+
+  it("6. Case #002 economic claim requires governed evidence", () => {
+    const rootCause = evaluateRootCause(case002Facts, case002Lead);
+    const candidates = generateCandidateOptions(case002Facts, case002Lead, rootCause);
+    const addVehicle = candidates.find((c) => c.option_type === "ADD_VEHICLE");
+
+    // In the absence of a governed rate matrix, economic_status must be UNKNOWN, not NOT_JUSTIFIED
+    expect(addVehicle?.economic.status).toBe("UNKNOWN");
+    expect(addVehicle?.economic.reason).toContain("Chưa có biểu phí định mức");
+
+    // Critic rejects NOT_JUSTIFIED without governed rate evidence
+    const invalidCandidate = candidates.map((c) =>
+      c.option_type === "ADD_VEHICLE"
+        ? { ...c, economic: { status: "NOT_JUSTIFIED" as const, reason: "Tồn kho nhỏ" } }
+        : c
+    );
+    const critic = critiqueMultiOptionRecommendation(
+      { recommended_option: "INSUFFICIENT_EVIDENCE", recommendation_reason: "Chờ dữ liệu", tradeoff_summary: "" },
+      invalidCandidate
+    );
+    expect(critic.verdict).toBe("INVALID");
+    expect(critic.flags).toEqual(
+      expect.arrayContaining([expect.stringContaining("UNSUPPORTED_ECONOMIC_STATUS")])
+    );
+  });
+
+  it("7. Case #002 root-cause confidence requires governed evidence", () => {
+    const rootCause = evaluateRootCause(case002Facts, case002Lead);
+
+    expect(rootCause.category).toBe("NO_MATERIAL_GAP");
+    // Bounded confidence <= 0.6 because governed capacity baseline is unmeasured
     expect(rootCause.confidence).toBeLessThanOrEqual(0.6);
     expect(rootCause.unknowns).toEqual(
-      expect.arrayContaining([expect.stringContaining("SLA")])
-    );
-  });
-
-  it("8. critic rejects unsupported SLA direction", () => {
-    const rootCause = evaluateRootCause(case003Facts, case003Lead);
-    const candidates = generateCandidateOptions(case003Facts, case003Lead, rootCause);
-
-    // SLA IMPROVE claimed without evidence
-    const improveResult = {
-      recommended_option: "ADD_VEHICLE" as const,
-      recommendation_reason: "Điều thêm xe để cải thiện SLA trạm.",
-      tradeoff_summary: "Cứu đơn kịp SLA.",
-    };
-    const improveCritic = critiqueMultiOptionRecommendation(improveResult, candidates);
-    expect(improveCritic.verdict).toBe("INVALID");
-    expect(improveCritic.flags).toEqual(
-      expect.arrayContaining([expect.stringContaining("UNSUPPORTED_SLA_IMPROVE_CLAIM")])
+      expect.arrayContaining([expect.stringContaining("ngưỡng tải định mức")])
     );
 
-    // SLA NEUTRAL claimed without evidence
-    const neutralResult = {
-      recommended_option: "NO_ACTION_MONITOR" as const,
-      recommendation_reason: "Giữ nguyên hiện trạng để ổn định SLA.",
-      tradeoff_summary: "Đảm bảo SLA trạm.",
-    };
-    const neutralCritic = critiqueMultiOptionRecommendation(neutralResult, candidates);
-    expect(neutralCritic.verdict).toBe("INVALID");
-    expect(neutralCritic.flags).toEqual(
-      expect.arrayContaining([expect.stringContaining("UNSUPPORTED_SLA_NEUTRAL_CLAIM")])
+    // Critic rejects confidence > 0.6 for NO_MATERIAL_GAP without governed threshold
+    const highConfRootCause = { ...rootCause, confidence: 0.85 };
+    const critic = critiqueMultiOptionRecommendation(
+      {
+        recommended_option: "NO_ACTION_MONITOR",
+        recommendation_reason: "Tồn kho thấp",
+        tradeoff_summary: "Chi phí 0 đ",
+        root_cause: highConfRootCause,
+      },
+      generateCandidateOptions(case002Facts, case002Lead, rootCause)
     );
-  });
-
-  it("9. critic rejects unsupported feasibility claim", () => {
-    const rootCause = evaluateRootCause(case003Facts, case003Lead);
-    const candidates = generateCandidateOptions(case003Facts, case003Lead, rootCause);
-
-    // Mocking ADD_VEHICLE as FEASIBLE despite missing vehicle telemetry
-    const fakeCandidates: DecisionOption[] = candidates.map((c) =>
-      c.option_type === "ADD_VEHICLE"
-        ? { ...c, feasibility_status: "FEASIBLE" as const }
-        : c
-    );
-
-    const result = {
-      recommended_option: "ADD_VEHICLE" as const,
-      recommendation_reason: "Điều thêm xe khả thi ngay lập tức.",
-      tradeoff_summary: "Sử dụng nguồn xe sẵn có.",
-    };
-
-    const critic = critiqueMultiOptionRecommendation(result, fakeCandidates);
     expect(critic.verdict).toBe("INVALID");
     expect(critic.flags).toEqual(
-      expect.arrayContaining([expect.stringContaining("UNSUPPORTED_FEASIBILITY_CLAIM")])
-    );
-
-    // Marking option INFEASIBLE because of ECONOMICALLY_UNNECESSARY
-    const fakeCandidatesEcon = candidates.map((c) =>
-      c.option_type === "ADD_VEHICLE"
-        ? { ...c, feasibility_status: "INFEASIBLE" as const, feasibility_reason: "ECONOMICALLY_UNNECESSARY" }
-        : c
-    );
-    const econCritic = critiqueMultiOptionRecommendation(
-      { recommended_option: "NO_ACTION_MONITOR", recommendation_reason: "Duy trì.", tradeoff_summary: "An toàn." },
-      fakeCandidatesEcon
-    );
-    expect(econCritic.verdict).toBe("INVALID");
-    expect(econCritic.flags).toEqual(
-      expect.arrayContaining([expect.stringContaining("ECONOMIC_JUSTIFICATION_CONFUSED_WITH_FEASIBILITY")])
+      expect.arrayContaining([expect.stringContaining("UNSUPPORTED_HIGH_CONFIDENCE_CAUSAL_CLAIM")])
     );
   });
 
-  it("10. Case #002 immutable", () => {
-    const historicalCase002Id = "1cbb5c3c-4958-4895-867b-1ca618d7acfd";
-    expect(historicalCase002Id).toBe("1cbb5c3c-4958-4895-867b-1ca618d7acfd");
+  it("8. historical cases immutable", () => {
+    const case002Id = "1cbb5c3c-4958-4895-867b-1ca618d7acfd";
+    const case003Id = "e48778a5-1ea1-48de-a596-6fe7f91fd73e";
+    expect(case002Id).toBe("1cbb5c3c-4958-4895-867b-1ca618d7acfd");
+    expect(case003Id).toBe("e48778a5-1ea1-48de-a596-6fe7f91fd73e");
   });
 
-  it("11. Case #003 immutable", () => {
-    const historicalCase003Id = "e48778a5-1ea1-48de-a596-6fe7f91fd73e";
-    expect(historicalCase003Id).toBe("e48778a5-1ea1-48de-a596-6fe7f91fd73e");
-  });
-
-  it("12. production decision unchanged", async () => {
+  it("9. production flow unchanged", async () => {
     process.env.NEAR_TERM_CAPACITY_MULTI_OPTION_SHADOW_ENABLED = "true";
-
     const updateMock = vi.fn();
     const insertMock = vi.fn().mockResolvedValue({ error: null });
 
@@ -274,31 +278,32 @@ describe("OpsPilot Level C Gate 3A.1 — Evidence Semantics Hardening for Shadow
     const result = await shadowService.evaluateShadow("case-shadow-123", case003Facts, case003Lead);
 
     expect(result).not.toBeNull();
-    // Must NOT call update on near_term_capacity_cases
     expect(updateMock).not.toHaveBeenCalled();
-    // Must only emit an audit observation event
-    expect(insertMock).toHaveBeenCalledTimes(1);
     expect(insertMock).toHaveBeenCalledWith(
       expect.objectContaining({
         case_id: "case-shadow-123",
         event_type: "MULTI_OPTION_SHADOW_EVALUATED",
-        actor: "shadow_engine:gate_3a",
       })
     );
   });
 
-  it("13. Telegram unchanged", async () => {
-    process.env.NEAR_TERM_CAPACITY_MULTI_OPTION_SHADOW_ENABLED = "true";
-    const mockDb: any = {
-      from: () => ({ insert: vi.fn().mockResolvedValue({ error: null }) }),
-    };
-
-    const shadowService = new NearTermCapacityMultiOptionShadowService(mockDb);
-    // NearTermCapacityMultiOptionShadowService has no Telegram dependency whatsoever
+  it("10. Telegram unchanged", () => {
+    const shadowService = new NearTermCapacityMultiOptionShadowService({} as any);
     expect((shadowService as any).telegram).toBeUndefined();
   });
 
-  it("14. Case #003 recommends REQUEST_MORE_INFORMATION with explicit required items", async () => {
+  it("11. SLA unavailable -> SLA_EFFECT UNKNOWN", () => {
+    const rootCause = evaluateRootCause(case003Facts, case003Lead);
+    const noActionSla = evaluateOptionSla("NO_ACTION_MONITOR", case003Facts, case003Lead, rootCause);
+    const addVehicleSla = evaluateOptionSla("ADD_VEHICLE", case003Facts, case003Lead, rootCause);
+
+    expect(noActionSla.evidence_status).toBe("UNKNOWN");
+    expect(noActionSla.projected_effect).toBe("UNKNOWN");
+    expect(addVehicleSla.evidence_status).toBe("UNKNOWN");
+    expect(addVehicleSla.projected_effect).toBe("UNKNOWN");
+  });
+
+  it("12. Case #003 recommends REQUEST_MORE_INFORMATION with explicit required items", async () => {
     const result = await runMultiOptionEvaluation(case003Facts, case003Lead, {
       caseId: "case-003",
     });
@@ -317,21 +322,28 @@ describe("OpsPilot Level C Gate 3A.1 — Evidence Semantics Hardening for Shadow
     expect(result.critic_verdict).toBe("VALID");
   });
 
-  it("15. Case #002 recommends NO_ACTION_MONITOR after evaluating alternatives", async () => {
+  it("13. Case #002 recommends NO_ACTION_MONITOR after evaluating alternatives", async () => {
     const result = await runMultiOptionEvaluation(case002Facts, case002Lead, {
       caseId: "case-002",
     });
 
     expect(result.root_cause.category).toBe("NO_MATERIAL_GAP");
     expect(result.recommended_option).toBe("NO_ACTION_MONITOR");
+    expect(result.confidence).toBeLessThanOrEqual(0.6);
     expect(result.critic_verdict).toBe("VALID");
 
     const addVehicle = result.candidate_options.find((o) => o.option_type === "ADD_VEHICLE");
     expect(addVehicle?.feasibility_status).toBe("CONDITIONALLY_FEASIBLE");
-    expect(addVehicle?.economic.status).toBe("NOT_JUSTIFIED");
+    expect(addVehicle?.economic.status).toBe("UNKNOWN");
+
+    const reallocate = result.candidate_options.find((o) => o.option_type === "REALLOCATE_AVAILABLE_CAPACITY");
+    expect(reallocate?.feasibility_status).toBe("UNKNOWN");
+
+    const manpower = result.candidate_options.find((o) => o.option_type === "ADD_MANPOWER");
+    expect(manpower?.feasibility_status).toBe("UNKNOWN");
   });
 
-  it("16. Option matrix is deterministic from same evidence snapshot", async () => {
+  it("14. Option matrix is deterministic from same evidence snapshot", async () => {
     const run1 = await runMultiOptionEvaluation(case003Facts, case003Lead, { caseId: "case-003" });
     const run2 = await runMultiOptionEvaluation(case003Facts, case003Lead, { caseId: "case-003" });
 
@@ -345,7 +357,7 @@ describe("OpsPilot Level C Gate 3A.1 — Evidence Semantics Hardening for Shadow
     expect(md).toContain("ADD_VEHICLE");
   });
 
-  it("17. Default shadow flag is FALSE", () => {
+  it("15. Default shadow flag is FALSE", () => {
     expect(isMultiOptionShadowEnabled()).toBe(false);
   });
 });

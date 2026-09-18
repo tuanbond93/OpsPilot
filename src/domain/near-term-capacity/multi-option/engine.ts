@@ -48,10 +48,10 @@ export async function runMultiOptionEvaluation(
     // Verified small backlog (e.g. Case #002)
     recommended_option = "NO_ACTION_MONITOR";
     recommendation_reason =
-      "Tồn kho ở mức thấp và Lead xác nhận không có hàng về thêm đáng kể; không có khoảng trống năng lực trọng yếu. Duy trì hiện trạng không phát sinh chi phí can thiệp tăng thêm.";
+      "Tồn kho quan sát ở mức thấp và Lead xác nhận không có hàng về thêm đáng kể; duy trì hiện trạng không phát sinh chi phí can thiệp tăng thêm.";
     tradeoff_summary =
-      "Duy trì năng lực hiện có không phát sinh chi phí can thiệp ngoài; điều xe tăng cường không có cơ sở kinh tế với lượng tồn kho nhỏ.";
-    confidence = 0.85;
+      "Duy trì năng lực hiện có với chi phí can thiệp phát sinh = 0 đ; hiệu quả kinh tế so sánh ở mức UNKNOWN do hệ thống chưa có biểu phí định mức quy chuẩn.";
+    confidence = 0.55;
   } else if (
     rootCause.category === "CAPACITY_CAUSE_UNKNOWN" ||
     rootCause.category === "BACKLOG_ACCUMULATION" ||

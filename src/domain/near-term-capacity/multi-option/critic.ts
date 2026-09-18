@@ -25,20 +25,55 @@ export function critiqueMultiOptionRecommendation(
   }
 
   // 2. Unsupported high-confidence causal claims when critical capability telemetry is absent
-  if (
-    result.root_cause &&
-    result.root_cause.confidence > 0.6 &&
-    (result.root_cause.category === "CAPACITY_CAUSE_UNKNOWN" ||
-      result.root_cause.category === "TRANSPORT_CAPACITY_SHORTAGE" ||
-      result.root_cause.category === "MANPOWER_SHORTAGE" ||
-      result.root_cause.category === "UNKNOWN")
-  ) {
-    flags.push(
-      "UNSUPPORTED_HIGH_CONFIDENCE_CAUSAL_CLAIM: Confidence cannot exceed 0.6 when critical fleet/throughput telemetry is missing"
-    );
+  if (result.root_cause) {
+    if (
+      result.root_cause.category === "NO_MATERIAL_GAP" &&
+      result.root_cause.confidence > 0.6
+    ) {
+      flags.push(
+        "UNSUPPORTED_HIGH_CONFIDENCE_CAUSAL_CLAIM: NO_MATERIAL_GAP confidence cannot exceed 0.6 without a governed station capacity threshold"
+      );
+    }
+    if (
+      result.root_cause.confidence > 0.5 &&
+      (result.root_cause.category === "CAPACITY_CAUSE_UNKNOWN" ||
+        result.root_cause.category === "TRANSPORT_CAPACITY_SHORTAGE" ||
+        result.root_cause.category === "MANPOWER_SHORTAGE" ||
+        result.root_cause.category === "UNKNOWN")
+    ) {
+      flags.push(
+        "UNSUPPORTED_HIGH_CONFIDENCE_CAUSAL_CLAIM: Confidence cannot exceed 0.5 when critical fleet/throughput telemetry is missing"
+      );
+    }
   }
 
-  // 3. Economically unnecessary being represented as infeasible across candidates
+  // 3. Missing evidence cannot justify INFEASIBLE (must be UNKNOWN)
+  for (const cand of candidates) {
+    if (cand.feasibility_status === "INFEASIBLE") {
+      const reason = (cand.feasibility_reason || cand.infeasible_reason || "").toLowerCase();
+      const isMissingEvidence =
+        reason.includes("chưa có") ||
+        reason.includes("thiếu dữ liệu") ||
+        reason.includes("chưa tích hợp") ||
+        reason.includes("chưa kết nối") ||
+        reason.includes("no_governed") ||
+        reason.includes("missing");
+      const hasPositiveConstraint =
+        reason.includes("cấm") ||
+        reason.includes("prohibit") ||
+        reason.includes("bị chặn") ||
+        reason.includes("hết hạn") ||
+        reason.includes("zero available");
+
+      if (isMissingEvidence && !hasPositiveConstraint) {
+        flags.push(
+          `MISSING_EVIDENCE_CANNOT_JUSTIFY_INFEASIBLE: Option ${cand.option_type} marked INFEASIBLE due to missing evidence instead of UNKNOWN`
+        );
+      }
+    }
+  }
+
+  // 4. Economically unnecessary being represented as infeasible across candidates
   for (const cand of candidates) {
     if (
       cand.feasibility_status === "INFEASIBLE" &&
@@ -48,6 +83,20 @@ export function critiqueMultiOptionRecommendation(
       flags.push(
         `ECONOMIC_JUSTIFICATION_CONFUSED_WITH_FEASIBILITY: Option ${cand.option_type} marked INFEASIBLE due to economic lack of necessity`
       );
+    }
+  }
+
+  // 5. Economic JUSTIFIED / NOT_JUSTIFIED requires economic evidence / rule
+  for (const cand of candidates) {
+    // REQUEST_MORE_INFORMATION is permitted to be JUSTIFIED as an info-gathering action with 0 incremental outlay
+    if (cand.option_type !== "REQUEST_MORE_INFORMATION") {
+      if (cand.economic.status === "JUSTIFIED" || cand.economic.status === "NOT_JUSTIFIED") {
+        if (cand.cost.evidence_status === "UNKNOWN" || cand.cost.incremental_cost_vnd === null) {
+          flags.push(
+            `UNSUPPORTED_ECONOMIC_STATUS: Option ${cand.option_type} claims ${cand.economic.status} without governed economic evidence or rate matrix`
+          );
+        }
+      }
     }
   }
 
@@ -66,9 +115,12 @@ export function critiqueMultiOptionRecommendation(
     return { verdict: "INVALID", flags };
   }
 
-  // 5. Must be feasible (not INFEASIBLE)
+  // 6. Must be feasible (not INFEASIBLE or UNKNOWN)
   if (chosen.feasibility_status === "INFEASIBLE") {
     flags.push(`SELECTED_OPTION_INFEASIBLE: ${chosen.feasibility_reason || chosen.infeasible_reason || "Not feasible"}`);
+  }
+  if (chosen.feasibility_status === "UNKNOWN") {
+    flags.push(`SELECTED_OPTION_FEASIBILITY_UNKNOWN: Cannot recommend ${chosen.option_type} when operational feasibility is UNKNOWN`);
   }
 
   // 6. FEASIBLE claimed when critical execution prerequisites are UNKNOWN

@@ -77,11 +77,13 @@ export interface DecisionOption {
   description: string;
   feasibility_status: FeasibilityStatus;
   feasibility_reason: string | null;
+  feasibility_evidence?: string | null;
   /** @deprecated Use feasibility_reason */
   infeasible_reason?: string | null;
   economic: DecisionOptionEconomic;
   economic_status?: EconomicStatus;
   economic_reason?: string | null;
+  economic_evidence?: string | null;
   evidence_refs: string[];
   cost: DecisionOptionCost;
   capacity: DecisionOptionCapacity;
@@ -102,7 +104,9 @@ export interface MultiOptionMatrixRow {
   option_type: string;
   feasibility_status: FeasibilityStatus;
   feasibility_reason: string | null;
+  feasibility_evidence?: string | null;
   economic_status: EconomicStatus;
+  economic_evidence?: string | null;
   incremental_cost_display: string;
   cost_display?: string;
   capacity_impact: string;

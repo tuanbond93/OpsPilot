@@ -35,13 +35,17 @@ export function generateCandidateOptions(
       "Giữ nguyên hiện trạng, xử lý bằng năng lực hiện có của trạm và kiểm tra lại tại checkpoint tiếp theo.",
     feasibility_status: "FEASIBLE",
     feasibility_reason: null,
+    feasibility_evidence: "Hạ tầng trạm và nhân lực ca thường đang vận hành thực tế",
     infeasible_reason: null,
     economic: {
-      status: "JUSTIFIED",
-      reason: "Duy trì năng lực hiện có không phát sinh chi phí can thiệp tăng thêm.",
+      status: "UNKNOWN",
+      reason:
+        "Chưa có biểu phí định mức hoặc chi phí phạt SLA để đối soát hiệu quả kinh tế so sánh (chi phí can thiệp phát sinh = 0 đ).",
     },
-    economic_status: "JUSTIFIED",
-    economic_reason: "Duy trì năng lực hiện có không phát sinh chi phí can thiệp tăng thêm.",
+    economic_status: "UNKNOWN",
+    economic_reason:
+      "Chưa có biểu phí định mức hoặc chi phí phạt SLA để đối soát hiệu quả kinh tế so sánh (chi phí can thiệp phát sinh = 0 đ).",
+    economic_evidence: "Thiếu biểu phí định mức và dữ liệu đối soát kinh tế",
     feasible: true,
     evidence_refs: facts.evidenceRefs || [],
     cost: noActionCost,
@@ -55,20 +59,15 @@ export function generateCandidateOptions(
     risks: [
       "Tồn kho có thể không giải tỏa kịp nếu phát sinh hàng lớn đột xuất hoặc năng suất ca thấp.",
     ],
-    confidence: isSmallBacklog ? 0.85 : 0.5,
+    confidence: isSmallBacklog ? 0.6 : 0.4,
   });
 
   // 2. ADD_VEHICLE
   // Feasibility is CONDITIONALLY_FEASIBLE because vehicle availability, class, and schedule are unevidenced.
-  // Economic justification is separate: NOT_JUSTIFIED for small backlog, UNKNOWN for large/unmeasured backlog.
+  // Economic justification is UNKNOWN: no governed rate matrix exists in the codebase.
   const addVehicleCost = evaluateOptionCost("ADD_VEHICLE", facts, lead);
   const addVehicleCapacity = evaluateOptionCapacity("ADD_VEHICLE", facts, lead);
   const addVehicleSla = evaluateOptionSla("ADD_VEHICLE", facts, lead, rootCause);
-
-  const addVehicleEconomicStatus = isSmallBacklog ? "NOT_JUSTIFIED" : "UNKNOWN";
-  const addVehicleEconomicReason = isSmallBacklog
-    ? "Tồn kho nhỏ (dưới 500 kg / 20 đơn), không có nhu cầu kinh tế để điều thêm xe"
-    : "Chưa có biểu phí định mức xe ngoài để đối soát hiệu quả kinh tế";
 
   options.push({
     option_id: "OPT_ADD_VEHICLE",
@@ -76,13 +75,15 @@ export function generateCandidateOptions(
     description: "Điều động thêm phương tiện vận tải tăng cường để giải tỏa lượng hàng dồn ứ.",
     feasibility_status: "CONDITIONALLY_FEASIBLE",
     feasibility_reason: "Chưa xác nhận khả dụng xe, tải trọng và thời gian đến trạm",
+    feasibility_evidence: "Mô hình vận tải xe ngoài có thể thực hiện nhưng chưa có dữ liệu định vị/lịch trình xe",
     infeasible_reason: null,
     economic: {
-      status: addVehicleEconomicStatus,
-      reason: addVehicleEconomicReason,
+      status: "UNKNOWN",
+      reason: "Chưa có biểu phí định mức xe ngoài hoặc ngưỡng kinh tế quy chuẩn để đối soát",
     },
-    economic_status: addVehicleEconomicStatus,
-    economic_reason: addVehicleEconomicReason,
+    economic_status: "UNKNOWN",
+    economic_reason: "Chưa có biểu phí định mức xe ngoài hoặc ngưỡng kinh tế quy chuẩn để đối soát",
+    economic_evidence: "Thiếu biểu phí xe ngoài để tính toán hiệu quả kinh tế",
     // feasible boolean is true ONLY when feasibility_status === "FEASIBLE"
     feasible: false,
     evidence_refs: facts.evidenceRefs || [],
@@ -101,11 +102,11 @@ export function generateCandidateOptions(
     risks: [
       "Chi phí xe ngoài chưa xác định có thể gây lãng phí nếu tải gom thực tế không đủ",
     ],
-    confidence: isSmallBacklog ? 0.2 : 0.4,
+    confidence: isSmallBacklog ? 0.3 : 0.4,
   });
 
   // 3. REALLOCATE_EXISTING_CAPACITY
-  // In Stage 1 pilot without inter-warehouse route telemetry, this is marked infeasible with explicit reason.
+  // Missing inter-warehouse route telemetry means feasibility is UNKNOWN, NOT INFEASIBLE.
   const reallocateCost = evaluateOptionCost("REALLOCATE_AVAILABLE_CAPACITY", facts, lead);
   const reallocateCapacity = evaluateOptionCapacity("REALLOCATE_AVAILABLE_CAPACITY", facts, lead);
   const reallocateSla = evaluateOptionSla("REALLOCATE_AVAILABLE_CAPACITY", facts, lead, rootCause);
@@ -114,17 +115,18 @@ export function generateCandidateOptions(
     option_id: "OPT_REALLOCATE_EXISTING_CAPACITY",
     option_type: "REALLOCATE_AVAILABLE_CAPACITY",
     description: "Điều chuyển các tuyến xe hoặc chuyến xe trống lân cận để hỗ trợ giải tỏa trạm.",
-    feasibility_status: "INFEASIBLE",
+    feasibility_status: "UNKNOWN",
     feasibility_reason:
-      "NO_GOVERNED_INTER_WAREHOUSE_CAPACITY_TELEMETRY (Chưa tích hợp dữ liệu tải xe liên trạm/tuyến lân cận)",
-    infeasible_reason:
-      "NO_GOVERNED_INTER_WAREHOUSE_CAPACITY_TELEMETRY (Chưa tích hợp dữ liệu tải xe liên trạm/tuyến lân cận)",
+      "Chưa có dữ liệu hành trình và tải xe liên trạm; thiếu căn cứ để kết luận khả thi hay không",
+    feasibility_evidence: "Thiếu dữ liệu kết nối đội xe liên trạm",
+    infeasible_reason: null,
     economic: {
       status: "UNKNOWN",
-      reason: null,
+      reason: "Chưa có biểu phí hoặc dữ liệu định mức điều chuyển liên trạm",
     },
     economic_status: "UNKNOWN",
-    economic_reason: null,
+    economic_reason: "Chưa có biểu phí hoặc dữ liệu định mức điều chuyển liên trạm",
+    economic_evidence: "Thiếu biểu phí điều chuyển liên trạm",
     feasible: false,
     evidence_refs: [],
     cost: reallocateCost,
@@ -140,6 +142,7 @@ export function generateCandidateOptions(
   });
 
   // 4. ADD_MANPOWER
+  // Missing manpower roster means feasibility is UNKNOWN, NOT INFEASIBLE.
   const manpowerCost = evaluateOptionCost("ADD_MANPOWER", facts, lead);
   const manpowerCapacity = evaluateOptionCapacity("ADD_MANPOWER", facts, lead);
   const manpowerSla = evaluateOptionSla("ADD_MANPOWER", facts, lead, rootCause);
@@ -148,17 +151,18 @@ export function generateCandidateOptions(
     option_id: "OPT_ADD_MANPOWER",
     option_type: "ADD_MANPOWER",
     description: "Huy động thêm nhân sự/tài xế tại chỗ để đẩy nhanh khâu bốc xếp, phân loại.",
-    feasibility_status: "INFEASIBLE",
+    feasibility_status: "UNKNOWN",
     feasibility_reason:
-      "NO_GOVERNED_MANPOWER_ROSTER_SOURCE (Chưa tích hợp hệ thống chấm công và phân ca nhân sự trạm)",
-    infeasible_reason:
-      "NO_GOVERNED_MANPOWER_ROSTER_SOURCE (Chưa tích hợp hệ thống chấm công và phân ca nhân sự trạm)",
+      "Chưa kết nối hệ thống chấm công và phân ca nhân sự; thiếu căn cứ để kết luận khả thi hay không",
+    feasibility_evidence: "Thiếu dữ liệu nhân sự ca làm việc tại trạm",
+    infeasible_reason: null,
     economic: {
       status: "UNKNOWN",
-      reason: null,
+      reason: "Chưa có biểu phí hoặc định mức chi phí nhân sự tăng ca",
     },
     economic_status: "UNKNOWN",
-    economic_reason: null,
+    economic_reason: "Chưa có biểu phí hoặc định mức chi phí nhân sự tăng ca",
+    economic_evidence: "Thiếu định mức chi phí nhân công tăng ca",
     feasible: false,
     evidence_refs: [],
     cost: manpowerCost,
@@ -184,13 +188,17 @@ export function generateCandidateOptions(
     description: `Yêu cầu bổ sung dữ liệu vận hành còn thiếu: ${REQUESTED_INFORMATION_ITEMS.join(", ")}.`,
     feasibility_status: "FEASIBLE",
     feasibility_reason: null,
+    feasibility_evidence: "Kênh tương tác Telegram và hệ thống thu thập facts đang hoạt động ổn định",
     infeasible_reason: null,
     economic: {
       status: "JUSTIFIED",
-      reason: "Thu thập thông tin vận hành qua hệ thống không phát sinh chi phí can thiệp tăng thêm.",
+      reason:
+        "Thu thập thông tin vận hành qua hệ thống không phát sinh chi phí can thiệp tăng thêm (không chứng minh phương án vận hành là tối ưu kinh tế).",
     },
     economic_status: "JUSTIFIED",
-    economic_reason: "Thu thập thông tin vận hành qua hệ thống không phát sinh chi phí can thiệp tăng thêm.",
+    economic_reason:
+      "Thu thập thông tin vận hành qua hệ thống không phát sinh chi phí can thiệp tăng thêm (không chứng minh phương án vận hành là tối ưu kinh tế).",
+    economic_evidence: "Chi phí gửi yêu cầu qua bot = 0 đ",
     feasible: true,
     evidence_refs: [],
     cost: requestCost,

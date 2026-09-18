@@ -24,7 +24,9 @@ export function buildMultiOptionMatrix(
       option_type: opt.option_type,
       feasibility_status: opt.feasibility_status,
       feasibility_reason: opt.feasibility_reason,
+      feasibility_evidence: opt.feasibility_evidence || null,
       economic_status: opt.economic.status,
+      economic_evidence: opt.economic_evidence || null,
       incremental_cost_display: costText,
       cost_display: costText,
       capacity_impact: capacityText,
@@ -47,7 +49,7 @@ export function buildMultiOptionMatrix(
 
 export function formatOptionMatrixMarkdown(matrix: MultiOptionMatrix): string {
   const header = [
-    `### BẢNG SO SÁNH PHƯƠNG ÁN RA QUYẾT ĐỊNH (SHADOW GATE 3A.1)`,
+    `### BẢNG SO SÁNH PHƯƠNG ÁN RA QUYẾT ĐỊNH (SHADOW GATE 3A.2)`,
     `Kho: **${matrix.warehouse_name}** | Nguyên nhân gốc rễ: **${matrix.root_cause.category}** (Độ tin cậy: ${Math.round(matrix.root_cause.confidence * 100)}%)`,
     "",
     "| Phương án | Khả thi | Đánh giá kinh tế | Chi phí phát sinh | Năng lực bổ sung | Tác động SLA | Rủi ro / Điều kiện |",

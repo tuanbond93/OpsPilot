@@ -50,13 +50,17 @@ export function evaluateRootCause(
     (facts.currentOrders == null || facts.currentOrders < 20);
 
   if (isSmallBacklog && lead?.incoming === "NO_SIGNIFICANT_INCOMING") {
+    const caseUnknowns = [
+      ...unknowns,
+      "Chưa có ngưỡng tải định mức (governed capacity threshold) được ban hành cho trạm",
+    ];
     return {
       category: "NO_MATERIAL_GAP",
-      confidence: 0.85,
+      confidence: 0.5, // Bounded: cannot claim high confidence without a governed station capacity threshold
       evidence,
-      unknowns,
+      unknowns: caseUnknowns,
       reasoning:
-        "Tồn kho ở mức thấp và Lead xác nhận không có hàng về thêm đáng kể; không có khoảng trống năng lực trọng yếu.",
+        "Tồn kho quan sát ở mức thấp và Lead xác nhận không có hàng về thêm đáng kể; tuy nhiên độ tin cậy giới hạn ở mức 0.5 do hệ thống chưa ban hành ngưỡng công suất định mức quy chuẩn cho trạm.",
     };
   }
 
