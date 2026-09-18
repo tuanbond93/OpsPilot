@@ -257,7 +257,7 @@ describe("OpsPilot Level C Gate 3A.2 — Final Semantic Consistency Patch Before
     expect(case003Id).toBe("e48778a5-1ea1-48de-a596-6fe7f91fd73e");
   });
 
-  it("9. production flow unchanged", async () => {
+  it("9. production flow unchanged and payload complete", async () => {
     process.env.NEAR_TERM_CAPACITY_MULTI_OPTION_SHADOW_ENABLED = "true";
     const updateMock = vi.fn();
     const insertMock = vi.fn().mockResolvedValue({ error: null });
@@ -283,6 +283,14 @@ describe("OpsPilot Level C Gate 3A.2 — Final Semantic Consistency Patch Before
       expect.objectContaining({
         case_id: "case-shadow-123",
         event_type: "MULTI_OPTION_SHADOW_EVALUATED",
+        actor: "shadow_engine:gate_3a",
+        payload: expect.objectContaining({
+          candidate_options: expect.any(Array),
+          root_cause: expect.any(Object),
+          missing_data: expect.any(Array),
+          recommendation_summary: expect.any(String),
+          requested_information: expect.any(Array),
+        }),
       })
     );
   });

@@ -9,7 +9,7 @@ import {
 } from "@/services/near-term-capacity-runtime";
 import { computeEvidenceMetrics, explainAuditRootCauses } from "@/services/near-term-capacity-evidence";
 import { NearTermCapacityShadowService } from "@/services/near-term-capacity-shadow";
-import { getManagerDecisionDestination } from "@/services/decision-telegram-shadow";
+import { NearTermCapacityMultiOptionShadowService, isMultiOptionShadowEnabled } from "@/services/near-term-capacity-multi-option-shadow";
 import { resolveAuthorizedRecipients, resolveProvince } from "@/notifications/gateway/scope-resolver";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 
@@ -243,6 +243,26 @@ export async function GET(request: NextRequest) {
       });
     }
 
+    if (action === "multi-option-shadow") {
+      const targetCaseId = searchParams.get("caseId") || caseId;
+      const { data: targetCase } = await db.from("near_term_capacity_cases").select("*").eq("id", targetCaseId).maybeSingle();
+      if (!targetCase) {
+        return NextResponse.json({ ok: false, error: "CASE_NOT_FOUND", caseId: targetCaseId }, { status: 404 });
+      }
+      const shadowService = new NearTermCapacityMultiOptionShadowService(db);
+      const result = await shadowService.evaluateShadow(targetCase.id, targetCase.current_risk_snapshot, targetCase.lead_fact_snapshot);
+      const isEnabled = isMultiOptionShadowEnabled();
+      return NextResponse.json({
+        ok: true,
+        action: "multi-option-shadow",
+        multiOptionShadowEnabled: isEnabled,
+        caseId: targetCase.id,
+        warehouseId: targetCase.warehouse_id,
+        warehouseName: targetCase.warehouse_name,
+        result,
+      });
+    }
+
     if (action === "diagnostic" || action === "audit-weight" || action === "checkpoint-observation") {
       const [
         { data: allCases },
@@ -289,6 +309,7 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({
         ok: true,
         action: "diagnostic",
+        multiOptionShadowEnabled: isMultiOptionShadowEnabled(),
         timestamp: new Date().toISOString(),
         allCases: allCases || [],
         checkpointAudits: checkpointAudits || [],

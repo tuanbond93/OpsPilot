@@ -6,6 +6,7 @@ import { TelegramClient } from "@/integrations/telegram/telegram-client";
 import { buildNearTermFactCallbackData, formatNearTermDetailRequest, formatNearTermFactConfirmation, formatNearTermFactRequest, nearTermFactButtons, type NearTermFactAnswer } from "@/integrations/telegram/near-term-capacity-message";
 import { NearTermCapacityDecisionBridge } from "@/services/near-term-capacity-decision-bridge";
 import { NearTermCapacityShadowService } from "@/services/near-term-capacity-shadow";
+import { NearTermCapacityMultiOptionShadowService, isMultiOptionShadowEnabled } from "@/services/near-term-capacity-multi-option-shadow";
 import { resolveAuthorizedRecipients, resolveProvince, type ResolvedRecipient, type ScopeResolutionResult } from "@/notifications/gateway/scope-resolver";
 
 export const NEAR_TERM_SHADOW_MODE = "SHADOW_DECISION_WITH_LIVE_FACT_COLLECTION" as const;
@@ -478,6 +479,13 @@ export class NearTermCapacityRuntimeService {
 
     summary.candidatesPersisted += 1;
     const caseRow = created as CaseRow;
+
+    if (isMultiOptionShadowEnabled()) {
+      void new NearTermCapacityMultiOptionShadowService(this.db)
+        .evaluateShadow(caseRow.id, selected.facts, null)
+        .catch((e) => logger.warn("Multi-option shadow evaluation failed at checkpoint:", { error: e }));
+    }
+
     const keyboard = nearTermFactButtons.map(([text, answer]) => [{
       text,
       callbackData: buildNearTermFactCallbackData(caseRow.id, answer),
@@ -600,6 +608,11 @@ export class NearTermCapacityRuntimeService {
     const critic = critique(context, ai); const status = critic.verdict === "VALID_DECISION" ? "DECISION_READY" : "HUMAN_INVESTIGATION_REQUIRED";
     await this.db.from("near_term_capacity_cases").update({ decision_context: context, ai_recommendation: ai, critic_result: critic, status, updated_at: new Date().toISOString() }).eq("id", row.id);
     await this.event(row.id, critic.verdict === "VALID_DECISION" ? "AI_DECISION_CREATED" : "HUMAN_INVESTIGATION_REQUIRED", "near_term_capacity", { critic, mode: NEAR_TERM_SHADOW_MODE });
+    if (isMultiOptionShadowEnabled()) {
+      void new NearTermCapacityMultiOptionShadowService(this.db)
+        .evaluateShadow(row.id, row.current_risk_snapshot, lead)
+        .catch((e) => logger.warn("Multi-option shadow evaluation failed at persistAndDecide:", { error: e }));
+    }
     if (critic.verdict === "VALID_DECISION" && ai.recommended_action !== "HUMAN_INVESTIGATION_REQUIRED") {
       await new NearTermCapacityDecisionBridge(this.db).createAndDispatch({ ...row, lead_fact_snapshot: lead, decision_context: context, ai_recommendation: ai, critic_result: critic }, "near_term_capacity");
     }
@@ -648,6 +661,11 @@ export class NearTermCapacityRuntimeService {
     const status = critic.verdict === "VALID_DECISION" ? "DECISION_READY" : "HUMAN_INVESTIGATION_REQUIRED";
     await this.db.from("near_term_capacity_cases").update({ decision_context: context, ai_recommendation: ai, critic_result: critic, status, updated_at: new Date().toISOString() }).eq("id", row.id);
     await this.event(row.id, critic.verdict === "VALID_DECISION" ? "AI_DECISION_CREATED" : "HUMAN_INVESTIGATION_REQUIRED", actor, { critic, mode: NEAR_TERM_SHADOW_MODE });
+    if (isMultiOptionShadowEnabled()) {
+      void new NearTermCapacityMultiOptionShadowService(this.db)
+        .evaluateShadow(row.id, row.current_risk_snapshot, lead)
+        .catch((e) => logger.warn("Multi-option shadow evaluation failed at resume:", { error: e }));
+    }
 
     let bridgeResult: unknown = null;
     if (critic.verdict === "VALID_DECISION" && ai.recommended_action !== "HUMAN_INVESTIGATION_REQUIRED") {

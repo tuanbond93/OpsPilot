@@ -138,4 +138,6 @@ export interface MultiOptionDecisionResult {
   critic_flags: string[];
   missing_data: string[];
   requested_information?: string[];
+  persistedEventId?: string;
+  generatedAt?: string;
 }
