@@ -74,12 +74,12 @@ export function validateVehicleAvailabilityInput(
   let evidenceStatus: "AUTHORIZED_OPERATIONAL_FACT" | "SYSTEM_AUTHORIZED_IMPORT" = "AUTHORIZED_OPERATIONAL_FACT";
 
   if (authContext?.isCron) {
-    // CRON_SECRET calls must NOT masquerade as human Leads
+    // CRON_SECRET calls must NOT carry human operational roles
     const claimedRole = typeof input.supplier_role === "string" ? input.supplier_role.trim().toUpperCase() : "";
-    if (claimedRole === "WAREHOUSE_LEAD" || claimedRole === "LEAD") {
+    if (claimedRole && claimedRole !== "SYSTEM_ADMIN") {
       return {
         ok: false,
-        error: "FORBIDDEN_IMPERSONATION: CRON_SECRET service call cannot masquerade as human WAREHOUSE_LEAD. Use authenticated human session.",
+        error: `FORBIDDEN_IMPERSONATION: CRON_SECRET service call cannot carry human operational role '${claimedRole}'. Must use SYSTEM_ADMIN.`,
         status: 403,
       };
     }
@@ -108,7 +108,7 @@ export function validateVehicleAvailabilityInput(
 
     let derivedRole: AuthorizedOperationalRole = "OPERATIONS_MANAGER";
     if (normalizedMeta === "ADMIN") {
-      derivedRole = "SYSTEM_ADMIN";
+      derivedRole = "OPERATIONS_MANAGER";
     } else if (normalizedMeta === "MANAGER" || normalizedMeta === "OPERATIONS_MANAGER") {
       derivedRole = "OPERATIONS_MANAGER";
     } else if (normalizedMeta === "DISPATCH_MANAGER") {
@@ -123,14 +123,20 @@ export function validateVehicleAvailabilityInput(
       };
     }
 
-    // Body cannot promote beyond derived role
+    // Body cannot claim SYSTEM_ADMIN for a human operational fact
     const bodyRole = typeof input.supplier_role === "string" ? input.supplier_role.trim().toUpperCase() : "";
+    if (bodyRole === "SYSTEM_ADMIN") {
+      return {
+        ok: false,
+        error: "HUMAN_FACT_CANNOT_USE_SYSTEM_ADMIN: Human operational facts cannot carry role SYSTEM_ADMIN. Allowed human operational roles: WAREHOUSE_LEAD, OPERATIONS_MANAGER, DISPATCH_MANAGER.",
+        status: 403,
+      };
+    }
     if (bodyRole) {
       const isEquivalent =
         bodyRole === derivedRole ||
         (bodyRole === "LEAD" && derivedRole === "WAREHOUSE_LEAD") ||
-        (bodyRole === "MANAGER" && derivedRole === "OPERATIONS_MANAGER") ||
-        (bodyRole === "ADMIN" && derivedRole === "SYSTEM_ADMIN");
+        (bodyRole === "MANAGER" && derivedRole === "OPERATIONS_MANAGER");
 
       if (!isEquivalent) {
         return {
@@ -145,17 +151,43 @@ export function validateVehicleAvailabilityInput(
     finalSupplierRole = derivedRole;
     evidenceStatus = "AUTHORIZED_OPERATIONAL_FACT";
   } else {
-    // Direct invocation without authContext (e.g. backward-compatible unit tests)
+    // Direct invocation without authContext (e.g. unit tests and internal service helpers)
     const suppliedBy = typeof input.supplied_by === "string" ? input.supplied_by.trim() : "";
     if (!suppliedBy) {
       return { ok: false, error: "MISSING_FIELD: supplied_by is required", status: 400 };
     }
 
     const supplierRole = typeof input.supplier_role === "string" ? input.supplier_role.trim().toUpperCase() : "";
+    if (!supplierRole) {
+      return { ok: false, error: "MISSING_FIELD: supplier_role is required", status: 400 };
+    }
     if (!isActorAuthorizedForAvailability(supplierRole)) {
       return {
         ok: false,
-        error: `PERMISSION_DENIED: Role '${supplierRole || "UNKNOWN"}' is not authorized. Allowed roles: Warehouse Lead (LEAD), Dispatch/Operations Manager (MANAGER/ADMIN).`,
+        error: `PERMISSION_DENIED: Role '${supplierRole}' is not authorized. Allowed roles: WAREHOUSE_LEAD, OPERATIONS_MANAGER, DISPATCH_MANAGER, SYSTEM_ADMIN.`,
+        status: 403,
+      };
+    }
+
+    evidenceStatus = (
+      input.evidence_status === "SYSTEM_AUTHORIZED_IMPORT" ||
+      (typeof input.source_ref === "string" && input.source_ref.startsWith("SYSTEM_AUTHORIZED_IMPORT"))
+    )
+      ? "SYSTEM_AUTHORIZED_IMPORT"
+      : "AUTHORIZED_OPERATIONAL_FACT";
+
+    if (evidenceStatus === "AUTHORIZED_OPERATIONAL_FACT" && (supplierRole === "SYSTEM_ADMIN" || supplierRole === "ADMIN")) {
+      return {
+        ok: false,
+        error: "HUMAN_FACT_CANNOT_USE_SYSTEM_ADMIN: Human operational facts cannot carry role SYSTEM_ADMIN. Allowed roles: WAREHOUSE_LEAD, OPERATIONS_MANAGER, DISPATCH_MANAGER.",
+        status: 403,
+      };
+    }
+
+    if (evidenceStatus === "SYSTEM_AUTHORIZED_IMPORT" && supplierRole !== "SYSTEM_ADMIN") {
+      return {
+        ok: false,
+        error: "SYSTEM_IMPORT_CANNOT_USE_HUMAN_ROLE: System imports must use role SYSTEM_ADMIN and cannot carry human operational roles.",
         status: 403,
       };
     }
@@ -166,13 +198,8 @@ export function validateVehicleAvailabilityInput(
         ? "WAREHOUSE_LEAD"
         : supplierRole === "MANAGER"
         ? "OPERATIONS_MANAGER"
-        : supplierRole === "ADMIN"
-        ? "SYSTEM_ADMIN"
         : supplierRole
     ) as AuthorizedOperationalRole;
-    evidenceStatus = input.evidence_status === "SYSTEM_AUTHORIZED_IMPORT"
-      ? "SYSTEM_AUTHORIZED_IMPORT"
-      : "AUTHORIZED_OPERATIONAL_FACT";
   }
 
   const count = Number(input.available_count);
