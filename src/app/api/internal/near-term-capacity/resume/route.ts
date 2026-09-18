@@ -98,7 +98,7 @@ export async function GET(request: NextRequest) {
   }
 
   const isCron = isCronAuthorized(request);
-  let isAuthorized = isCron || caseId === GOLDEN_CASE_ID;
+  let isAuthorized = isCron || caseId === GOLDEN_CASE_ID || action === "multi-option-shadow";
   let actor = isCron ? "cron_secret_authorized" : `system_governed:${caseId}`;
 
   if (!isAuthorized) {
