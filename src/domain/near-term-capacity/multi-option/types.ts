@@ -107,6 +107,7 @@ export interface DecisionOption {
   confidence: number;
   /** Convenience boolean: true only when feasibility_status === "FEASIBLE" */
   feasible: boolean;
+  availability?: "AVAILABLE" | "UNAVAILABLE" | "UNKNOWN";
   projected_incremental_cost_difference?: number | null;
   projected_cost_difference_display?: string;
 }

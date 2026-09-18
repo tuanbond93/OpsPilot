@@ -138,6 +138,7 @@ export async function GET(request: NextRequest) {
           feasibility_status: opt.feasibility_status,
           feasibility_reason: opt.feasibility_reason,
           evidence_status: opt.cost.evidence_status,
+          availability: (opt as any).availability || "UNKNOWN",
         })),
       },
       missing_info: {

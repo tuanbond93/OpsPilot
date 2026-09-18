@@ -35,11 +35,23 @@ export function resolveRequestedInformation(
     items.push("vehicle monthly rate");
   }
 
-  items.push("currently available vehicle count");
-  items.push("current available vehicle count");
-  items.push("supplier/vehicle availability");
-  items.push("earliest available time");
-  items.push("estimated arrival time");
+  const hasAvailability = Boolean(
+    (vehicleEvidence?.availabilities &&
+      vehicleEvidence.availabilities.some(
+        (a) => a.available !== null && a.evidence_status !== "UNKNOWN"
+      )) ||
+    (vehicleEvidence?.availability &&
+      vehicleEvidence.availability.available !== null &&
+      vehicleEvidence.availability.evidence_status !== "UNKNOWN")
+  );
+  if (!hasAvailability) {
+    items.push("currently available vehicle count");
+    items.push("current available vehicle count");
+    items.push("supplier/vehicle availability");
+    items.push("earliest available time");
+    items.push("estimated arrival time");
+  }
+
   items.push("station clearance throughput");
   items.push("order SLA deadlines");
   items.push("order-level SLA deadlines");
@@ -101,37 +113,6 @@ export function generateCandidateOptions(
   });
 
   // 2. ADD_VEHICLE
-  // Availability logic:
-  // - If available: FEASIBLE
-  // - If conditional/unconfirmed/missing: CONDITIONALLY_FEASIBLE / UNKNOWN (not FEASIBLE)
-  // - If none available (available: false): INFEASIBLE (unavailable vehicle cannot be selected)
-  const availability = vehicleEvidence?.availability;
-  let addVehicleFeasibility: FeasibilityStatus = "CONDITIONALLY_FEASIBLE";
-  let addVehicleFeasibilityReason: string | null = "Chưa xác nhận khả dụng xe, tải trọng và thời gian đến trạm";
-  let addVehicleFeasibilityEvidence: string | null = "Mô hình vận tải xe ngoài có thể thực hiện nhưng chưa có dữ liệu định vị/lịch trình xe";
-
-  if (availability) {
-    if (availability.available === false) {
-      addVehicleFeasibility = "INFEASIBLE";
-      addVehicleFeasibilityReason = "Không có phương tiện vận tải khả dụng tại trạm hoặc khu vực lân cận";
-      addVehicleFeasibilityEvidence = `Nguồn dữ liệu đội xe xác nhận xe không khả dụng (ref: ${availability.source_ref || "fleet_roster"})`;
-    } else if (availability.available === true) {
-      if (availability.evidence_status === "GOVERNED" || availability.evidence_status === "MEASURED") {
-        addVehicleFeasibility = "FEASIBLE";
-        addVehicleFeasibilityReason = null;
-        addVehicleFeasibilityEvidence = `Phương tiện ${availability.vehicle_id || availability.vehicle_class || "được chỉ định"} sẵn sàng điều động (ref: ${availability.source_ref})`;
-      } else {
-        addVehicleFeasibility = "CONDITIONALLY_FEASIBLE";
-        addVehicleFeasibilityReason = "Khả dụng xe chưa được xác nhận bởi nguồn đo lường chính thức";
-        addVehicleFeasibilityEvidence = `Dữ liệu khả dụng mang tính mô hình (ref: ${availability.source_ref})`;
-      }
-    } else if (availability.evidence_status === "UNKNOWN") {
-      addVehicleFeasibility = "CONDITIONALLY_FEASIBLE";
-      addVehicleFeasibilityReason = "Chưa xác nhận khả dụng xe hoặc giờ xe đến sớm nhất; nguồn dữ liệu khả dụng đội xe chưa kết nối";
-      addVehicleFeasibilityEvidence = "Thiếu kết nối nguồn dữ liệu khả dụng đội xe";
-    }
-  }
-
   const addVehicleCapacity = evaluateOptionCapacity("ADD_VEHICLE", facts, lead, vehicleEvidence?.capacity);
   const addVehicleSla = evaluateOptionSla("ADD_VEHICLE", facts, lead, rootCause);
 
@@ -145,6 +126,72 @@ export function generateCandidateOptions(
   for (const rateItem of candidateRates) {
     const addVehicleCost = evaluateOptionCost("ADD_VEHICLE", facts, lead, rateItem);
     const costDiff = computeProjectedCostDifference(addVehicleCost, noActionCost);
+
+    const supplierName = rateItem?.supplier_name;
+
+    // Supplier-specific availability lookup:
+    // Match by supplier_name in availabilities, or fallback to single availability if no supplier specified
+    const matchedAvailability =
+      vehicleEvidence?.availabilities?.find(
+        (a) =>
+          a.supplier_name &&
+          supplierName &&
+          a.supplier_name.trim().toUpperCase() === supplierName.trim().toUpperCase()
+      ) ||
+      (vehicleEvidence?.availability?.supplier_name &&
+       supplierName &&
+       vehicleEvidence.availability.supplier_name.trim().toUpperCase() === supplierName.trim().toUpperCase()
+        ? vehicleEvidence.availability
+        : null) ||
+      (!supplierName ? vehicleEvidence?.availability : null);
+
+    const currentAvailability = matchedAvailability || {
+      warehouse_id: facts.warehouseId,
+      vehicle_id: null,
+      vehicle_class: rateItem?.vehicle_class || "TRUCK_1_9T",
+      available: null,
+      available_at: null,
+      remaining_capacity_kg: null,
+      source_ref: null,
+      captured_at: null,
+      evidence_status: "UNKNOWN" as const,
+      supplier_name: supplierName || null,
+    };
+
+    let addVehicleFeasibility: FeasibilityStatus = "CONDITIONALLY_FEASIBLE";
+    let addVehicleFeasibilityReason: string | null = "Chưa xác nhận khả dụng xe, tải trọng và thời gian đến trạm";
+    let addVehicleFeasibilityEvidence: string | null = "Mô hình vận tải xe ngoài có thể thực hiện nhưng chưa có dữ liệu định vị/lịch trình xe";
+
+    if (currentAvailability.available === false) {
+      addVehicleFeasibility = "INFEASIBLE";
+      addVehicleFeasibilityReason = "Không có phương tiện vận tải khả dụng tại trạm";
+      addVehicleFeasibilityEvidence = `Nguồn dữ liệu xác nhận xe không khả dụng (ref: ${currentAvailability.source_ref || "fleet_roster"})`;
+    } else if (currentAvailability.available === true) {
+      if (
+        currentAvailability.evidence_status === "AUTHORIZED_OPERATIONAL_FACT" ||
+        currentAvailability.evidence_status === "GOVERNED" ||
+        currentAvailability.evidence_status === "MEASURED"
+      ) {
+        addVehicleFeasibility = "FEASIBLE";
+        addVehicleFeasibilityReason = null;
+        addVehicleFeasibilityEvidence = `Phương tiện ${supplierName ? `${supplierName} ` : ""}${currentAvailability.vehicle_id || currentAvailability.vehicle_class || "được chỉ định"} sẵn sàng điều động (ref: ${currentAvailability.source_ref})`;
+      } else {
+        addVehicleFeasibility = "CONDITIONALLY_FEASIBLE";
+        addVehicleFeasibilityReason = "Khả dụng xe chưa được xác nhận bởi nguồn dữ liệu chính thức";
+        addVehicleFeasibilityEvidence = `Dữ liệu khả dụng mang tính mô hình (ref: ${currentAvailability.source_ref})`;
+      }
+    } else {
+      addVehicleFeasibility = "CONDITIONALLY_FEASIBLE";
+      addVehicleFeasibilityReason = "Chưa xác nhận khả dụng xe hoặc giờ xe đến sớm nhất; nguồn dữ liệu khả dụng chưa kết nối";
+      addVehicleFeasibilityEvidence = `Thiếu dữ liệu khả dụng đội xe từ ${supplierName || "đơn vị vận tải"}`;
+    }
+
+    const availabilityStatusDisplay: "AVAILABLE" | "UNAVAILABLE" | "UNKNOWN" =
+      currentAvailability.available === true
+        ? "AVAILABLE"
+        : currentAvailability.available === false
+        ? "UNAVAILABLE"
+        : "UNKNOWN";
 
     let addVehicleEconomicStatus: EconomicStatus = "UNKNOWN";
     let addVehicleEconomicReason: string | null = "Chưa có biểu phí định mức xe ngoài hoặc ngưỡng kinh tế quy chuẩn để đối soát";
@@ -193,6 +240,7 @@ export function generateCandidateOptions(
       economic_reason: addVehicleEconomicReason,
       economic_evidence: addVehicleEconomicEvidence,
       feasible: addVehicleFeasibility === "FEASIBLE",
+      availability: availabilityStatusDisplay,
       evidence_refs: facts.evidenceRefs || [],
       cost: addVehicleCost,
       capacity: addVehicleCapacity,
@@ -205,7 +253,9 @@ export function generateCandidateOptions(
       assumptions: ["Có xe ngoài hoặc xe trung chuyển khả dụng trong khu vực"],
       unknowns: [
         ...(addVehicleCost.evidence_status === "UNKNOWN" ? ["Chưa có biểu phí xe ngoài được chuẩn hóa"] : []),
-        ...(!availability || availability.evidence_status === "UNKNOWN" ? ["Chưa có dữ liệu định vị và thời gian xe có thể đến trạm"] : []),
+        ...(currentAvailability.available !== true || currentAvailability.evidence_status === "UNKNOWN"
+          ? ["Chưa có dữ liệu định vị và thời gian xe có thể đến trạm"]
+          : []),
         ...(addVehicleCapacity.status === "UNKNOWN" ? ["Chưa xác định tải trọng xe khả dụng"] : []),
       ],
       risks: [

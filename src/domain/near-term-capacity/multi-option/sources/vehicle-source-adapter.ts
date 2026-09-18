@@ -48,7 +48,21 @@ export interface VehicleCapacityEvidence {
   provenance_status?: "OWNER_CONFIRMED_PENDING_DOCUMENT" | "DOCUMENT_VERIFIED" | null;
 }
 
-export type VehicleAvailabilityEvidenceStatus = "MEASURED" | "GOVERNED" | "OWNER_CONFIRMED" | "MODELED" | "UNKNOWN";
+export type VehicleAvailabilityEvidenceStatus =
+  | "MEASURED"
+  | "GOVERNED"
+  | "OWNER_CONFIRMED"
+  | "MODELED"
+  | "AUTHORIZED_OPERATIONAL_FACT"
+  | "UNKNOWN";
+
+export type AuthorizedOperationalRole =
+  | "WAREHOUSE_LEAD"
+  | "DISPATCH_MANAGER"
+  | "OPERATIONS_MANAGER"
+  | "LEAD"
+  | "MANAGER"
+  | "ADMIN";
 
 export interface VehicleAvailabilityEvidence {
   warehouse_id: string;
@@ -60,6 +74,26 @@ export interface VehicleAvailabilityEvidence {
   source_ref: string | null;
   captured_at: string | null;
   evidence_status: VehicleAvailabilityEvidenceStatus;
+  supplier_name?: string | null;
+  available_count?: number | null;
+  earliest_available_at?: string | null;
+  valid_until?: string | null;
+  supplied_by?: string | null;
+  supplier_role?: string | null;
+}
+
+export interface VehicleAvailabilityFact {
+  warehouse_id: string;
+  supplier_name: string;
+  vehicle_class: string;
+  available_count: number;
+  earliest_available_at?: string | null;
+  captured_at: string;
+  valid_until: string;
+  supplied_by: string;
+  supplier_role: AuthorizedOperationalRole;
+  source_ref: string;
+  evidence_status: "AUTHORIZED_OPERATIONAL_FACT";
 }
 
 export interface VehicleEconomicsAndCapacityResult {
@@ -67,13 +101,15 @@ export interface VehicleEconomicsAndCapacityResult {
   rates?: VehicleRateEvidence[];
   capacity: VehicleCapacityEvidence;
   availability: VehicleAvailabilityEvidence;
+  availabilities?: VehicleAvailabilityEvidence[];
 }
 
 export interface VehicleSourceAdapter {
   getVehicleRate(warehouseId: string, vehicleClass?: string, supplierName?: string): Promise<VehicleRateEvidence> | VehicleRateEvidence;
   getVehicleRates?(warehouseId: string, vehicleClass?: string): Promise<VehicleRateEvidence[]> | VehicleRateEvidence[];
   getVehicleCapacity(vehicleClass?: string): Promise<VehicleCapacityEvidence> | VehicleCapacityEvidence;
-  getVehicleAvailability(warehouseId: string): Promise<VehicleAvailabilityEvidence> | VehicleAvailabilityEvidence;
+  getVehicleAvailability(warehouseId: string, vehicleClass?: string, supplierName?: string): Promise<VehicleAvailabilityEvidence> | VehicleAvailabilityEvidence;
+  getVehicleAvailabilities?(warehouseId: string, vehicleClass?: string): Promise<VehicleAvailabilityEvidence[]> | VehicleAvailabilityEvidence[];
   getVehicleEvidence(warehouseId: string, vehicleClass?: string): Promise<VehicleEconomicsAndCapacityResult> | VehicleEconomicsAndCapacityResult;
 }
 
@@ -105,14 +141,20 @@ export interface GovernedCapacityRecord {
 
 export interface GovernedAvailabilityRecord {
   warehouse_id: string;
-  vehicle_id: string;
+  vehicle_id?: string | null;
   vehicle_class: string;
   available: boolean;
-  available_at?: string;
-  remaining_capacity_kg?: number;
+  available_at?: string | null;
+  remaining_capacity_kg?: number | null;
   source_ref: string;
-  captured_at?: string;
-  valid_until?: string;
+  captured_at?: string | null;
+  valid_until?: string | null;
+  supplier_name?: string | null;
+  available_count?: number | null;
+  earliest_available_at?: string | null;
+  supplied_by?: string | null;
+  supplier_role?: string | null;
+  evidence_status?: VehicleAvailabilityEvidenceStatus;
 }
 
 export interface GovernedVehicleSourceConfig {
@@ -120,6 +162,7 @@ export interface GovernedVehicleSourceConfig {
   rates?: GovernedRateRecord[];
   capacities?: Record<string, GovernedCapacityRecord>;
   availabilities?: GovernedAvailabilityRecord[];
+  availabilityFacts?: VehicleAvailabilityFact[];
   maxRateAgeDays?: number;
 }
 
@@ -151,11 +194,18 @@ export class GovernedVehicleSourceAdapter implements VehicleSourceAdapter {
     return this.getInMemoryCapacity(vehicleClass);
   }
 
-  getVehicleAvailability(warehouseId: string): any {
+  getVehicleAvailability(warehouseId: string, vehicleClass?: string, supplierName?: string): any {
     if (this.config.db) {
-      return this.queryDbAvailability(warehouseId);
+      return this.queryDbAvailability(warehouseId, vehicleClass, supplierName);
     }
-    return this.getInMemoryAvailability(warehouseId);
+    return this.getInMemoryAvailability(warehouseId, vehicleClass, supplierName);
+  }
+
+  getVehicleAvailabilities(warehouseId: string, vehicleClass?: string): any {
+    if (this.config.db) {
+      return this.queryDbAvailabilities(warehouseId, vehicleClass);
+    }
+    return this.getInMemoryAvailabilities(warehouseId, vehicleClass);
   }
 
   getVehicleEvidence(warehouseId: string, vehicleClass?: string): any {
@@ -163,7 +213,8 @@ export class GovernedVehicleSourceAdapter implements VehicleSourceAdapter {
       return this.queryDbEvidence(warehouseId, vehicleClass);
     }
 
-    const availability = this.getInMemoryAvailability(warehouseId);
+    const availabilities = this.getInMemoryAvailabilities(warehouseId, vehicleClass);
+    const availability = availabilities[0] || this.getInMemoryAvailability(warehouseId, vehicleClass);
     let targetClass = vehicleClass || availability.vehicle_class;
     if (!targetClass) {
       const matched = (this.config.rates || []).find(
@@ -195,6 +246,7 @@ export class GovernedVehicleSourceAdapter implements VehicleSourceAdapter {
       rates,
       capacity,
       availability,
+      availabilities,
     };
   }
 
@@ -470,125 +522,267 @@ export class GovernedVehicleSourceAdapter implements VehicleSourceAdapter {
     };
   }
 
-  private async queryDbAvailability(warehouseId: string): Promise<VehicleAvailabilityEvidence> {
+  private async queryDbAvailabilities(
+    warehouseId: string,
+    vehicleClass?: string
+  ): Promise<VehicleAvailabilityEvidence[]> {
     try {
-      const { data, error } = await this.config.db!
+      let query: any = this.config.db!
         .from("vehicle_fleet_availability")
         .select("*")
-        .eq("warehouse_id", warehouseId)
-        .order("captured_at", { ascending: false })
-        .limit(1)
-        .maybeSingle();
+        .eq("warehouse_id", warehouseId);
+
+      if (vehicleClass) {
+        query = query.eq("vehicle_class", vehicleClass);
+      }
+
+      query = query.order("captured_at", { ascending: false });
+
+      let data: any = null;
+      let error: any = null;
+
+      if (typeof query.then === "function") {
+        const res = await query;
+        data = res?.data;
+        error = res?.error;
+      } else if (typeof query.maybeSingle === "function") {
+        const res = await query.maybeSingle();
+        data = res?.data ? (Array.isArray(res.data) ? res.data : [res.data]) : [];
+        error = res?.error;
+      }
 
       if (error || !data) {
-        return {
-          warehouse_id: warehouseId,
-          vehicle_id: null,
-          vehicle_class: null,
-          available: null,
-          available_at: null,
-          remaining_capacity_kg: null,
-          source_ref: null,
-          captured_at: null,
-          evidence_status: "UNKNOWN",
-        };
+        return [];
       }
+
+      const rows = Array.isArray(data) ? data : [data];
+      if (rows.length === 0) return [];
 
       const now = Date.now();
-      const validUntilTime = new Date(data.valid_until).getTime();
-      const isExpired = now > validUntilTime;
+      return rows.map((row: any) => {
+        const validUntilTime = row.valid_until ? new Date(row.valid_until).getTime() : 0;
+        const isExpired = now > validUntilTime;
+        const isOperationalFact =
+          typeof row.source_ref === "string" &&
+          row.source_ref.startsWith("AUTHORIZED_OPERATIONAL_FACT");
 
-      if (isExpired) {
+        if (isExpired) {
+          return {
+            warehouse_id: row.warehouse_id,
+            vehicle_id: row.vehicle_id ?? null,
+            vehicle_class: row.vehicle_class,
+            available: null,
+            available_at: null,
+            remaining_capacity_kg: null,
+            source_ref: row.source_ref,
+            captured_at: row.captured_at,
+            evidence_status: "UNKNOWN" as const,
+            supplier_name: row.supplier_name ?? null,
+            available_count: row.available_count ?? null,
+            valid_until: row.valid_until ?? null,
+          };
+        }
+
+        const isAvail =
+          row.available_count !== undefined && row.available_count !== null
+            ? row.available_count > 0
+            : Boolean(row.available);
+
         return {
-          warehouse_id: warehouseId,
-          vehicle_id: data.vehicle_id,
-          vehicle_class: data.vehicle_class,
-          available: null,
-          available_at: null,
-          remaining_capacity_kg: null,
-          source_ref: data.source_ref,
-          captured_at: data.captured_at,
-          evidence_status: "UNKNOWN",
+          warehouse_id: row.warehouse_id,
+          vehicle_id: row.vehicle_id ?? null,
+          vehicle_class: row.vehicle_class,
+          available: isAvail,
+          available_at: row.available_at ?? null,
+          remaining_capacity_kg: row.remaining_capacity_kg != null ? Number(row.remaining_capacity_kg) : null,
+          source_ref: row.source_ref,
+          captured_at: row.captured_at,
+          evidence_status: isOperationalFact
+            ? ("AUTHORIZED_OPERATIONAL_FACT" as const)
+            : ("GOVERNED" as const),
+          supplier_name: row.supplier_name ?? null,
+          available_count: row.available_count ?? (row.available ? 1 : 0),
+          valid_until: row.valid_until ?? null,
         };
-      }
-
-      return {
-        warehouse_id: data.warehouse_id,
-        vehicle_id: data.vehicle_id,
-        vehicle_class: data.vehicle_class,
-        available: Boolean(data.available),
-        available_at: data.available_at ?? null,
-        remaining_capacity_kg: data.remaining_capacity_kg != null ? Number(data.remaining_capacity_kg) : null,
-        source_ref: data.source_ref,
-        captured_at: data.captured_at,
-        evidence_status: "GOVERNED",
-      };
+      });
     } catch {
-      return {
-        warehouse_id: warehouseId,
-        vehicle_id: null,
-        vehicle_class: null,
-        available: null,
-        available_at: null,
-        remaining_capacity_kg: null,
-        source_ref: null,
-        captured_at: null,
-        evidence_status: "UNKNOWN",
-      };
+      return [];
     }
   }
 
-  private getInMemoryAvailability(warehouseId: string): VehicleAvailabilityEvidence {
-    const availabilities = this.config.availabilities || [];
-    const matched = availabilities.find((a) => a.warehouse_id === warehouseId);
-
-    if (!matched) {
+  private async queryDbAvailability(
+    warehouseId: string,
+    vehicleClass?: string,
+    supplierName?: string
+  ): Promise<VehicleAvailabilityEvidence> {
+    const all = await this.queryDbAvailabilities(warehouseId, vehicleClass);
+    if (supplierName) {
+      const match = all.find(
+        (a) => a.supplier_name && a.supplier_name.toUpperCase() === supplierName.toUpperCase()
+      );
+      if (match) return match;
       return {
         warehouse_id: warehouseId,
         vehicle_id: null,
-        vehicle_class: null,
+        vehicle_class: vehicleClass || null,
         available: null,
         available_at: null,
         remaining_capacity_kg: null,
         source_ref: null,
         captured_at: null,
         evidence_status: "UNKNOWN",
+        supplier_name: supplierName,
       };
     }
+    return (
+      all[0] || {
+        warehouse_id: warehouseId,
+        vehicle_id: null,
+        vehicle_class: vehicleClass || null,
+        available: null,
+        available_at: null,
+        remaining_capacity_kg: null,
+        source_ref: null,
+        captured_at: null,
+        evidence_status: "UNKNOWN",
+        supplier_name: supplierName || null,
+      }
+    );
+  }
 
-    if (matched.valid_until) {
-      const now = Date.now();
-      const validUntilTime = new Date(matched.valid_until).getTime();
-      if (now > validUntilTime) {
-        return {
-          warehouse_id: warehouseId,
-          vehicle_id: matched.vehicle_id,
-          vehicle_class: matched.vehicle_class,
-          available: null,
-          available_at: null,
-          remaining_capacity_kg: null,
-          source_ref: matched.source_ref,
-          captured_at: matched.captured_at ?? null,
-          evidence_status: "UNKNOWN",
-        };
+  private getInMemoryAvailabilities(
+    warehouseId: string,
+    vehicleClass?: string
+  ): VehicleAvailabilityEvidence[] {
+    const now = Date.now();
+    const results: VehicleAvailabilityEvidence[] = [];
+
+    // 1. Check availabilityFacts (highest priority in Gate 3D.1)
+    const facts = this.config.availabilityFacts || [];
+    for (const fact of facts) {
+      if (
+        fact.warehouse_id === warehouseId &&
+        (!vehicleClass || fact.vehicle_class.toUpperCase() === vehicleClass.toUpperCase())
+      ) {
+        const validUntilMs = new Date(fact.valid_until).getTime();
+        const isExpired = now > validUntilMs;
+        if (isExpired) {
+          results.push({
+            warehouse_id: warehouseId,
+            vehicle_id: null,
+            vehicle_class: fact.vehicle_class,
+            available: null,
+            available_at: null,
+            remaining_capacity_kg: null,
+            source_ref: fact.source_ref,
+            captured_at: fact.captured_at,
+            evidence_status: "UNKNOWN",
+            supplier_name: fact.supplier_name,
+            available_count: fact.available_count,
+            earliest_available_at: fact.earliest_available_at ?? null,
+            valid_until: fact.valid_until,
+            supplied_by: fact.supplied_by,
+            supplier_role: fact.supplier_role,
+          });
+        } else {
+          const isAvail = fact.available_count > 0;
+          results.push({
+            warehouse_id: warehouseId,
+            vehicle_id: null,
+            vehicle_class: fact.vehicle_class,
+            available: isAvail,
+            available_at: fact.earliest_available_at ?? null,
+            remaining_capacity_kg: null,
+            source_ref: fact.source_ref,
+            captured_at: fact.captured_at,
+            evidence_status: "AUTHORIZED_OPERATIONAL_FACT",
+            supplier_name: fact.supplier_name,
+            available_count: fact.available_count,
+            earliest_available_at: fact.earliest_available_at ?? null,
+            valid_until: fact.valid_until,
+            supplied_by: fact.supplied_by,
+            supplier_role: fact.supplier_role,
+          });
+        }
       }
     }
 
-    return {
-      warehouse_id: matched.warehouse_id,
-      vehicle_id: matched.vehicle_id,
-      vehicle_class: matched.vehicle_class,
-      available: matched.available,
-      available_at: matched.available_at ?? null,
-      remaining_capacity_kg: matched.remaining_capacity_kg ?? null,
-      source_ref: matched.source_ref,
-      captured_at: matched.captured_at ?? null,
-      evidence_status: "GOVERNED",
-    };
+    // 2. Check legacy / governed availabilities
+    const availabilities = this.config.availabilities || [];
+    for (const a of availabilities) {
+      if (
+        a.warehouse_id === warehouseId &&
+        (!vehicleClass || a.vehicle_class.toUpperCase() === vehicleClass.toUpperCase())
+      ) {
+        const validUntilMs = a.valid_until ? new Date(a.valid_until).getTime() : Infinity;
+        const isExpired = now > validUntilMs;
+        const status = a.evidence_status || (isExpired ? "UNKNOWN" : "GOVERNED");
+        results.push({
+          warehouse_id: a.warehouse_id,
+          vehicle_id: a.vehicle_id ?? null,
+          vehicle_class: a.vehicle_class,
+          available: isExpired ? null : Boolean(a.available),
+          available_at: a.available_at ?? null,
+          remaining_capacity_kg: a.remaining_capacity_kg ?? null,
+          source_ref: a.source_ref,
+          captured_at: a.captured_at ?? null,
+          evidence_status: status,
+          supplier_name: a.supplier_name ?? null,
+          available_count: a.available_count ?? (a.available ? 1 : 0),
+          earliest_available_at: a.earliest_available_at ?? a.available_at ?? null,
+          valid_until: a.valid_until ?? null,
+          supplied_by: a.supplied_by ?? null,
+          supplier_role: a.supplier_role ?? null,
+        });
+      }
+    }
+
+    return results;
+  }
+
+  private getInMemoryAvailability(
+    warehouseId: string,
+    vehicleClass = "TRUCK_1_9T",
+    supplierName?: string
+  ): VehicleAvailabilityEvidence {
+    const all = this.getInMemoryAvailabilities(warehouseId, vehicleClass);
+    if (supplierName) {
+      const match = all.find(
+        (a) => a.supplier_name && a.supplier_name.toUpperCase() === supplierName.toUpperCase()
+      );
+      if (match) return match;
+      return {
+        warehouse_id: warehouseId,
+        vehicle_id: null,
+        vehicle_class: vehicleClass,
+        available: null,
+        available_at: null,
+        remaining_capacity_kg: null,
+        source_ref: null,
+        captured_at: null,
+        evidence_status: "UNKNOWN",
+        supplier_name: supplierName,
+      };
+    }
+    return (
+      all[0] || {
+        warehouse_id: warehouseId,
+        vehicle_id: null,
+        vehicle_class: vehicleClass,
+        available: null,
+        available_at: null,
+        remaining_capacity_kg: null,
+        source_ref: null,
+        captured_at: null,
+        evidence_status: "UNKNOWN",
+        supplier_name: supplierName || null,
+      }
+    );
   }
 
   private async queryDbEvidence(warehouseId: string, vehicleClass?: string): Promise<VehicleEconomicsAndCapacityResult> {
-    const availability = await this.queryDbAvailability(warehouseId);
+    const availabilities = await this.queryDbAvailabilities(warehouseId, vehicleClass);
+    const availability = availabilities[0] || (await this.queryDbAvailability(warehouseId, vehicleClass));
     let targetClass = vehicleClass || availability.vehicle_class;
     if (!targetClass) {
       try {
@@ -630,6 +824,7 @@ export class GovernedVehicleSourceAdapter implements VehicleSourceAdapter {
       rates,
       capacity,
       availability,
+      availabilities,
     };
   }
 }
