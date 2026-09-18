@@ -9,6 +9,12 @@ import type { CurrentRisk, LeadFact } from "@/domain/near-term-capacity/loop";
 export const dynamic = "force-dynamic";
 
 export async function GET(request: NextRequest) {
+  // Pre-Gate 3D.3 Safety: Disable verification route in production by default.
+  // Requires explicit opt-in via LEVEL_C_VERIFY_SHADOW_ENABLED="true".
+  if (process.env.LEVEL_C_VERIFY_SHADOW_ENABLED !== "true") {
+    return NextResponse.json({ error: "Not Found" }, { status: 404 });
+  }
+
   // Security Gate 3C.3A: Protect commercially sensitive pricing from unauthenticated public access.
   // Requires either CRON_SECRET authorization or an authenticated session with VIEW_SYSTEM permission.
   const isCron = isCronAuthorized(request);

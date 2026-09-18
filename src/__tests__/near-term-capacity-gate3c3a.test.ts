@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { NextRequest, NextResponse } from "next/server";
 import fs from "fs";
 import path from "path";
@@ -148,9 +148,45 @@ function makeRequest(headers: Record<string, string> = {}) {
 describe("OpsPilot Level C Gate 3C.3A — Governed Source Verification Endpoint Security Closeout", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    delete process.env.LEVEL_C_VERIFY_SHADOW_ENABLED;
   });
 
-  it("1. rejects unauthenticated public requests with HTTP 401", async () => {
+  afterEach(() => {
+    delete process.env.LEVEL_C_VERIFY_SHADOW_ENABLED;
+  });
+
+  it("0. route is disabled by default in production (returns 404 with zero diagnostic metadata)", async () => {
+    delete process.env.LEVEL_C_VERIFY_SHADOW_ENABLED;
+
+    const response = await GET(makeRequest());
+    expect(response.status).toBe(404);
+    const body = await response.json();
+    expect(body).toEqual({ error: "Not Found" });
+
+    const raw = JSON.stringify(body);
+    expect(raw).not.toContain("rate_vnd");
+    expect(raw).not.toContain("case_003");
+    expect(raw).not.toContain("candidate_options");
+    expect(raw).not.toContain("warehouse_option_counts");
+  });
+
+  it("0b. route returns 404 when LEVEL_C_VERIFY_SHADOW_ENABLED is set to false or arbitrary value", async () => {
+    process.env.LEVEL_C_VERIFY_SHADOW_ENABLED = "false";
+    const res1 = await GET(makeRequest());
+    expect(res1.status).toBe(404);
+    expect(await res1.json()).toEqual({ error: "Not Found" });
+
+    process.env.LEVEL_C_VERIFY_SHADOW_ENABLED = "0";
+    const res2 = await GET(makeRequest());
+    expect(res2.status).toBe(404);
+
+    process.env.LEVEL_C_VERIFY_SHADOW_ENABLED = "no";
+    const res3 = await GET(makeRequest());
+    expect(res3.status).toBe(404);
+  });
+
+  it("1. rejects unauthenticated public requests with HTTP 401 when flag is enabled", async () => {
+    process.env.LEVEL_C_VERIFY_SHADOW_ENABLED = "true";
     isCronAuthorizedMock.mockReturnValue(false);
     authorizeApiRequestMock.mockResolvedValue({
       ok: false,
@@ -163,7 +199,8 @@ describe("OpsPilot Level C Gate 3C.3A — Governed Source Verification Endpoint 
     expect(body).toEqual({ error: "AUTHENTICATION_REQUIRED" });
   });
 
-  it("2. unauthenticated failure response body leaks zero pricing or rate data", async () => {
+  it("2. unauthenticated failure response body leaks zero pricing or rate data when flag is enabled", async () => {
+    process.env.LEVEL_C_VERIFY_SHADOW_ENABLED = "true";
     isCronAuthorizedMock.mockReturnValue(false);
     authorizeApiRequestMock.mockResolvedValue({
       ok: false,
@@ -181,7 +218,8 @@ describe("OpsPilot Level C Gate 3C.3A — Governed Source Verification Endpoint 
     expect(text).not.toContain("db_rates");
   });
 
-  it("3. rejects callers lacking VIEW_SYSTEM permission with HTTP 403", async () => {
+  it("3. rejects callers lacking VIEW_SYSTEM permission with HTTP 403 when flag is enabled", async () => {
+    process.env.LEVEL_C_VERIFY_SHADOW_ENABLED = "true";
     isCronAuthorizedMock.mockReturnValue(false);
     authorizeApiRequestMock.mockResolvedValue({
       ok: false,
@@ -198,7 +236,8 @@ describe("OpsPilot Level C Gate 3C.3A — Governed Source Verification Endpoint 
     expect(body.requiredPermission).toBe("VIEW_SYSTEM");
   });
 
-  it("4. accepts authorized callers with CRON_SECRET (Bearer token)", async () => {
+  it("4. accepts authorized callers with CRON_SECRET (Bearer token) when flag is enabled", async () => {
+    process.env.LEVEL_C_VERIFY_SHADOW_ENABLED = "true";
     isCronAuthorizedMock.mockReturnValue(true);
 
     const response = await GET(makeRequest({ authorization: "Bearer valid_cron_secret" }));
@@ -209,7 +248,8 @@ describe("OpsPilot Level C Gate 3C.3A — Governed Source Verification Endpoint 
     expect(data.source_read_success).toBe(true);
   });
 
-  it("5. minimizes authorized diagnostic response and strictly omits rate_vnd and supplier names", async () => {
+  it("5. minimizes authorized diagnostic response and strictly omits rate_vnd and supplier names when flag is enabled", async () => {
+    process.env.LEVEL_C_VERIFY_SHADOW_ENABLED = "true";
     isCronAuthorizedMock.mockReturnValue(true);
 
     const response = await GET(makeRequest({ authorization: "Bearer valid_cron_secret" }));
@@ -231,7 +271,8 @@ describe("OpsPilot Level C Gate 3C.3A — Governed Source Verification Endpoint 
     expect(rawJson).not.toContain("rates_details");
   });
 
-  it("6. authorized response provides bounded verification metadata", async () => {
+  it("6. authorized response provides bounded verification metadata when flag is enabled", async () => {
+    process.env.LEVEL_C_VERIFY_SHADOW_ENABLED = "true";
     isCronAuthorizedMock.mockReturnValue(true);
 
     const response = await GET(makeRequest({ authorization: "Bearer valid_cron_secret" }));
@@ -279,7 +320,8 @@ describe("OpsPilot Level C Gate 3C.3A — Governed Source Verification Endpoint 
     );
   });
 
-  it("8. route does NOT act as a public proxy bypassing RLS", async () => {
+  it("8. route does NOT act as a public proxy bypassing RLS when flag is enabled", async () => {
+    process.env.LEVEL_C_VERIFY_SHADOW_ENABLED = "true";
     // Unauthenticated callers cannot trigger Supabase service role queries through this route
     isCronAuthorizedMock.mockReturnValue(false);
     authorizeApiRequestMock.mockResolvedValue({
@@ -291,7 +333,8 @@ describe("OpsPilot Level C Gate 3C.3A — Governed Source Verification Endpoint 
     expect(response.status).toBe(401);
   });
 
-  it("9. preserves all shadow safety invariants", async () => {
+  it("9. preserves all shadow safety invariants when flag is enabled", async () => {
+    process.env.LEVEL_C_VERIFY_SHADOW_ENABLED = "true";
     isCronAuthorizedMock.mockReturnValue(true);
 
     const response = await GET(makeRequest({ authorization: "Bearer valid_cron_secret" }));
@@ -303,7 +346,8 @@ describe("OpsPilot Level C Gate 3C.3A — Governed Source Verification Endpoint 
     expect(data.safety_invariants.work_order_created).toBe(false);
   });
 
-  it("10. owner data provenance status remains OWNER_CONFIRMED", async () => {
+  it("10. owner data provenance status remains OWNER_CONFIRMED when flag is enabled", async () => {
+    process.env.LEVEL_C_VERIFY_SHADOW_ENABLED = "true";
     isCronAuthorizedMock.mockReturnValue(true);
 
     const response = await GET(makeRequest({ authorization: "Bearer valid_cron_secret" }));
@@ -313,5 +357,36 @@ describe("OpsPilot Level C Gate 3C.3A — Governed Source Verification Endpoint 
     expect(data.rate_evidence_status).toBe("OWNER_CONFIRMED");
     expect(data.case_003.cost_comparison_status).toBe("PARTIAL");
     expect(data.case_003.capacity_comparison_status).toBe("AVAILABLE");
+  });
+
+  it("11. Gate 3D.3 / near-term capacity runtime engine path remains unaffected regardless of flag state", async () => {
+    const { runMultiOptionEvaluation } = await import("@/domain/near-term-capacity/multi-option/engine");
+    const { GovernedVehicleSourceAdapter } = await import("@/domain/near-term-capacity/multi-option/sources/vehicle-source-adapter");
+
+    const risk = {
+      warehouseId: "21160000",
+      warehouseName: "Phú Thọ",
+      capturedAt: "2026-09-18T07:00:00.000Z",
+      currentOrders: 50,
+      currentKg: 6000,
+      b2bOrders: null,
+      evidenceRefs: ["test:runtime"],
+      riskSignals: ["KHO_TON"],
+      hardSlaConstraint: "Risk",
+    };
+
+    // Disabled flag (default)
+    delete process.env.LEVEL_C_VERIFY_SHADOW_ENABLED;
+    const adapter1 = new GovernedVehicleSourceAdapter({});
+    const res1 = await runMultiOptionEvaluation(risk, null, { vehicleSourceAdapter: adapter1 });
+    expect(res1.recommended_option).toBe("INSUFFICIENT_EVIDENCE");
+
+    // Enabled flag
+    process.env.LEVEL_C_VERIFY_SHADOW_ENABLED = "true";
+    const adapter2 = new GovernedVehicleSourceAdapter({});
+    const res2 = await runMultiOptionEvaluation(risk, null, { vehicleSourceAdapter: adapter2 });
+    expect(res2.recommended_option).toBe("INSUFFICIENT_EVIDENCE");
+    expect(res1.recommended_option).toBe(res2.recommended_option);
+    expect(res1.candidate_options.length).toBe(res2.candidate_options.length);
   });
 });
