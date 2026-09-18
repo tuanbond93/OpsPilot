@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { authorizeApiRequest, isCronAuthorized } from "@/security/api-security";
 import { createAdminClient } from "@/connectors/supabase";
 import { GovernedVehicleSourceAdapter } from "@/domain/near-term-capacity/multi-option/sources/vehicle-source-adapter";
 import { runMultiOptionEvaluation } from "@/domain/near-term-capacity/multi-option/engine";
@@ -7,21 +8,30 @@ import type { CurrentRisk, LeadFact } from "@/domain/near-term-capacity/loop";
 
 export const dynamic = "force-dynamic";
 
-export async function GET(_request: NextRequest) {
+export async function GET(request: NextRequest) {
+  // Security Gate 3C.3A: Protect commercially sensitive pricing from unauthenticated public access.
+  // Requires either CRON_SECRET authorization or an authenticated session with VIEW_SYSTEM permission.
+  const isCron = isCronAuthorized(request);
+  if (!isCron) {
+    const auth = await authorizeApiRequest(request, "VIEW_SYSTEM", { limit: 60, windowMs: 60_000 });
+    if (!auth.ok) {
+      return auth.response;
+    }
+  }
+
   try {
     const db = createAdminClient();
 
-    // 1. Raw DB Query: governed_vehicle_classes
+    // 1. Raw DB Query: governed_vehicle_classes (metadata only, no raw payload dump)
     const { data: dbClasses, error: classErr } = await db
       .from("governed_vehicle_classes")
-      .select("*");
+      .select("vehicle_class, provenance_status");
 
-    // 2. Raw DB Query: governed_vehicle_rates
+    // 2. Raw DB Query: governed_vehicle_rates (metadata only, omitting rate_vnd and supplier_name)
     const { data: dbRates, error: rateErr } = await db
       .from("governed_vehicle_rates")
-      .select("*")
-      .is("expires_at", null)
-      .order("created_at", { ascending: false });
+      .select("id, warehouse_id, vehicle_class, rate_basis, provenance_status")
+      .is("expires_at", null);
 
     // 3. Adapter check
     const adapter = new GovernedVehicleSourceAdapter({ db });
@@ -80,29 +90,31 @@ export async function GET(_request: NextRequest) {
     const missingBefore = resolveRequestedInformation(null);
     const missingAfter = resolveRequestedInformation(phuThoEvidence);
 
-    const noAction = shadowResult.candidate_options.find((o) => o.option_type === "NO_ACTION_MONITOR");
     const addVehicleOptions = shadowResult.candidate_options.filter((o) => o.option_type === "ADD_VEHICLE");
 
+    // Minimized verification payload: Excludes rate_vnd, supplier names, and raw table dumps.
     return NextResponse.json({
       ok: true,
       source_read_success: Boolean(dbClasses && dbRates && !classErr && !rateErr),
       execution_origin: "HISTORICAL_REPLAY_OWNER_DATA",
+      class_count: dbClasses?.length || 0,
+      rate_count: dbRates?.length || 0,
       prod_vehicle_class_rows: dbClasses?.length || 0,
       prod_rate_rows: dbRates?.length || 0,
-      db_classes: dbClasses,
-      db_rates: dbRates,
+      warehouse_option_counts: {
+        phu_tho: phuThoRates?.length || 0,
+        lao_cai: laoCaiRates?.length || 0,
+        yen_bai: yenBaiRates?.length || 0,
+      },
+      options_count: {
+        phu_tho: phuThoRates?.length || 0,
+        lao_cai: laoCaiRates?.length || 0,
+        yen_bai: yenBaiRates?.length || 0,
+      },
+      evidence_status: phuThoEvidence.rate.evidence_status,
       class_evidence_status: phuThoEvidence.capacity.evidence_status,
       rate_evidence_status: phuThoEvidence.rate.evidence_status,
-      options_count: {
-        yen_bai: yenBaiRates?.length || 0,
-        lao_cai: laoCaiRates?.length || 0,
-        phu_tho: phuThoRates?.length || 0,
-      },
-      rates_details: {
-        phu_tho: phuThoRates,
-        lao_cai: laoCaiRates,
-        yen_bai: yenBaiRates,
-      },
+      comparison_status: "PARTIAL",
       case_003: {
         id: caseId,
         warehouse: "21160000 — Phú Thọ",
@@ -110,21 +122,6 @@ export async function GET(_request: NextRequest) {
         persisted_followup: caseFollowup,
         persisted_capacity_case: caseCapacity,
         root_cause: shadowResult.root_cause.category,
-        no_action_cost: noAction?.cost.incremental_cost_vnd ?? 0,
-        add_vehicle_options: addVehicleOptions.map((opt) => ({
-          option_id: opt.option_id,
-          supplier: (opt.cost as any).supplier_name || null,
-          vehicle_class: (opt.capacity as any).vehicle_class || "TRUCK_1_9T",
-          max_payload_kg: phuThoEvidence.capacity.max_payload_kg,
-          usable_payload_kg: phuThoEvidence.capacity.usable_payload_kg,
-          added_capacity_kg: opt.capacity.added_kg,
-          rate_vnd: opt.cost.incremental_cost_vnd,
-          rate_basis: opt.cost.rate_basis,
-          availability: phuThoEvidence.availability.available === null ? "UNKNOWN" : String(phuThoEvidence.availability.available),
-          feasibility_status: opt.feasibility_status,
-          feasibility_reason: opt.feasibility_reason,
-          evidence_status: opt.cost.evidence_status,
-        })),
         cost_comparison_status: "PARTIAL",
         capacity_comparison_status: "AVAILABLE",
         total_capacity_gap_status: "UNKNOWN",
@@ -133,6 +130,15 @@ export async function GET(_request: NextRequest) {
         shadow_recommendation: shadowResult.recommended_option,
         recommendation_reason: shadowResult.recommendation_reason,
         tradeoff_summary: shadowResult.tradeoff_summary,
+        candidate_options: addVehicleOptions.map((opt) => ({
+          option_id: opt.option_id,
+          vehicle_class: (opt.capacity as any).vehicle_class || "TRUCK_1_9T",
+          added_capacity_kg: opt.capacity.added_kg,
+          rate_basis: opt.cost.rate_basis,
+          feasibility_status: opt.feasibility_status,
+          feasibility_reason: opt.feasibility_reason,
+          evidence_status: opt.cost.evidence_status,
+        })),
       },
       missing_info: {
         before_phase1: missingBefore,
@@ -143,7 +149,7 @@ export async function GET(_request: NextRequest) {
         case_003_production_mutated: false,
         telegram_sent: false,
         work_order_created: false,
-      }
+      },
     });
   } catch (err: any) {
     return NextResponse.json(
