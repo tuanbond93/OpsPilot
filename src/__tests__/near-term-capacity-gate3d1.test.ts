@@ -234,7 +234,7 @@ describe("OpsPilot Level C Gate 3D.1 — Authorized Vehicle Availability Fact (S
     const hoangMinhOpt = addVehicleOpts.find((o) => o.option_id === "OPT_ADD_VEHICLE_HOANG_MINH");
 
     expect(thienPhuOpt).toBeDefined();
-    expect(thienPhuOpt?.availability).toBe("AVAILABLE");
+    expect(thienPhuOpt?.availability).toBe("AVAILABLE_NOW");
     expect(thienPhuOpt?.feasibility_status).toBe("FEASIBLE");
     expect(thienPhuOpt?.feasible).toBe(true);
 
@@ -316,6 +316,7 @@ describe("OpsPilot Level C Gate 3D.1 — Authorized Vehicle Availability Fact (S
       supplier_name: "Thiên Phú",
       vehicle_class: "TRUCK_1_9T",
       available_count: 2,
+      earliest_available_at: "2026-09-18T21:00:00+07:00",
       captured_at: "2026-09-18T21:00:00+07:00",
       valid_until: "2026-09-19T00:00:00+07:00",
       supplied_by: "telegram:lead-phutho",
@@ -346,6 +347,7 @@ describe("OpsPilot Level C Gate 3D.1 — Authorized Vehicle Availability Fact (S
       supplier_name: "Thiên Phú",
       vehicle_class: "TRUCK_1_9T",
       available_count: 1,
+      earliest_available_at: "2026-09-18T21:00:00+07:00",
       captured_at: "2026-09-18T21:00:00+07:00",
       valid_until: "2026-09-19T00:00:00+07:00",
       supplied_by: "telegram:lead-phutho",
@@ -377,6 +379,7 @@ describe("OpsPilot Level C Gate 3D.1 — Authorized Vehicle Availability Fact (S
       supplier_name: "Thiên Phú",
       vehicle_class: "TRUCK_1_9T",
       available_count: 1,
+      earliest_available_at: "2026-09-18T21:00:00+07:00",
       captured_at: "2026-09-18T21:00:00+07:00",
       valid_until: "2026-09-19T00:00:00+07:00",
       supplied_by: "telegram:lead-phutho",
@@ -410,6 +413,7 @@ describe("OpsPilot Level C Gate 3D.1 — Authorized Vehicle Availability Fact (S
       supplier_name: "Thiên Phú",
       vehicle_class: "TRUCK_1_9T",
       available_count: 1,
+      earliest_available_at: "2026-09-18T21:00:00+07:00",
       captured_at: "2026-09-18T21:00:00+07:00",
       valid_until: "2026-09-19T00:00:00+07:00",
       supplied_by: "telegram:lead-phutho",
@@ -442,6 +446,7 @@ describe("OpsPilot Level C Gate 3D.1 — Authorized Vehicle Availability Fact (S
       supplier_name: "Thiên Phú",
       vehicle_class: "TRUCK_1_9T",
       available_count: 1,
+      earliest_available_at: "2026-09-18T21:00:00+07:00",
       captured_at: "2026-09-18T21:00:00+07:00",
       valid_until: "2026-09-19T00:00:00+07:00",
       supplied_by: "telegram:lead-phutho",
@@ -500,7 +505,16 @@ describe("OpsPilot Level C Gate 3D.1 — Authorized Vehicle Availability Fact (S
   });
 
   it("15. authorized operational actor can submit a valid availability fact via internal endpoint", async () => {
-    isCronAuthorizedMock.mockReturnValue(true);
+    isCronAuthorizedMock.mockReturnValue(false);
+    authorizeApiRequestMock.mockResolvedValue({
+      ok: true,
+      identity: {
+        userId: "user-lead-1",
+        actor: "telegram:lead-phutho",
+        role: "LEAD",
+        userMetadata: { opspilot_operational_role: "WAREHOUSE_LEAD" },
+      },
+    });
 
     const req = createMockRequest({
       warehouse_id: "21160000",
@@ -512,7 +526,7 @@ describe("OpsPilot Level C Gate 3D.1 — Authorized Vehicle Availability Fact (S
       supplied_by: "telegram:lead-phutho",
       supplier_role: "WAREHOUSE_LEAD",
       interaction_id: "case-003",
-    }, { authorization: "Bearer valid_cron_secret" });
+    }, { authorization: "Bearer valid_human_session" });
 
     const response = await POST(req);
     expect(response.status).toBe(200);
@@ -534,8 +548,10 @@ describe("OpsPilot Level C Gate 3D.1 — Authorized Vehicle Availability Fact (S
     );
     const sql = fs.readFileSync(migrationPath, "utf-8");
 
-    expect(sql).toContain("ADD COLUMN IF NOT EXISTS supplier_name TEXT NULL;");
-    expect(sql).toContain("ADD COLUMN IF NOT EXISTS available_count INTEGER NULL;");
+    expect(sql).toContain("supplier_name TEXT NULL");
+    expect(sql).toContain("available_count INTEGER NULL");
+    expect(sql).toContain("supplied_by TEXT NULL");
+    expect(sql).toContain("supplier_role TEXT NULL");
     expect(sql).toContain("ALTER TABLE public.vehicle_fleet_availability ENABLE ROW LEVEL SECURITY;");
     expect(sql).toContain("CREATE POLICY \"Allow service role full access on vehicle_fleet_availability\"");
     expect(sql).toContain("TO service_role USING (true) WITH CHECK (true);");

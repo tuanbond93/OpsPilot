@@ -13,6 +13,7 @@ export interface MultiOptionEngineConfig {
   caseId?: string;
   enableGemini?: boolean;
   vehicleSourceAdapter?: VehicleSourceAdapter;
+  evaluationTime?: string | number | Date;
 }
 
 export async function runMultiOptionEvaluation(
@@ -22,7 +23,11 @@ export async function runMultiOptionEvaluation(
 ): Promise<MultiOptionDecisionResult> {
   const caseId = config.caseId || "shadow-case";
   const vehicleAdapter = config.vehicleSourceAdapter || new GovernedVehicleSourceAdapter();
-  const vehicleEvidence = await vehicleAdapter.getVehicleEvidence(facts.warehouseId);
+  const vehicleEvidence = await vehicleAdapter.getVehicleEvidence(
+    facts.warehouseId,
+    undefined,
+    config.evaluationTime
+  );
 
   // 1. Root cause hypothesis
   const rootCause = evaluateRootCause(facts, lead);

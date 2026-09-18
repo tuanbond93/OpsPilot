@@ -48,18 +48,23 @@ export interface VehicleCapacityEvidence {
   provenance_status?: "OWNER_CONFIRMED_PENDING_DOCUMENT" | "DOCUMENT_VERIFIED" | null;
 }
 
+import type { VehicleAvailabilityStatus } from "../types";
+export type { VehicleAvailabilityStatus } from "../types";
+
 export type VehicleAvailabilityEvidenceStatus =
   | "MEASURED"
   | "GOVERNED"
   | "OWNER_CONFIRMED"
   | "MODELED"
   | "AUTHORIZED_OPERATIONAL_FACT"
+  | "SYSTEM_AUTHORIZED_IMPORT"
   | "UNKNOWN";
 
 export type AuthorizedOperationalRole =
   | "WAREHOUSE_LEAD"
   | "DISPATCH_MANAGER"
   | "OPERATIONS_MANAGER"
+  | "SYSTEM_ADMIN"
   | "LEAD"
   | "MANAGER"
   | "ADMIN";
@@ -69,6 +74,7 @@ export interface VehicleAvailabilityEvidence {
   vehicle_id: string | null;
   vehicle_class: string | null;
   available: boolean | null;
+  availability_status: VehicleAvailabilityStatus;
   available_at: string | null;
   remaining_capacity_kg: number | null;
   source_ref: string | null;
@@ -93,7 +99,7 @@ export interface VehicleAvailabilityFact {
   supplied_by: string;
   supplier_role: AuthorizedOperationalRole;
   source_ref: string;
-  evidence_status: "AUTHORIZED_OPERATIONAL_FACT";
+  evidence_status: "AUTHORIZED_OPERATIONAL_FACT" | "SYSTEM_AUTHORIZED_IMPORT";
 }
 
 export interface VehicleEconomicsAndCapacityResult {
@@ -108,9 +114,52 @@ export interface VehicleSourceAdapter {
   getVehicleRate(warehouseId: string, vehicleClass?: string, supplierName?: string): Promise<VehicleRateEvidence> | VehicleRateEvidence;
   getVehicleRates?(warehouseId: string, vehicleClass?: string): Promise<VehicleRateEvidence[]> | VehicleRateEvidence[];
   getVehicleCapacity(vehicleClass?: string): Promise<VehicleCapacityEvidence> | VehicleCapacityEvidence;
-  getVehicleAvailability(warehouseId: string, vehicleClass?: string, supplierName?: string): Promise<VehicleAvailabilityEvidence> | VehicleAvailabilityEvidence;
-  getVehicleAvailabilities?(warehouseId: string, vehicleClass?: string): Promise<VehicleAvailabilityEvidence[]> | VehicleAvailabilityEvidence[];
-  getVehicleEvidence(warehouseId: string, vehicleClass?: string): Promise<VehicleEconomicsAndCapacityResult> | VehicleEconomicsAndCapacityResult;
+  getVehicleAvailability(warehouseId: string, vehicleClass?: string, supplierName?: string, evaluationTime?: string | number | Date): Promise<VehicleAvailabilityEvidence> | VehicleAvailabilityEvidence;
+  getVehicleAvailabilities?(warehouseId: string, vehicleClass?: string, evaluationTime?: string | number | Date): Promise<VehicleAvailabilityEvidence[]> | VehicleAvailabilityEvidence[];
+  getVehicleEvidence(warehouseId: string, vehicleClass?: string, evaluationTime?: string | number | Date): Promise<VehicleEconomicsAndCapacityResult> | VehicleEconomicsAndCapacityResult;
+}
+
+export function computeAvailabilityStatus(
+  availableCount: number | null | undefined,
+  earliestAvailableAt: string | null | undefined,
+  validUntil: string | null | undefined,
+  evaluationTime: number,
+  fallbackAvailable?: boolean | null
+): { status: VehicleAvailabilityStatus; available: boolean | null } {
+  const validUntilMs = validUntil ? new Date(validUntil).getTime() : Infinity;
+  if (evaluationTime > validUntilMs) {
+    return { status: "UNKNOWN", available: null };
+  }
+
+  if (availableCount !== undefined && availableCount !== null) {
+    if (availableCount === 0) {
+      return { status: "UNAVAILABLE", available: false };
+    }
+    if (availableCount > 0) {
+      if (!earliestAvailableAt) {
+        return { status: "UNKNOWN", available: null };
+      }
+      const earliestMs = new Date(earliestAvailableAt).getTime();
+      if (isNaN(earliestMs) || earliestMs > validUntilMs) {
+        return { status: "UNKNOWN", available: null };
+      }
+      if (earliestMs <= evaluationTime && evaluationTime <= validUntilMs) {
+        return { status: "AVAILABLE_NOW", available: true };
+      }
+      if (earliestMs > evaluationTime && earliestMs <= validUntilMs) {
+        return { status: "SCHEDULED_AVAILABLE", available: false };
+      }
+      return { status: "UNKNOWN", available: null };
+    }
+  }
+
+  if (fallbackAvailable === true) {
+    return { status: "AVAILABLE_NOW", available: true };
+  }
+  if (fallbackAvailable === false) {
+    return { status: "UNAVAILABLE", available: false };
+  }
+  return { status: "UNKNOWN", available: null };
 }
 
 import type { SupabaseClient } from "@supabase/supabase-js";
@@ -164,6 +213,7 @@ export interface GovernedVehicleSourceConfig {
   availabilities?: GovernedAvailabilityRecord[];
   availabilityFacts?: VehicleAvailabilityFact[];
   maxRateAgeDays?: number;
+  evaluationTime?: string | number | Date;
 }
 
 export class GovernedVehicleSourceAdapter implements VehicleSourceAdapter {
@@ -194,27 +244,42 @@ export class GovernedVehicleSourceAdapter implements VehicleSourceAdapter {
     return this.getInMemoryCapacity(vehicleClass);
   }
 
-  getVehicleAvailability(warehouseId: string, vehicleClass?: string, supplierName?: string): any {
+  getVehicleAvailability(
+    warehouseId: string,
+    vehicleClass?: string,
+    supplierName?: string,
+    evaluationTime?: string | number | Date
+  ): any {
     if (this.config.db) {
-      return this.queryDbAvailability(warehouseId, vehicleClass, supplierName);
+      return this.queryDbAvailability(warehouseId, vehicleClass, supplierName, evaluationTime);
     }
-    return this.getInMemoryAvailability(warehouseId, vehicleClass, supplierName);
+    return this.getInMemoryAvailability(warehouseId, vehicleClass, supplierName, evaluationTime);
   }
 
-  getVehicleAvailabilities(warehouseId: string, vehicleClass?: string): any {
+  getVehicleAvailabilities(
+    warehouseId: string,
+    vehicleClass?: string,
+    evaluationTime?: string | number | Date
+  ): any {
     if (this.config.db) {
-      return this.queryDbAvailabilities(warehouseId, vehicleClass);
+      return this.queryDbAvailabilities(warehouseId, vehicleClass, evaluationTime);
     }
-    return this.getInMemoryAvailabilities(warehouseId, vehicleClass);
+    return this.getInMemoryAvailabilities(warehouseId, vehicleClass, evaluationTime);
   }
 
-  getVehicleEvidence(warehouseId: string, vehicleClass?: string): any {
+  getVehicleEvidence(
+    warehouseId: string,
+    vehicleClass?: string,
+    evaluationTime?: string | number | Date
+  ): any {
     if (this.config.db) {
-      return this.queryDbEvidence(warehouseId, vehicleClass);
+      return this.queryDbEvidence(warehouseId, vehicleClass, evaluationTime);
     }
 
-    const availabilities = this.getInMemoryAvailabilities(warehouseId, vehicleClass);
-    const availability = availabilities[0] || this.getInMemoryAvailability(warehouseId, vehicleClass);
+    const availabilities = this.getInMemoryAvailabilities(warehouseId, vehicleClass, evaluationTime);
+    const availability =
+      availabilities[0] ||
+      this.getInMemoryAvailability(warehouseId, vehicleClass, undefined, evaluationTime);
     let targetClass = vehicleClass || availability.vehicle_class;
     if (!targetClass) {
       const matched = (this.config.rates || []).find(
@@ -524,7 +589,8 @@ export class GovernedVehicleSourceAdapter implements VehicleSourceAdapter {
 
   private async queryDbAvailabilities(
     warehouseId: string,
-    vehicleClass?: string
+    vehicleClass?: string,
+    evaluationTime?: string | number | Date
   ): Promise<VehicleAvailabilityEvidence[]> {
     try {
       let query: any = this.config.db!
@@ -558,51 +624,51 @@ export class GovernedVehicleSourceAdapter implements VehicleSourceAdapter {
       const rows = Array.isArray(data) ? data : [data];
       if (rows.length === 0) return [];
 
-      const now = Date.now();
+      const evalMs = evaluationTime
+        ? new Date(evaluationTime).getTime()
+        : this.config.evaluationTime
+        ? new Date(this.config.evaluationTime).getTime()
+        : Date.now();
+
       return rows.map((row: any) => {
-        const validUntilTime = row.valid_until ? new Date(row.valid_until).getTime() : 0;
-        const isExpired = now > validUntilTime;
         const isOperationalFact =
-          typeof row.source_ref === "string" &&
-          row.source_ref.startsWith("AUTHORIZED_OPERATIONAL_FACT");
+          (typeof row.source_ref === "string" && row.source_ref.startsWith("AUTHORIZED_OPERATIONAL_FACT")) ||
+          row.evidence_status === "AUTHORIZED_OPERATIONAL_FACT";
+        const isSystemImport =
+          (typeof row.source_ref === "string" && row.source_ref.startsWith("SYSTEM_AUTHORIZED_IMPORT")) ||
+          row.evidence_status === "SYSTEM_AUTHORIZED_IMPORT";
 
-        if (isExpired) {
-          return {
-            warehouse_id: row.warehouse_id,
-            vehicle_id: row.vehicle_id ?? null,
-            vehicle_class: row.vehicle_class,
-            available: null,
-            available_at: null,
-            remaining_capacity_kg: null,
-            source_ref: row.source_ref,
-            captured_at: row.captured_at,
-            evidence_status: "UNKNOWN" as const,
-            supplier_name: row.supplier_name ?? null,
-            available_count: row.available_count ?? null,
-            valid_until: row.valid_until ?? null,
-          };
-        }
+        const baseStatus: VehicleAvailabilityEvidenceStatus = isOperationalFact
+          ? "AUTHORIZED_OPERATIONAL_FACT"
+          : isSystemImport
+          ? "SYSTEM_AUTHORIZED_IMPORT"
+          : "GOVERNED";
 
-        const isAvail =
-          row.available_count !== undefined && row.available_count !== null
-            ? row.available_count > 0
-            : Boolean(row.available);
+        const { status: availStatus, available } = computeAvailabilityStatus(
+          row.available_count,
+          row.available_at || row.earliest_available_at,
+          row.valid_until,
+          evalMs,
+          row.available
+        );
 
         return {
           warehouse_id: row.warehouse_id,
           vehicle_id: row.vehicle_id ?? null,
           vehicle_class: row.vehicle_class,
-          available: isAvail,
+          available,
+          availability_status: availStatus,
           available_at: row.available_at ?? null,
           remaining_capacity_kg: row.remaining_capacity_kg != null ? Number(row.remaining_capacity_kg) : null,
           source_ref: row.source_ref,
           captured_at: row.captured_at,
-          evidence_status: isOperationalFact
-            ? ("AUTHORIZED_OPERATIONAL_FACT" as const)
-            : ("GOVERNED" as const),
+          evidence_status: availStatus === "UNKNOWN" ? ("UNKNOWN" as const) : baseStatus,
           supplier_name: row.supplier_name ?? null,
-          available_count: row.available_count ?? (row.available ? 1 : 0),
+          available_count: row.available_count ?? (available === true ? 1 : 0),
+          earliest_available_at: row.available_at ?? row.earliest_available_at ?? null,
           valid_until: row.valid_until ?? null,
+          supplied_by: row.supplied_by ?? null,
+          supplier_role: row.supplier_role ?? null,
         };
       });
     } catch {
@@ -613,9 +679,10 @@ export class GovernedVehicleSourceAdapter implements VehicleSourceAdapter {
   private async queryDbAvailability(
     warehouseId: string,
     vehicleClass?: string,
-    supplierName?: string
+    supplierName?: string,
+    evaluationTime?: string | number | Date
   ): Promise<VehicleAvailabilityEvidence> {
-    const all = await this.queryDbAvailabilities(warehouseId, vehicleClass);
+    const all = await this.queryDbAvailabilities(warehouseId, vehicleClass, evaluationTime);
     if (supplierName) {
       const match = all.find(
         (a) => a.supplier_name && a.supplier_name.toUpperCase() === supplierName.toUpperCase()
@@ -626,6 +693,7 @@ export class GovernedVehicleSourceAdapter implements VehicleSourceAdapter {
         vehicle_id: null,
         vehicle_class: vehicleClass || null,
         available: null,
+        availability_status: "UNKNOWN",
         available_at: null,
         remaining_capacity_kg: null,
         source_ref: null,
@@ -640,6 +708,7 @@ export class GovernedVehicleSourceAdapter implements VehicleSourceAdapter {
         vehicle_id: null,
         vehicle_class: vehicleClass || null,
         available: null,
+        availability_status: "UNKNOWN",
         available_at: null,
         remaining_capacity_kg: null,
         source_ref: null,
@@ -652,58 +721,48 @@ export class GovernedVehicleSourceAdapter implements VehicleSourceAdapter {
 
   private getInMemoryAvailabilities(
     warehouseId: string,
-    vehicleClass?: string
+    vehicleClass?: string,
+    evaluationTime?: string | number | Date
   ): VehicleAvailabilityEvidence[] {
-    const now = Date.now();
+    const evalMs = evaluationTime
+      ? new Date(evaluationTime).getTime()
+      : this.config.evaluationTime
+      ? new Date(this.config.evaluationTime).getTime()
+      : Date.now();
     const results: VehicleAvailabilityEvidence[] = [];
 
-    // 1. Check availabilityFacts (highest priority in Gate 3D.1)
+    // 1. Check availabilityFacts (highest priority in Gate 3D.1 / Gate 3D.1A)
     const facts = this.config.availabilityFacts || [];
     for (const fact of facts) {
       if (
         fact.warehouse_id === warehouseId &&
         (!vehicleClass || fact.vehicle_class.toUpperCase() === vehicleClass.toUpperCase())
       ) {
-        const validUntilMs = new Date(fact.valid_until).getTime();
-        const isExpired = now > validUntilMs;
-        if (isExpired) {
-          results.push({
-            warehouse_id: warehouseId,
-            vehicle_id: null,
-            vehicle_class: fact.vehicle_class,
-            available: null,
-            available_at: null,
-            remaining_capacity_kg: null,
-            source_ref: fact.source_ref,
-            captured_at: fact.captured_at,
-            evidence_status: "UNKNOWN",
-            supplier_name: fact.supplier_name,
-            available_count: fact.available_count,
-            earliest_available_at: fact.earliest_available_at ?? null,
-            valid_until: fact.valid_until,
-            supplied_by: fact.supplied_by,
-            supplier_role: fact.supplier_role,
-          });
-        } else {
-          const isAvail = fact.available_count > 0;
-          results.push({
-            warehouse_id: warehouseId,
-            vehicle_id: null,
-            vehicle_class: fact.vehicle_class,
-            available: isAvail,
-            available_at: fact.earliest_available_at ?? null,
-            remaining_capacity_kg: null,
-            source_ref: fact.source_ref,
-            captured_at: fact.captured_at,
-            evidence_status: "AUTHORIZED_OPERATIONAL_FACT",
-            supplier_name: fact.supplier_name,
-            available_count: fact.available_count,
-            earliest_available_at: fact.earliest_available_at ?? null,
-            valid_until: fact.valid_until,
-            supplied_by: fact.supplied_by,
-            supplier_role: fact.supplier_role,
-          });
-        }
+        const { status: availStatus, available } = computeAvailabilityStatus(
+          fact.available_count,
+          fact.earliest_available_at,
+          fact.valid_until,
+          evalMs
+        );
+
+        results.push({
+          warehouse_id: warehouseId,
+          vehicle_id: null,
+          vehicle_class: fact.vehicle_class,
+          available,
+          availability_status: availStatus,
+          available_at: fact.earliest_available_at ?? null,
+          remaining_capacity_kg: null,
+          source_ref: fact.source_ref,
+          captured_at: fact.captured_at,
+          evidence_status: availStatus === "UNKNOWN" ? "UNKNOWN" : fact.evidence_status,
+          supplier_name: fact.supplier_name,
+          available_count: fact.available_count,
+          earliest_available_at: fact.earliest_available_at ?? null,
+          valid_until: fact.valid_until,
+          supplied_by: fact.supplied_by,
+          supplier_role: fact.supplier_role,
+        });
       }
     }
 
@@ -714,21 +773,27 @@ export class GovernedVehicleSourceAdapter implements VehicleSourceAdapter {
         a.warehouse_id === warehouseId &&
         (!vehicleClass || a.vehicle_class.toUpperCase() === vehicleClass.toUpperCase())
       ) {
-        const validUntilMs = a.valid_until ? new Date(a.valid_until).getTime() : Infinity;
-        const isExpired = now > validUntilMs;
-        const status = a.evidence_status || (isExpired ? "UNKNOWN" : "GOVERNED");
+        const { status: availStatus, available } = computeAvailabilityStatus(
+          a.available_count,
+          a.earliest_available_at || a.available_at,
+          a.valid_until,
+          evalMs,
+          a.available
+        );
+
         results.push({
           warehouse_id: a.warehouse_id,
           vehicle_id: a.vehicle_id ?? null,
           vehicle_class: a.vehicle_class,
-          available: isExpired ? null : Boolean(a.available),
+          available,
+          availability_status: availStatus,
           available_at: a.available_at ?? null,
           remaining_capacity_kg: a.remaining_capacity_kg ?? null,
           source_ref: a.source_ref,
           captured_at: a.captured_at ?? null,
-          evidence_status: status,
+          evidence_status: availStatus === "UNKNOWN" ? "UNKNOWN" : (a.evidence_status || "GOVERNED"),
           supplier_name: a.supplier_name ?? null,
-          available_count: a.available_count ?? (a.available ? 1 : 0),
+          available_count: a.available_count ?? (available === true ? 1 : 0),
           earliest_available_at: a.earliest_available_at ?? a.available_at ?? null,
           valid_until: a.valid_until ?? null,
           supplied_by: a.supplied_by ?? null,
@@ -743,9 +808,10 @@ export class GovernedVehicleSourceAdapter implements VehicleSourceAdapter {
   private getInMemoryAvailability(
     warehouseId: string,
     vehicleClass = "TRUCK_1_9T",
-    supplierName?: string
+    supplierName?: string,
+    evaluationTime?: string | number | Date
   ): VehicleAvailabilityEvidence {
-    const all = this.getInMemoryAvailabilities(warehouseId, vehicleClass);
+    const all = this.getInMemoryAvailabilities(warehouseId, vehicleClass, evaluationTime);
     if (supplierName) {
       const match = all.find(
         (a) => a.supplier_name && a.supplier_name.toUpperCase() === supplierName.toUpperCase()
@@ -756,6 +822,7 @@ export class GovernedVehicleSourceAdapter implements VehicleSourceAdapter {
         vehicle_id: null,
         vehicle_class: vehicleClass,
         available: null,
+        availability_status: "UNKNOWN",
         available_at: null,
         remaining_capacity_kg: null,
         source_ref: null,
@@ -770,6 +837,7 @@ export class GovernedVehicleSourceAdapter implements VehicleSourceAdapter {
         vehicle_id: null,
         vehicle_class: vehicleClass,
         available: null,
+        availability_status: "UNKNOWN",
         available_at: null,
         remaining_capacity_kg: null,
         source_ref: null,
@@ -780,9 +848,13 @@ export class GovernedVehicleSourceAdapter implements VehicleSourceAdapter {
     );
   }
 
-  private async queryDbEvidence(warehouseId: string, vehicleClass?: string): Promise<VehicleEconomicsAndCapacityResult> {
-    const availabilities = await this.queryDbAvailabilities(warehouseId, vehicleClass);
-    const availability = availabilities[0] || (await this.queryDbAvailability(warehouseId, vehicleClass));
+  private async queryDbEvidence(
+    warehouseId: string,
+    vehicleClass?: string,
+    evaluationTime?: string | number | Date
+  ): Promise<VehicleEconomicsAndCapacityResult> {
+    const availabilities = await this.queryDbAvailabilities(warehouseId, vehicleClass, evaluationTime);
+    const availability = availabilities[0] || (await this.queryDbAvailability(warehouseId, vehicleClass, undefined, evaluationTime));
     let targetClass = vehicleClass || availability.vehicle_class;
     if (!targetClass) {
       try {

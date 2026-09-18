@@ -8,6 +8,7 @@ export const ALLOWED_AVAILABILITY_ROLES: ReadonlySet<string> = new Set([
   "WAREHOUSE_LEAD",
   "DISPATCH_MANAGER",
   "OPERATIONS_MANAGER",
+  "SYSTEM_ADMIN",
   "LEAD",
   "MANAGER",
   "ADMIN",
@@ -18,6 +19,17 @@ export function isActorAuthorizedForAvailability(role: string | null | undefined
   return ALLOWED_AVAILABILITY_ROLES.has(role.trim().toUpperCase());
 }
 
+export interface AuthContext {
+  isCron?: boolean;
+  identity?: {
+    userId: string;
+    actor: string;
+    role: string;
+    appMetadata?: Record<string, unknown> | null;
+    userMetadata?: Record<string, unknown> | null;
+  } | null;
+}
+
 export interface FactSubmissionInput {
   warehouse_id: string;
   supplier_name: string;
@@ -26,14 +38,15 @@ export interface FactSubmissionInput {
   earliest_available_at?: string | null;
   captured_at?: string | null;
   valid_until: string;
-  supplied_by: string;
-  supplier_role: string;
+  supplied_by?: string;
+  supplier_role?: string;
   interaction_id?: string | null;
   source_ref?: string | null;
 }
 
 export function validateVehicleAvailabilityInput(
   input: any,
+  authContext?: AuthContext,
   now: number = Date.now()
 ): { ok: true; fact: VehicleAvailabilityFact } | { ok: false; error: string; status: number } {
   if (!input || typeof input !== "object") {
@@ -47,7 +60,7 @@ export function validateVehicleAvailabilityInput(
 
   const supplierName = typeof input.supplier_name === "string" ? input.supplier_name.trim() : "";
   if (!supplierName) {
-    return { ok: false, error: "MISSING_FIELD: supplier_name is required", status: 400 };
+    return { ok: false, error: "MISSING_FIELD: supplier_name is required and must not be empty", status: 400 };
   }
 
   const vehicleClass = typeof input.vehicle_class === "string" ? input.vehicle_class.trim() : "TRUCK_1_9T";
@@ -55,23 +68,116 @@ export function validateVehicleAvailabilityInput(
     return { ok: false, error: "MISSING_FIELD: vehicle_class is required", status: 400 };
   }
 
+  // Issue 3 & 4: Actor Provenance & Authorization Hardening
+  let finalSuppliedBy = "";
+  let finalSupplierRole: AuthorizedOperationalRole = "OPERATIONS_MANAGER";
+  let evidenceStatus: "AUTHORIZED_OPERATIONAL_FACT" | "SYSTEM_AUTHORIZED_IMPORT" = "AUTHORIZED_OPERATIONAL_FACT";
+
+  if (authContext?.isCron) {
+    // CRON_SECRET calls must NOT masquerade as human Leads
+    const claimedRole = typeof input.supplier_role === "string" ? input.supplier_role.trim().toUpperCase() : "";
+    if (claimedRole === "WAREHOUSE_LEAD" || claimedRole === "LEAD") {
+      return {
+        ok: false,
+        error: "FORBIDDEN_IMPERSONATION: CRON_SECRET service call cannot masquerade as human WAREHOUSE_LEAD. Use authenticated human session.",
+        status: 403,
+      };
+    }
+    const claimedActor = typeof input.supplied_by === "string" ? input.supplied_by.trim() : "";
+    if (claimedActor.startsWith("telegram:")) {
+      return {
+        ok: false,
+        error: "FORBIDDEN_IMPERSONATION: CRON_SECRET service call cannot masquerade as human Telegram actor. Use authenticated human session.",
+        status: 403,
+      };
+    }
+
+    finalSuppliedBy = claimedActor || "system:cron";
+    finalSupplierRole = "SYSTEM_ADMIN";
+    evidenceStatus = "SYSTEM_AUTHORIZED_IMPORT";
+  } else if (authContext?.identity) {
+    const principal = authContext.identity;
+    const roleMetadata = (
+      principal.userMetadata?.opspilot_operational_role ||
+      principal.appMetadata?.opspilot_operational_role ||
+      principal.userMetadata?.warehouse_role ||
+      principal.role
+    ) as string;
+
+    const normalizedMeta = typeof roleMetadata === "string" ? roleMetadata.trim().toUpperCase() : "";
+
+    let derivedRole: AuthorizedOperationalRole = "OPERATIONS_MANAGER";
+    if (normalizedMeta === "ADMIN") {
+      derivedRole = "SYSTEM_ADMIN";
+    } else if (normalizedMeta === "MANAGER" || normalizedMeta === "OPERATIONS_MANAGER") {
+      derivedRole = "OPERATIONS_MANAGER";
+    } else if (normalizedMeta === "DISPATCH_MANAGER") {
+      derivedRole = "DISPATCH_MANAGER";
+    } else if (normalizedMeta === "WAREHOUSE_LEAD" || normalizedMeta === "LEAD") {
+      derivedRole = "WAREHOUSE_LEAD";
+    } else {
+      return {
+        ok: false,
+        error: `PERMISSION_DENIED: Role '${principal.role}' is not authorized to submit vehicle availability facts.`,
+        status: 403,
+      };
+    }
+
+    // Body cannot promote beyond derived role
+    const bodyRole = typeof input.supplier_role === "string" ? input.supplier_role.trim().toUpperCase() : "";
+    if (bodyRole) {
+      const isEquivalent =
+        bodyRole === derivedRole ||
+        (bodyRole === "LEAD" && derivedRole === "WAREHOUSE_LEAD") ||
+        (bodyRole === "MANAGER" && derivedRole === "OPERATIONS_MANAGER") ||
+        (bodyRole === "ADMIN" && derivedRole === "SYSTEM_ADMIN");
+
+      if (!isEquivalent) {
+        return {
+          ok: false,
+          error: `ROLE_MISMATCH: Caller body claimed '${bodyRole}' but authenticated principal is mapped to '${derivedRole}'. Body role self-promotion is blocked.`,
+          status: 403,
+        };
+      }
+    }
+
+    finalSuppliedBy = principal.actor || `user:${principal.userId}`;
+    finalSupplierRole = derivedRole;
+    evidenceStatus = "AUTHORIZED_OPERATIONAL_FACT";
+  } else {
+    // Direct invocation without authContext (e.g. backward-compatible unit tests)
+    const suppliedBy = typeof input.supplied_by === "string" ? input.supplied_by.trim() : "";
+    if (!suppliedBy) {
+      return { ok: false, error: "MISSING_FIELD: supplied_by is required", status: 400 };
+    }
+
+    const supplierRole = typeof input.supplier_role === "string" ? input.supplier_role.trim().toUpperCase() : "";
+    if (!isActorAuthorizedForAvailability(supplierRole)) {
+      return {
+        ok: false,
+        error: `PERMISSION_DENIED: Role '${supplierRole || "UNKNOWN"}' is not authorized. Allowed roles: Warehouse Lead (LEAD), Dispatch/Operations Manager (MANAGER/ADMIN).`,
+        status: 403,
+      };
+    }
+
+    finalSuppliedBy = suppliedBy;
+    finalSupplierRole = (
+      supplierRole === "LEAD"
+        ? "WAREHOUSE_LEAD"
+        : supplierRole === "MANAGER"
+        ? "OPERATIONS_MANAGER"
+        : supplierRole === "ADMIN"
+        ? "SYSTEM_ADMIN"
+        : supplierRole
+    ) as AuthorizedOperationalRole;
+    evidenceStatus = input.evidence_status === "SYSTEM_AUTHORIZED_IMPORT"
+      ? "SYSTEM_AUTHORIZED_IMPORT"
+      : "AUTHORIZED_OPERATIONAL_FACT";
+  }
+
   const count = Number(input.available_count);
   if (!Number.isFinite(count) || count < 0 || !Number.isInteger(count)) {
     return { ok: false, error: "INVALID_FIELD: available_count must be an integer >= 0", status: 400 };
-  }
-
-  const suppliedBy = typeof input.supplied_by === "string" ? input.supplied_by.trim() : "";
-  if (!suppliedBy) {
-    return { ok: false, error: "MISSING_FIELD: supplied_by is required", status: 400 };
-  }
-
-  const supplierRole = typeof input.supplier_role === "string" ? input.supplier_role.trim().toUpperCase() : "";
-  if (!isActorAuthorizedForAvailability(supplierRole)) {
-    return {
-      ok: false,
-      error: `PERMISSION_DENIED: Role '${supplierRole || "UNKNOWN"}' is not authorized. Allowed roles: Warehouse Lead (LEAD), Dispatch/Operations Manager (MANAGER/ADMIN).`,
-      status: 403,
-    };
   }
 
   const capturedAt = input.captured_at ? new Date(input.captured_at).toISOString() : new Date(now).toISOString();
@@ -102,11 +208,38 @@ export function validateVehicleAvailabilityInput(
     };
   }
 
+  // Issue 2: Positive availability count requires earliest_available_at <= valid_until
   let earliestAvailableAt: string | null = null;
-  if (input.earliest_available_at) {
+  if (count > 0) {
+    if (!input.earliest_available_at) {
+      return {
+        ok: false,
+        error: "MISSING_FIELD: earliest_available_at is required when available_count > 0. Ambiguous positive availability without timing is rejected.",
+        status: 400,
+      };
+    }
     const earliestMs = new Date(input.earliest_available_at).getTime();
-    if (!isNaN(earliestMs)) {
-      earliestAvailableAt = new Date(earliestMs).toISOString();
+    if (isNaN(earliestMs)) {
+      return {
+        ok: false,
+        error: "INVALID_FIELD: earliest_available_at must be a valid ISO date",
+        status: 400,
+      };
+    }
+    if (earliestMs > validUntilMs) {
+      return {
+        ok: false,
+        error: "INVALID_TIME_WINDOW: earliest_available_at must be less than or equal to valid_until",
+        status: 400,
+      };
+    }
+    earliestAvailableAt = new Date(earliestMs).toISOString();
+  } else {
+    if (input.earliest_available_at) {
+      const earliestMs = new Date(input.earliest_available_at).getTime();
+      if (!isNaN(earliestMs)) {
+        earliestAvailableAt = new Date(earliestMs).toISOString();
+      }
     }
   }
 
@@ -116,7 +249,7 @@ export function validateVehicleAvailabilityInput(
 
   const sourceRef = input.source_ref && typeof input.source_ref === "string"
     ? input.source_ref.trim()
-    : `AUTHORIZED_OPERATIONAL_FACT:${interactionId}`;
+    : `${evidenceStatus}:${interactionId}`;
 
   const fact: VehicleAvailabilityFact = {
     warehouse_id: warehouseId,
@@ -126,10 +259,10 @@ export function validateVehicleAvailabilityInput(
     earliest_available_at: earliestAvailableAt,
     captured_at: capturedAt,
     valid_until: validUntil,
-    supplied_by: suppliedBy,
-    supplier_role: supplierRole as AuthorizedOperationalRole,
+    supplied_by: finalSuppliedBy,
+    supplier_role: finalSupplierRole,
     source_ref: sourceRef,
-    evidence_status: "AUTHORIZED_OPERATIONAL_FACT",
+    evidence_status: evidenceStatus,
   };
 
   return { ok: true, fact };
@@ -140,19 +273,24 @@ export async function persistVehicleAvailabilityFact(
   fact: VehicleAvailabilityFact
 ): Promise<{ ok: true; id: string } | { ok: false; error: string }> {
   try {
-    const isAvailable = fact.available_count > 0;
+    const capturedMs = new Date(fact.captured_at).getTime();
+    const earliestMs = fact.earliest_available_at ? new Date(fact.earliest_available_at).getTime() : capturedMs;
+    const isAvailableNow = fact.available_count > 0 && earliestMs <= capturedMs;
+
     const { data, error } = await db
       .from("vehicle_fleet_availability")
       .insert({
         warehouse_id: fact.warehouse_id,
         supplier_name: fact.supplier_name,
         vehicle_class: fact.vehicle_class,
-        available: isAvailable,
+        available: isAvailableNow,
         available_count: fact.available_count,
         available_at: fact.earliest_available_at || fact.captured_at,
         captured_at: fact.captured_at,
         valid_until: fact.valid_until,
         source_ref: fact.source_ref,
+        supplied_by: fact.supplied_by,
+        supplier_role: fact.supplier_role,
       })
       .select("id")
       .single();

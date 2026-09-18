@@ -11,11 +11,13 @@ export const dynamic = "force-dynamic";
 export async function POST(request: NextRequest) {
   // 1. Authorization: Only CRON_SECRET or authorized operational session with VIEW_SYSTEM/MANAGE_SYSTEM
   const isCron = isCronAuthorized(request);
+  let serverIdentity: any = null;
   if (!isCron) {
     const auth = await authorizeApiRequest(request, "VIEW_SYSTEM", { limit: 30, windowMs: 60_000 });
     if (!auth.ok) {
       return auth.response;
     }
+    serverIdentity = auth.identity;
   }
 
   try {
@@ -27,7 +29,7 @@ export async function POST(request: NextRequest) {
     }
 
     // 2. Validate Fact Contract & Operational Actor Role
-    const validation = validateVehicleAvailabilityInput(body);
+    const validation = validateVehicleAvailabilityInput(body, { isCron, identity: serverIdentity });
     if (!validation.ok) {
       return NextResponse.json({ error: validation.error }, { status: validation.status });
     }
@@ -74,7 +76,7 @@ export async function GET(request: NextRequest) {
 
     let query = db
       .from("vehicle_fleet_availability")
-      .select("id, warehouse_id, supplier_name, vehicle_class, available, available_count, available_at, captured_at, valid_until, source_ref")
+      .select("id, warehouse_id, supplier_name, vehicle_class, available, available_count, available_at, captured_at, valid_until, source_ref, supplied_by, supplier_role")
       .order("captured_at", { ascending: false });
 
     if (warehouseId) {
@@ -87,11 +89,37 @@ export async function GET(request: NextRequest) {
     }
 
     const now = Date.now();
-    const activeFacts = (data || []).map((row) => ({
-      ...row,
-      is_expired: row.valid_until ? now > new Date(row.valid_until).getTime() : false,
-      evidence_status: "AUTHORIZED_OPERATIONAL_FACT",
-    }));
+    const activeFacts = (data || []).map((row) => {
+      const isExpired = row.valid_until ? now > new Date(row.valid_until).getTime() : false;
+      const isAvailableNow = row.available_count > 0 &&
+        (!row.available_at || new Date(row.available_at).getTime() <= now) &&
+        !isExpired;
+      const isScheduled = row.available_count > 0 &&
+        row.available_at &&
+        new Date(row.available_at).getTime() > now &&
+        !isExpired;
+
+      const availStatus = isExpired
+        ? "UNKNOWN"
+        : row.available_count === 0
+        ? "UNAVAILABLE"
+        : isAvailableNow
+        ? "AVAILABLE_NOW"
+        : isScheduled
+        ? "SCHEDULED_AVAILABLE"
+        : "UNKNOWN";
+
+      return {
+        ...row,
+        is_expired: isExpired,
+        availability_status: availStatus,
+        evidence_status: isExpired
+          ? "UNKNOWN"
+          : (row.source_ref && row.source_ref.startsWith("SYSTEM_AUTHORIZED_IMPORT"))
+          ? "SYSTEM_AUTHORIZED_IMPORT"
+          : "AUTHORIZED_OPERATIONAL_FACT",
+      };
+    });
 
     return NextResponse.json({
       ok: true,

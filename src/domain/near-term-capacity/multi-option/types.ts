@@ -81,6 +81,12 @@ export interface DecisionOptionSla {
   evidence: string[];
 }
 
+export type VehicleAvailabilityStatus =
+  | "AVAILABLE_NOW"
+  | "SCHEDULED_AVAILABLE"
+  | "UNAVAILABLE"
+  | "UNKNOWN";
+
 export interface DecisionOption {
   option_id: string;
   option_type: CapacityAction | "REQUEST_MORE_INFORMATION";
@@ -107,7 +113,7 @@ export interface DecisionOption {
   confidence: number;
   /** Convenience boolean: true only when feasibility_status === "FEASIBLE" */
   feasible: boolean;
-  availability?: "AVAILABLE" | "UNAVAILABLE" | "UNKNOWN";
+  availability?: VehicleAvailabilityStatus;
   projected_incremental_cost_difference?: number | null;
   projected_cost_difference_display?: string;
 }
