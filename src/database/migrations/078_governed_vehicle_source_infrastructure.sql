@@ -87,22 +87,23 @@ ALTER TABLE public.governed_vehicle_classes ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.governed_vehicle_rates ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.vehicle_fleet_availability ENABLE ROW LEVEL SECURITY;
 
--- Read policies for authenticated application users
-CREATE POLICY "Allow authenticated read on governed_vehicle_classes"
-  ON public.governed_vehicle_classes FOR SELECT TO authenticated USING (true);
+-- Security Hardening (Least Privilege):
+-- Revoke general client access. Governed rates contain commercially sensitive vendor pricing.
+-- Only server-side runtime via service_role possesses access to read and write governed tables.
+DROP POLICY IF EXISTS "Allow authenticated read on governed_vehicle_classes" ON public.governed_vehicle_classes;
+DROP POLICY IF EXISTS "Allow authenticated read on governed_vehicle_rates" ON public.governed_vehicle_rates;
+DROP POLICY IF EXISTS "Allow authenticated read on vehicle_fleet_availability" ON public.vehicle_fleet_availability;
 
-CREATE POLICY "Allow authenticated read on governed_vehicle_rates"
-  ON public.governed_vehicle_rates FOR SELECT TO authenticated USING (true);
-
-CREATE POLICY "Allow authenticated read on vehicle_fleet_availability"
-  ON public.vehicle_fleet_availability FOR SELECT TO authenticated USING (true);
-
--- Admin / Service Role full access policies
+-- Safely Idempotent Service Role Full Access Policies
+DROP POLICY IF EXISTS "Allow service role full access on governed_vehicle_classes" ON public.governed_vehicle_classes;
 CREATE POLICY "Allow service role full access on governed_vehicle_classes"
   ON public.governed_vehicle_classes FOR ALL TO service_role USING (true) WITH CHECK (true);
 
+DROP POLICY IF EXISTS "Allow service role full access on governed_vehicle_rates" ON public.governed_vehicle_rates;
 CREATE POLICY "Allow service role full access on governed_vehicle_rates"
   ON public.governed_vehicle_rates FOR ALL TO service_role USING (true) WITH CHECK (true);
 
+DROP POLICY IF EXISTS "Allow service role full access on vehicle_fleet_availability" ON public.vehicle_fleet_availability;
 CREATE POLICY "Allow service role full access on vehicle_fleet_availability"
   ON public.vehicle_fleet_availability FOR ALL TO service_role USING (true) WITH CHECK (true);
+
