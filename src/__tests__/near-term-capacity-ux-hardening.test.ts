@@ -316,7 +316,7 @@ describe("OpsPilot Level C — Decision UX Hardening", () => {
       expect(card).not.toMatch(/🤖 AI ĐỀ XUẤT\s*\n\s*NO_ACTION_MONITOR/);
     });
 
-    it("8. Manager decision card includes secondary technical tag [Mã kỹ thuật: NO_ACTION_MONITOR]", () => {
+    it("8. Manager decision card includes secondary technical tag in metadata block only", () => {
       const card = formatNearTermManagerCard(
         sampleRisk.warehouseName,
         sampleRisk,
@@ -325,10 +325,14 @@ describe("OpsPilot Level C — Decision UX Hardening", () => {
         sampleDecision
       );
 
-      expect(card).toContain("[Mã kỹ thuật: NO_ACTION_MONITOR]");
+      expect(card).toContain("🏷️ Mã kỹ thuật: NO_ACTION_MONITOR");
+      // Check that the AI ĐỀ XUẤT section does not contain the technical code
+      const aiSection = card.split("🤖 AI ĐỀ XUẤT")[1]?.split("📌 LÝ DO")[0] || "";
+      expect(aiSection).not.toContain("NO_ACTION_MONITOR");
+      expect(aiSection).toContain("CHƯA ĐIỀU THÊM XE TRONG 4 GIỜ TỚI");
     });
 
-    it("9. Manager decision card contains explicit NẾU APPROVE explanation", () => {
+    it("9. Manager decision card contains explicit NẾU APPROVE explanation without autonomous execution claims", () => {
       const card = formatNearTermManagerCard(
         sampleRisk.warehouseName,
         sampleRisk,
@@ -338,7 +342,11 @@ describe("OpsPilot Level C — Decision UX Hardening", () => {
       );
 
       expect(card).toContain("✅ NẾU APPROVE");
-      expect(card).toContain("Giữ nguyên bố trí hiện tại, tiếp tục theo dõi, OpsPilot không điều thêm xe / không can thiệp.");
+      expect(card).toContain("Ghi nhận quyết định:\nKhông bổ sung xe/năng lực tại thời điểm hiện tại.");
+      expect(card).toContain("Kho tiếp tục xử lý theo năng lực hiện có.");
+      expect(card).toContain("OpsPilot tiếp tục theo dõi tại checkpoint tiếp theo.");
+      // Strictly avoid phrasing that implies OpsPilot autonomously executes vehicle dispatch
+      expect(card).not.toContain("OpsPilot không điều thêm xe");
     });
 
     it("10. Manager decision card eliminates contradictory 'Nếu không làm / Nếu thực hiện' for NO_ACTION_MONITOR", () => {
@@ -376,7 +384,7 @@ describe("OpsPilot Level C — Decision UX Hardening", () => {
       );
 
       expect(card).toContain("ĐIỀU ĐỘNG THÊM XE TĂNG CƯỜNG");
-      expect(card).toContain("[Mã kỹ thuật: ADD_VEHICLE]");
+      expect(card).toContain("🏷️ Mã kỹ thuật: ADD_VEHICLE");
       expect(card).toContain("Nếu không làm:");
       expect(card).toContain("Nếu thực hiện:");
     });

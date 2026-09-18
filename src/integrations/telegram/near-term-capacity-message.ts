@@ -124,7 +124,7 @@ export const actionDisplayMetadata: Record<
   NO_ACTION_MONITOR: {
     title: "CHƯA ĐIỀU THÊM XE TRONG 4 GIỜ TỚI",
     subtitle: "Tiếp tục xử lý bằng năng lực hiện tại và theo dõi lại tại checkpoint tiếp theo.",
-    approveMeaning: "Giữ nguyên bố trí hiện tại, tiếp tục theo dõi, OpsPilot không điều thêm xe / không can thiệp.",
+    approveMeaning: "Phê duyệt quyết định không bổ sung xe/năng lực tại thời điểm hiện tại và tiếp tục theo dõi.",
   },
   ADD_VEHICLE: {
     title: "ĐIỀU ĐỘNG THÊM XE TĂNG CƯỜNG",
@@ -214,13 +214,24 @@ export function formatNearTermManagerCard(
     "🤖 AI ĐỀ XUẤT",
     escape(displayMeta.title),
     escape(displayMeta.subtitle),
-    `[Mã kỹ thuật: ${escape(decision.recommended_action)}]`,
     "",
     "📌 LÝ DO",
     escape(decision.reason_summary),
     "",
-    "✅ NẾU APPROVE",
-    `• ${escape(displayMeta.approveMeaning)}`,
+    ...(isNoAction
+      ? [
+          "✅ NẾU APPROVE",
+          "",
+          "Ghi nhận quyết định:",
+          "Không bổ sung xe/năng lực tại thời điểm hiện tại.",
+          "",
+          "Kho tiếp tục xử lý theo năng lực hiện có.",
+          "OpsPilot tiếp tục theo dõi tại checkpoint tiếp theo.",
+        ]
+      : [
+          "✅ NẾU APPROVE",
+          `• ${escape(displayMeta.approveMeaning)}`,
+        ]),
     "",
     ...impactLines,
     "",
@@ -229,5 +240,6 @@ export function formatNearTermManagerCard(
     `💰 Trade-off: ${money}`,
     `🧾 Evidence: ${escape(facts.capturedAt)}`,
     `🎯 Confidence: ${Math.round(decision.confidence * 100)}%`,
+    `🏷️ Mã kỹ thuật: ${escape(decision.recommended_action)}`,
   ].join("\n");
 }
