@@ -243,10 +243,15 @@ export async function GET(request: NextRequest) {
       });
     }
 
-    if (action === "diagnostic" || action === "audit-weight") {
+    if (action === "diagnostic" || action === "audit-weight" || action === "checkpoint-observation") {
       const [
-        { data: activeCases },
-        { data: sampleOrders },
+        { data: allCases },
+        { data: checkpointAudits },
+        { data: phase2Work },
+        { data: recentEvents },
+        { data: shadowCandidates },
+        { data: checkpointTelemetry },
+        { data: detectorTelemetry },
         { count: totalOrdersCount },
         { count: ordersWithWeight },
         { count: ordersWithoutWeight },
@@ -254,10 +259,14 @@ export async function GET(request: NextRequest) {
         { data: scopes },
         { data: groups },
         { data: topics },
-        { data: detectorCandidates },
       ] = await Promise.all([
-        db.from("near_term_capacity_cases").select("id, warehouse_id, warehouse_name, status, active, decision_id, created_at").eq("active", true),
-        db.from("order_snapshots").select("id, order_code, warehouse_id, warehouse_name, weight_grams, weight_kg, reason_code, sync_run_id").limit(10),
+        db.from("near_term_capacity_cases").select("*").order("created_at", { ascending: false }).limit(10),
+        db.from("checkpoint_dispatch_audits").select("*").order("checkpoint_at", { ascending: false }).limit(5),
+        db.from("phase2_checkpoint_work").select("*").order("checkpoint_at", { ascending: false }).limit(5),
+        db.from("near_term_capacity_events").select("*").order("created_at", { ascending: false }).limit(25),
+        db.from("near_term_capacity_shadow_candidates").select("*").order("created_at", { ascending: false }).limit(25),
+        db.from("near_term_capacity_checkpoint_telemetry").select("*").order("checkpoint_at", { ascending: false }).limit(5),
+        db.from("near_term_capacity_detector_telemetry").select("*").order("created_at", { ascending: false }).limit(60),
         db.from("order_snapshots").select("*", { count: "exact", head: true }),
         db.from("order_snapshots").select("*", { count: "exact", head: true }).not("weight_kg", "is", null),
         db.from("order_snapshots").select("*", { count: "exact", head: true }).is("weight_kg", null),
@@ -265,25 +274,28 @@ export async function GET(request: NextRequest) {
         db.from("telegram_user_scopes").select("*"),
         db.from("telegram_pilot_groups").select("*"),
         db.from("telegram_pilot_topics").select("*"),
-        db.from("near_term_capacity_detector_telemetry").select("warehouse, incident_key, affected_order_count, current_kg, checkpoint_at").eq("detector_result", "CANDIDATE"),
       ]);
 
       return NextResponse.json({
         ok: true,
         action: "diagnostic",
         timestamp: new Date().toISOString(),
-        activeCases: activeCases || [],
+        allCases: allCases || [],
+        checkpointAudits: checkpointAudits || [],
+        phase2Work: phase2Work || [],
+        recentEvents: recentEvents || [],
+        shadowCandidates: shadowCandidates || [],
+        checkpointTelemetry: checkpointTelemetry || [],
+        detectorTelemetry: detectorTelemetry || [],
         orderSnapshots: {
           total: totalOrdersCount || 0,
           withWeight: ordersWithWeight || 0,
           withoutWeight: ordersWithoutWeight || 0,
-          sample: sampleOrders || [],
         },
         pilotMembers: members || [],
         pilotScopes: scopes || [],
         pilotGroups: groups || [],
         pilotTopics: topics || [],
-        detectorCandidates: detectorCandidates || [],
       });
     }
 
