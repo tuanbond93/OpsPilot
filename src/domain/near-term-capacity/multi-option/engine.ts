@@ -2,7 +2,7 @@ import type { CurrentRisk, LeadFact } from "../loop";
 import type { MultiOptionDecisionResult } from "./types";
 export type { MultiOptionDecisionResult };
 import { evaluateRootCause } from "./root-cause";
-import { generateCandidateOptions } from "./option-registry";
+import { generateCandidateOptions, resolveRequestedInformation } from "./option-registry";
 import { buildMultiOptionMatrix } from "./matrix";
 import { critiqueMultiOptionRecommendation } from "./critic";
 
@@ -41,11 +41,25 @@ export async function runMultiOptionEvaluation(
 
   let requested_information: string[] | undefined = undefined;
 
-  const missing_data: string[] = [
-    "Biểu phí xe ngoài / xe tăng cường chưa có trong hệ thống",
-    "Dữ liệu tải trọng và khả dụng thực tế của đội xe chưa kết nối",
-    "Công suất phân loại/bốc xếp theo giờ tại trạm chưa được đo lường",
-  ];
+  const hasRate = Boolean(
+    (vehicleEvidence?.rates && vehicleEvidence.rates.some((r: any) => r.rate_vnd !== null && r.evidence_status !== "UNKNOWN")) ||
+    (vehicleEvidence?.rate && vehicleEvidence.rate.rate_vnd !== null && vehicleEvidence.rate.evidence_status !== "UNKNOWN")
+  );
+  const hasVehicleClass = Boolean(
+    vehicleEvidence?.capacity &&
+    vehicleEvidence.capacity.usable_payload_kg !== null &&
+    vehicleEvidence.capacity.evidence_status !== "UNKNOWN"
+  );
+
+  const missing_data: string[] = [];
+  if (!hasRate) {
+    missing_data.push("Biểu phí xe ngoài / xe tăng cường chưa có trong hệ thống");
+  }
+  if (!hasVehicleClass) {
+    missing_data.push("Thông số tải trọng xe chuẩn hóa chưa có trong hệ thống");
+  }
+  missing_data.push("Dữ liệu tải trọng và khả dụng thực tế của đội xe chưa kết nối");
+  missing_data.push("Công suất phân loại/bốc xếp theo giờ tại trạm chưa được đo lường");
 
   if (
     rootCause.category === "NO_MATERIAL_GAP" ||
@@ -70,16 +84,15 @@ export async function runMultiOptionEvaluation(
     recommended_option = "REQUEST_MORE_INFORMATION";
     recommendation_reason =
       "Tồn kho dồn ứ lớn nhưng trạm thiếu các dữ liệu nền tảng về đội xe, định mức chi phí và công suất giải tỏa; cần yêu cầu bổ sung thông tin vận hành trước khi quyết định can thiệp nguồn lực.";
-    tradeoff_summary =
-      "Cần bổ sung: (1) số lượng xe khả dụng, (2) tải trọng xe, (3) giờ xe đến, (4) năng suất trạm, (5) hạn SLA đơn hàng trước khi có thể kết luận phương án tối ưu.";
+    if (hasVehicleClass && hasRate) {
+      tradeoff_summary =
+        "Đã có biểu phí và tải trọng quy chuẩn (TRUCK_1_9T, 1600 kg); cần bổ sung: (1) số lượng xe khả dụng, (2) khả dụng nhà cung cấp, (3) giờ xe đến sớm nhất, (4) năng suất trạm, (5) hạn SLA đơn hàng trước khi có thể kết luận phương án tối ưu.";
+    } else {
+      tradeoff_summary =
+        "Cần bổ sung: (1) số lượng xe khả dụng, (2) tải trọng xe, (3) giờ xe đến, (4) năng suất trạm, (5) hạn SLA đơn hàng trước khi có thể kết luận phương án tối ưu.";
+    }
     confidence = 0.75;
-    requested_information = [
-      "current available vehicle count",
-      "vehicle class/capacity",
-      "estimated arrival time",
-      "station clearance throughput",
-      "order SLA deadlines",
-    ];
+    requested_information = resolveRequestedInformation(vehicleEvidence);
   } else if (rootCause.category === "INCOMING_VOLUME_RISK") {
     recommended_option = "REQUEST_MORE_INFORMATION";
     recommendation_reason =

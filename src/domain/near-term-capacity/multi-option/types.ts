@@ -1,4 +1,5 @@
 import type { CapacityAction, CurrentRisk, LeadFact } from "../loop";
+import type { RateBasis } from "./sources/vehicle-source-adapter";
 
 export type RootCauseCategory =
   | "TRANSPORT_CAPACITY_SHORTAGE"
@@ -42,6 +43,10 @@ export interface DecisionOptionCost {
   value_vnd?: number | null;
   evidence_status: OptionCostStatus;
   source: string | null;
+  rate_basis?: RateBasis | null;
+  supplier_name?: string | null;
+  contract_ref?: string | null;
+  provenance_status?: string | null;
   notes?: string;
 }
 
@@ -65,9 +70,13 @@ export type SlaEvidenceStatus = "MEASURED" | "GOVERNED" | "MODELED" | "UNKNOWN";
 
 export interface DecisionOptionSla {
   projected_effect: SlaProjectedEffect;
+  /** Alias for projected_effect */
+  delivery_sla_effect?: SlaProjectedEffect;
   projected_clearance_at: string | null;
   breach_risk: SlaBreachRisk;
   evidence_status: SlaEvidenceStatus;
+  /** Alias for evidence_status */
+  status?: SlaEvidenceStatus;
   confidence: number;
   evidence: string[];
 }

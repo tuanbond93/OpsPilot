@@ -13,6 +13,40 @@ export const REQUESTED_INFORMATION_ITEMS = [
   "order SLA deadlines",
 ];
 
+export function resolveRequestedInformation(
+  vehicleEvidence?: VehicleEconomicsAndCapacityResult | null
+): string[] {
+  const items: string[] = [];
+
+  const hasVehicleClass = Boolean(
+    vehicleEvidence?.capacity &&
+    vehicleEvidence.capacity.usable_payload_kg !== null &&
+    vehicleEvidence.capacity.evidence_status !== "UNKNOWN"
+  );
+  if (!hasVehicleClass) {
+    items.push("vehicle class/capacity");
+  }
+
+  const hasRate = Boolean(
+    (vehicleEvidence?.rates && vehicleEvidence.rates.some((r) => r.rate_vnd !== null && r.evidence_status !== "UNKNOWN")) ||
+    (vehicleEvidence?.rate && vehicleEvidence.rate.rate_vnd !== null && vehicleEvidence.rate.evidence_status !== "UNKNOWN")
+  );
+  if (!hasRate) {
+    items.push("vehicle monthly rate");
+  }
+
+  items.push("currently available vehicle count");
+  items.push("current available vehicle count");
+  items.push("supplier/vehicle availability");
+  items.push("earliest available time");
+  items.push("estimated arrival time");
+  items.push("station clearance throughput");
+  items.push("order SLA deadlines");
+  items.push("order-level SLA deadlines");
+
+  return items;
+}
+
 export function generateCandidateOptions(
   facts: CurrentRisk,
   lead: LeadFact | null,
@@ -93,7 +127,7 @@ export function generateCandidateOptions(
       }
     } else if (availability.evidence_status === "UNKNOWN") {
       addVehicleFeasibility = "CONDITIONALLY_FEASIBLE";
-      addVehicleFeasibilityReason = "Nguồn dữ liệu khả dụng xe chưa kết nối; thiếu căn cứ xác nhận xe sẵn sàng điều động";
+      addVehicleFeasibilityReason = "Chưa xác nhận khả dụng xe hoặc giờ xe đến sớm nhất; nguồn dữ liệu khả dụng đội xe chưa kết nối";
       addVehicleFeasibilityEvidence = "Thiếu kết nối nguồn dữ liệu khả dụng đội xe";
     }
   }
@@ -144,7 +178,7 @@ export function generateCandidateOptions(
     const supplierLabel = rateItem?.supplier_name ? ` (${rateItem.supplier_name})` : "";
 
     options.push({
-      option_id: candidateRates.length > 1 ? `OPT_ADD_VEHICLE${supplierSlug}` : "OPT_ADD_VEHICLE",
+      option_id: supplierSlug ? `OPT_ADD_VEHICLE${supplierSlug}` : "OPT_ADD_VEHICLE",
       option_type: "ADD_VEHICLE",
       description: `Điều động thêm phương tiện vận tải tăng cường${supplierLabel} để giải tỏa lượng hàng dồn ứ.`,
       feasibility_status: addVehicleFeasibility,
@@ -258,10 +292,12 @@ export function generateCandidateOptions(
   const requestCapacity = evaluateOptionCapacity("REQUEST_MORE_INFORMATION", facts, lead);
   const requestSla = evaluateOptionSla("REQUEST_MORE_INFORMATION", facts, lead, rootCause);
 
+  const requestedItems = resolveRequestedInformation(vehicleEvidence);
+
   options.push({
     option_id: "OPT_REQUEST_MORE_INFORMATION",
     option_type: "REQUEST_MORE_INFORMATION",
-    description: `Yêu cầu bổ sung dữ liệu vận hành còn thiếu: ${REQUESTED_INFORMATION_ITEMS.join(", ")}.`,
+    description: `Yêu cầu bổ sung dữ liệu vận hành còn thiếu: ${requestedItems.join(", ")}.`,
     feasibility_status: "FEASIBLE",
     feasibility_reason: null,
     feasibility_evidence: "Kênh tương tác Telegram và hệ thống thu thập facts đang hoạt động ổn định",

@@ -164,7 +164,18 @@ export class GovernedVehicleSourceAdapter implements VehicleSourceAdapter {
     }
 
     const availability = this.getInMemoryAvailability(warehouseId);
-    const targetClass = vehicleClass || availability.vehicle_class || "STANDARD_EXTERNAL_TRUCK";
+    let targetClass = vehicleClass || availability.vehicle_class;
+    if (!targetClass) {
+      const matched = (this.config.rates || []).find(
+        (r) => !r.is_stale && (!r.warehouse_or_scope || r.warehouse_or_scope === warehouseId)
+      );
+      if (matched) {
+        targetClass = matched.vehicle_class;
+      }
+    }
+    if (!targetClass) {
+      targetClass = "TRUCK_1_9T";
+    }
     const rates = this.getInMemoryRates(warehouseId, targetClass);
     const rate = rates.find((r) => r.warehouse_or_scope === warehouseId) || rates[0] || {
       vehicle_class: targetClass,
@@ -578,7 +589,26 @@ export class GovernedVehicleSourceAdapter implements VehicleSourceAdapter {
 
   private async queryDbEvidence(warehouseId: string, vehicleClass?: string): Promise<VehicleEconomicsAndCapacityResult> {
     const availability = await this.queryDbAvailability(warehouseId);
-    const targetClass = vehicleClass || availability.vehicle_class || "STANDARD_EXTERNAL_TRUCK";
+    let targetClass = vehicleClass || availability.vehicle_class;
+    if (!targetClass) {
+      try {
+        const { data: rateRows } = await this.config.db!
+          .from("governed_vehicle_rates")
+          .select("vehicle_class")
+          .eq("warehouse_id", warehouseId)
+          .is("expires_at", null)
+          .limit(1);
+        if (rateRows && rateRows.length > 0 && rateRows[0].vehicle_class) {
+          targetClass = rateRows[0].vehicle_class;
+        }
+      } catch {
+        // Fallback to default
+      }
+    }
+    if (!targetClass) {
+      targetClass = "TRUCK_1_9T";
+    }
+
     const [rates, capacity] = await Promise.all([
       this.queryDbRates(warehouseId, targetClass),
       this.queryDbCapacity(targetClass),

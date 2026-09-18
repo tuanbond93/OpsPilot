@@ -36,6 +36,10 @@ export function evaluateOptionCost(
           value_vnd: rateEvidence.rate_vnd,
           evidence_status: rateEvidence.evidence_status,
           source: rateEvidence.source_ref,
+          rate_basis: rateEvidence.rate_basis,
+          supplier_name: rateEvidence.supplier_name || null,
+          contract_ref: rateEvidence.contract_ref || null,
+          provenance_status: rateEvidence.provenance_status || null,
           notes: `Áp dụng định mức chi phí (${rateEvidence.vehicle_class}, cơ sở tính: ${rateEvidence.rate_basis || "chuyến"}).`,
         };
       }

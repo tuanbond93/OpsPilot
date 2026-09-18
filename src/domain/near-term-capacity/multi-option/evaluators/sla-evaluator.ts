@@ -21,9 +21,11 @@ export function evaluateOptionSla(
     case "NO_ACTION_MONITOR":
       return {
         projected_effect: "UNKNOWN",
+        delivery_sla_effect: "UNKNOWN",
         projected_clearance_at: null,
         breach_risk: "UNKNOWN",
         evidence_status: "UNKNOWN",
+        status: "UNKNOWN",
         confidence: 0.2,
         evidence: [
           "Thiếu hạn cam kết SLA chi tiết từng đơn hàng",
@@ -37,9 +39,11 @@ export function evaluateOptionSla(
       // Order-level SLA delivery deadlines and station clearance throughput are required.
       return {
         projected_effect: "UNKNOWN",
+        delivery_sla_effect: "UNKNOWN",
         projected_clearance_at: null,
         breach_risk: "UNKNOWN",
         evidence_status: "UNKNOWN",
+        status: "UNKNOWN",
         confidence: 0.2,
         evidence: [
           "Tăng năng lực phương tiện chưa thể suy diễn thành cải thiện SLA khi chưa có hạn cam kết SLA chi tiết từng đơn và công suất phân loại/giải tỏa trạm",
@@ -50,9 +54,11 @@ export function evaluateOptionSla(
     case "REQUEST_MORE_INFORMATION":
       return {
         projected_effect: "UNKNOWN",
+        delivery_sla_effect: "UNKNOWN",
         projected_clearance_at: null,
         breach_risk: "UNKNOWN",
         evidence_status: "UNKNOWN",
+        status: "UNKNOWN",
         confidence: 0.2,
         evidence: [
           "Yêu cầu thêm dữ liệu về hạn SLA và năng suất trạm để đánh giá tác động",
@@ -62,9 +68,11 @@ export function evaluateOptionSla(
     default:
       return {
         projected_effect: "UNKNOWN",
+        delivery_sla_effect: "UNKNOWN",
         projected_clearance_at: null,
         breach_risk: "UNKNOWN",
         evidence_status: "UNKNOWN",
+        status: "UNKNOWN",
         confidence: 0.1,
         evidence: ["Thiếu dữ liệu đo lường SLA và năng lực xử lý"],
       };
