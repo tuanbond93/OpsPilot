@@ -1,7 +1,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { logger } from "@/observability/logger";
 import type { CurrentRisk, LeadFact, MultiOptionDecisionResult } from "@/domain/near-term-capacity";
-import { runMultiOptionEvaluation } from "@/domain/near-term-capacity";
+import { runMultiOptionEvaluation, GovernedVehicleSourceAdapter } from "@/domain/near-term-capacity";
 
 export function isMultiOptionShadowEnabled(): boolean {
   return process.env.NEAR_TERM_CAPACITY_MULTI_OPTION_SHADOW_ENABLED === "true";
@@ -29,7 +29,11 @@ export class NearTermCapacityMultiOptionShadowService {
     }
 
     try {
-      const result = await runMultiOptionEvaluation(facts, lead, { caseId });
+      const vehicleSourceAdapter = new GovernedVehicleSourceAdapter({ db: this.db });
+      const result = await runMultiOptionEvaluation(facts, lead, {
+        caseId,
+        vehicleSourceAdapter,
+      });
 
       // Persist strictly as an observation event in near_term_capacity_events
       const eventPayload = {

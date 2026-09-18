@@ -6,9 +6,13 @@ import { generateCandidateOptions } from "./option-registry";
 import { buildMultiOptionMatrix } from "./matrix";
 import { critiqueMultiOptionRecommendation } from "./critic";
 
+import type { VehicleSourceAdapter } from "./sources/vehicle-source-adapter";
+import { GovernedVehicleSourceAdapter } from "./sources/vehicle-source-adapter";
+
 export interface MultiOptionEngineConfig {
   caseId?: string;
   enableGemini?: boolean;
+  vehicleSourceAdapter?: VehicleSourceAdapter;
 }
 
 export async function runMultiOptionEvaluation(
@@ -17,12 +21,14 @@ export async function runMultiOptionEvaluation(
   config: MultiOptionEngineConfig = {}
 ): Promise<MultiOptionDecisionResult> {
   const caseId = config.caseId || "shadow-case";
+  const vehicleAdapter = config.vehicleSourceAdapter || new GovernedVehicleSourceAdapter();
+  const vehicleEvidence = await vehicleAdapter.getVehicleEvidence(facts.warehouseId);
 
   // 1. Root cause hypothesis
   const rootCause = evaluateRootCause(facts, lead);
 
   // 2. Deterministic candidate generation
-  const candidates = generateCandidateOptions(facts, lead, rootCause);
+  const candidates = generateCandidateOptions(facts, lead, rootCause, vehicleEvidence);
 
   // 3. Build comparison matrix
   const matrix = buildMultiOptionMatrix(caseId, facts, rootCause, candidates);
@@ -109,6 +115,8 @@ export async function runMultiOptionEvaluation(
     recommendation_reason = `Đề xuất bị Critic từ chối vì vi phạm tiêu chuẩn bằng chứng: ${critic.flags.join("; ")}`;
   }
 
+  const addVehicle = candidates.find((c) => c.option_type === "ADD_VEHICLE");
+
   return {
     decision_case_id: caseId,
     root_cause: rootCause,
@@ -122,5 +130,8 @@ export async function runMultiOptionEvaluation(
     critic_flags: critic.flags,
     missing_data,
     requested_information,
+    capacity_gap_before: addVehicle?.capacity.capacity_gap_before || "UNKNOWN",
+    capacity_gap_after: addVehicle?.capacity.capacity_gap_after || "UNKNOWN",
+    projected_incremental_cost_difference: addVehicle?.projected_cost_difference_display || "UNKNOWN",
   };
 }

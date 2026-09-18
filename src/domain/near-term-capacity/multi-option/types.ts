@@ -24,7 +24,8 @@ export type FeasibilityStatus =
   | "FEASIBLE"
   | "CONDITIONALLY_FEASIBLE"
   | "INFEASIBLE"
-  | "UNKNOWN";
+  | "UNKNOWN"
+  | "FEASIBILITY_UNKNOWN";
 
 export type EconomicStatus = "JUSTIFIED" | "NOT_JUSTIFIED" | "UNKNOWN";
 
@@ -97,6 +98,8 @@ export interface DecisionOption {
   confidence: number;
   /** Convenience boolean: true only when feasibility_status === "FEASIBLE" */
   feasible: boolean;
+  projected_incremental_cost_difference?: number | null;
+  projected_cost_difference_display?: string;
 }
 
 export interface MultiOptionMatrixRow {
@@ -109,6 +112,7 @@ export interface MultiOptionMatrixRow {
   economic_evidence?: string | null;
   incremental_cost_display: string;
   cost_display?: string;
+  projected_cost_diff_display?: string;
   capacity_impact: string;
   sla_impact: string;
   main_risk: string;
@@ -138,6 +142,9 @@ export interface MultiOptionDecisionResult {
   critic_flags: string[];
   missing_data: string[];
   requested_information?: string[];
+  capacity_gap_before?: string | null;
+  capacity_gap_after?: string | null;
+  projected_incremental_cost_difference?: string | null;
   persistedEventId?: string;
   generatedAt?: string;
 }

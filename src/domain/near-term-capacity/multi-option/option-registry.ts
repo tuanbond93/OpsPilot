@@ -1,8 +1,9 @@
 import type { CurrentRisk, LeadFact } from "../loop";
-import type { DecisionOption, RootCauseEvaluation } from "./types";
-import { evaluateOptionCost } from "./evaluators/cost-evaluator";
+import type { DecisionOption, EconomicStatus, FeasibilityStatus, RootCauseEvaluation } from "./types";
+import { evaluateOptionCost, computeProjectedCostDifference } from "./evaluators/cost-evaluator";
 import { evaluateOptionCapacity } from "./evaluators/capacity-evaluator";
 import { evaluateOptionSla } from "./evaluators/sla-evaluator";
+import type { VehicleEconomicsAndCapacityResult } from "./sources/vehicle-source-adapter";
 
 export const REQUESTED_INFORMATION_ITEMS = [
   "current available vehicle count",
@@ -15,7 +16,8 @@ export const REQUESTED_INFORMATION_ITEMS = [
 export function generateCandidateOptions(
   facts: CurrentRisk,
   lead: LeadFact | null,
-  rootCause: RootCauseEvaluation
+  rootCause: RootCauseEvaluation,
+  vehicleEvidence?: VehicleEconomicsAndCapacityResult | null
 ): DecisionOption[] {
   const options: DecisionOption[] = [];
 
@@ -51,6 +53,8 @@ export function generateCandidateOptions(
     cost: noActionCost,
     capacity: noActionCapacity,
     sla: noActionSla,
+    projected_incremental_cost_difference: 0,
+    projected_cost_difference_display: "0 đ (Baseline)",
     operational_effect: {
       description: "Không phát sinh chi phí vận chuyển ngoài; trạm tiếp tục xuất hàng theo ca thường.",
     },
@@ -63,41 +67,98 @@ export function generateCandidateOptions(
   });
 
   // 2. ADD_VEHICLE
-  // Feasibility is CONDITIONALLY_FEASIBLE because vehicle availability, class, and schedule are unevidenced.
-  // Economic justification is UNKNOWN: no governed rate matrix exists in the codebase.
-  const addVehicleCost = evaluateOptionCost("ADD_VEHICLE", facts, lead);
-  const addVehicleCapacity = evaluateOptionCapacity("ADD_VEHICLE", facts, lead);
+  // Availability logic:
+  // - If available: FEASIBLE
+  // - If conditional/unconfirmed/missing: CONDITIONALLY_FEASIBLE / UNKNOWN (not FEASIBLE)
+  // - If none available (available: false): INFEASIBLE (unavailable vehicle cannot be selected)
+  const availability = vehicleEvidence?.availability;
+  let addVehicleFeasibility: FeasibilityStatus = "CONDITIONALLY_FEASIBLE";
+  let addVehicleFeasibilityReason: string | null = "Chưa xác nhận khả dụng xe, tải trọng và thời gian đến trạm";
+  let addVehicleFeasibilityEvidence: string | null = "Mô hình vận tải xe ngoài có thể thực hiện nhưng chưa có dữ liệu định vị/lịch trình xe";
+
+  if (availability) {
+    if (availability.available === false) {
+      addVehicleFeasibility = "INFEASIBLE";
+      addVehicleFeasibilityReason = "Không có phương tiện vận tải khả dụng tại trạm hoặc khu vực lân cận";
+      addVehicleFeasibilityEvidence = `Nguồn dữ liệu đội xe xác nhận xe không khả dụng (ref: ${availability.source_ref || "fleet_roster"})`;
+    } else if (availability.available === true) {
+      if (availability.evidence_status === "GOVERNED" || availability.evidence_status === "MEASURED") {
+        addVehicleFeasibility = "FEASIBLE";
+        addVehicleFeasibilityReason = null;
+        addVehicleFeasibilityEvidence = `Phương tiện ${availability.vehicle_id || availability.vehicle_class || "được chỉ định"} sẵn sàng điều động (ref: ${availability.source_ref})`;
+      } else {
+        addVehicleFeasibility = "CONDITIONALLY_FEASIBLE";
+        addVehicleFeasibilityReason = "Khả dụng xe chưa được xác nhận bởi nguồn đo lường chính thức";
+        addVehicleFeasibilityEvidence = `Dữ liệu khả dụng mang tính mô hình (ref: ${availability.source_ref})`;
+      }
+    } else if (availability.evidence_status === "UNKNOWN") {
+      addVehicleFeasibility = "CONDITIONALLY_FEASIBLE";
+      addVehicleFeasibilityReason = "Nguồn dữ liệu khả dụng xe chưa kết nối; thiếu căn cứ xác nhận xe sẵn sàng điều động";
+      addVehicleFeasibilityEvidence = "Thiếu kết nối nguồn dữ liệu khả dụng đội xe";
+    }
+  }
+
+  const addVehicleCost = evaluateOptionCost("ADD_VEHICLE", facts, lead, vehicleEvidence?.rate);
+  const addVehicleCapacity = evaluateOptionCapacity("ADD_VEHICLE", facts, lead, vehicleEvidence?.capacity);
   const addVehicleSla = evaluateOptionSla("ADD_VEHICLE", facts, lead, rootCause);
+  const costDiff = computeProjectedCostDifference(addVehicleCost, noActionCost);
+
+  let addVehicleEconomicStatus: EconomicStatus = "UNKNOWN";
+  let addVehicleEconomicReason: string | null = "Chưa có biểu phí định mức xe ngoài hoặc ngưỡng kinh tế quy chuẩn để đối soát";
+  let addVehicleEconomicEvidence: string | null = "Thiếu biểu phí xe ngoài để tính toán hiệu quả kinh tế";
+
+  if (
+    addVehicleCost.evidence_status === "UNKNOWN" ||
+    addVehicleCost.incremental_cost_vnd === null ||
+    addVehicleCapacity.status === "UNKNOWN" ||
+    addVehicleCapacity.added_kg === null
+  ) {
+    addVehicleEconomicStatus = "UNKNOWN";
+    addVehicleEconomicReason = "Chưa có biểu phí định mức hoặc tải trọng xe chuẩn hóa để đối soát hiệu quả kinh tế";
+    addVehicleEconomicEvidence = "Thiếu dữ liệu kinh tế/năng lực quy chuẩn";
+  } else {
+    const backlogKg = facts.currentKg ?? 0;
+    if (backlogKg <= 0) {
+      addVehicleEconomicStatus = "NOT_JUSTIFIED";
+      addVehicleEconomicReason = `Chi phí ${addVehicleCost.incremental_cost_vnd.toLocaleString("vi-VN")} đ phát sinh không cần thiết vì tồn kho (${backlogKg} kg) không có khoảng trống năng lực đáng kể.`;
+      addVehicleEconomicEvidence = `Biểu phí ${addVehicleCost.source}: chi phí vượt quá nhu cầu giải tỏa`;
+    } else {
+      addVehicleEconomicStatus = "JUSTIFIED";
+      addVehicleEconomicReason = `Chi phí can thiệp dự kiến ${addVehicleCost.incremental_cost_vnd.toLocaleString("vi-VN")} đ bù đắp khoảng trống năng lực (${addVehicleCapacity.added_kg} kg bổ sung) theo biểu phí định mức đã ban hành.`;
+      addVehicleEconomicEvidence = `Căn cứ biểu phí ${addVehicleCost.source} và tải trọng quy chuẩn ${addVehicleCapacity.status}`;
+    }
+  }
 
   options.push({
     option_id: "OPT_ADD_VEHICLE",
     option_type: "ADD_VEHICLE",
     description: "Điều động thêm phương tiện vận tải tăng cường để giải tỏa lượng hàng dồn ứ.",
-    feasibility_status: "CONDITIONALLY_FEASIBLE",
-    feasibility_reason: "Chưa xác nhận khả dụng xe, tải trọng và thời gian đến trạm",
-    feasibility_evidence: "Mô hình vận tải xe ngoài có thể thực hiện nhưng chưa có dữ liệu định vị/lịch trình xe",
-    infeasible_reason: null,
+    feasibility_status: addVehicleFeasibility,
+    feasibility_reason: addVehicleFeasibilityReason,
+    feasibility_evidence: addVehicleFeasibilityEvidence,
+    infeasible_reason: addVehicleFeasibility === "INFEASIBLE" ? addVehicleFeasibilityReason : null,
     economic: {
-      status: "UNKNOWN",
-      reason: "Chưa có biểu phí định mức xe ngoài hoặc ngưỡng kinh tế quy chuẩn để đối soát",
+      status: addVehicleEconomicStatus,
+      reason: addVehicleEconomicReason,
     },
-    economic_status: "UNKNOWN",
-    economic_reason: "Chưa có biểu phí định mức xe ngoài hoặc ngưỡng kinh tế quy chuẩn để đối soát",
-    economic_evidence: "Thiếu biểu phí xe ngoài để tính toán hiệu quả kinh tế",
-    // feasible boolean is true ONLY when feasibility_status === "FEASIBLE"
-    feasible: false,
+    economic_status: addVehicleEconomicStatus,
+    economic_reason: addVehicleEconomicReason,
+    economic_evidence: addVehicleEconomicEvidence,
+    feasible: addVehicleFeasibility === "FEASIBLE",
     evidence_refs: facts.evidenceRefs || [],
     cost: addVehicleCost,
     capacity: addVehicleCapacity,
     sla: addVehicleSla,
+    projected_incremental_cost_difference: costDiff.difference_vnd,
+    projected_cost_difference_display: costDiff.display,
     operational_effect: {
       description: "Bổ sung xe để tăng năng lực xuất hàng ra khỏi trạm trong ca.",
     },
     assumptions: ["Có xe ngoài hoặc xe trung chuyển khả dụng trong khu vực"],
     unknowns: [
-      "Chưa có biểu phí xe ngoài được chuẩn hóa",
-      "Chưa có dữ liệu định vị và thời gian xe có thể đến trạm",
-      "Chưa xác định tải trọng xe khả dụng",
+      ...(addVehicleCost.evidence_status === "UNKNOWN" ? ["Chưa có biểu phí xe ngoài được chuẩn hóa"] : []),
+      ...(!availability || availability.evidence_status === "UNKNOWN" ? ["Chưa có dữ liệu định vị và thời gian xe có thể đến trạm"] : []),
+      ...(addVehicleCapacity.status === "UNKNOWN" ? ["Chưa xác định tải trọng xe khả dụng"] : []),
     ],
     risks: [
       "Chi phí xe ngoài chưa xác định có thể gây lãng phí nếu tải gom thực tế không đủ",

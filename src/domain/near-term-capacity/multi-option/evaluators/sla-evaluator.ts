@@ -32,7 +32,9 @@ export function evaluateOptionSla(
       };
 
     case "ADD_VEHICLE":
-      // Missing vehicle capacity + missing dispatch schedule => CANNOT claim SLA IMPROVE
+      // STRICT GATE 3C.1 INVARIANT:
+      // Even if vehicle capacity is known/improved, SLA effect CANNOT be inferred from capacity improvement alone.
+      // Order-level SLA delivery deadlines and station clearance throughput are required.
       return {
         projected_effect: "UNKNOWN",
         projected_clearance_at: null,
@@ -40,7 +42,7 @@ export function evaluateOptionSla(
         evidence_status: "UNKNOWN",
         confidence: 0.2,
         evidence: [
-          "Chưa rõ tải trọng và giờ xe đến trạm nên chưa thể chứng minh mức độ cải thiện SLA",
+          "Tăng năng lực phương tiện chưa thể suy diễn thành cải thiện SLA khi chưa có hạn cam kết SLA chi tiết từng đơn và công suất phân loại/giải tỏa trạm",
           "Thiếu hạn SLA của các đơn đang dồn ứ để đo lường tỷ lệ cứu đơn",
         ],
       };

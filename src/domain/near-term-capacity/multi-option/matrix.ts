@@ -29,6 +29,7 @@ export function buildMultiOptionMatrix(
       economic_evidence: opt.economic_evidence || null,
       incremental_cost_display: costText,
       cost_display: costText,
+      projected_cost_diff_display: opt.projected_cost_difference_display || "UNKNOWN",
       capacity_impact: capacityText,
       sla_impact: slaText,
       main_risk: mainRisk,

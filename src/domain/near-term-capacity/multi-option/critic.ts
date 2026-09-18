@@ -184,6 +184,16 @@ export function critiqueMultiOptionRecommendation(
     }
   }
 
+  // 10. Cost difference cannot be claimed as realized saving or ROI
+  if (
+    /\b(tiết kiệm|realized saving|roi|realized_saving)\b/i.test(fullText) &&
+    !/chưa chứng minh được tiết kiệm|không khẳng định tiết kiệm|chưa thể coi là tiết kiệm/i.test(fullText)
+  ) {
+    flags.push(
+      "UNSUPPORTED_SAVING_CLAIM: Projected incremental cost difference cannot be claimed as realized saving or ROI"
+    );
+  }
+
   // 10. Cost stated as specific fact without governed evidence
   if (
     chosen.cost.evidence_status === "UNKNOWN" &&
@@ -206,6 +216,36 @@ export function critiqueMultiOptionRecommendation(
     /\+\s*\d+(?:\.\d+)?\s*(?:kg|tấn|m3)/i.test(fullText)
   ) {
     flags.push("UNSUPPORTED_CAPACITY_PROJECTION");
+  }
+
+  // 13. Rejection of NO_ACTION_MONITOR selected solely because intervention evidence is missing
+  if (result.recommended_option === "NO_ACTION_MONITOR") {
+    const isMaterialRisk =
+      result.root_cause &&
+      result.root_cause.category !== "NO_MATERIAL_GAP" &&
+      result.root_cause.category !== "NO_MATERIAL_CAPACITY_GAP";
+
+    const interventionWithMissingEvidence = candidates.find(
+      (c) =>
+        c.option_type !== "NO_ACTION_MONITOR" &&
+        c.option_type !== "REQUEST_MORE_INFORMATION" &&
+        (c.cost.evidence_status === "UNKNOWN" || c.capacity.status === "UNKNOWN")
+    );
+
+    if (isMaterialRisk && interventionWithMissingEvidence) {
+      flags.push(
+        "DEFAULT_TO_NO_ACTION_ON_MISSING_EVIDENCE: Failure to prove intervention option due to missing evidence does not prove NO_ACTION_MONITOR is preferable. Must return REQUEST_MORE_INFORMATION or INSUFFICIENT_EVIDENCE."
+      );
+    }
+
+    if (
+      /(chưa có|thiếu)\s+(dữ liệu|biểu phí|thông tin|năng lực|khả năng|bằng chứng).*nên\s+(chọn|duy trì|khuyến nghị|ưu tiên)\s+(no_action|theo dõi|hiện trạng)/i.test(fullText) ||
+      /do (chưa có|thiếu)\s+(dữ liệu|biểu phí|thông tin).*chọn.*(no_action|theo dõi|hiện trạng)/i.test(fullText)
+    ) {
+      flags.push(
+        "DEFAULT_TO_NO_ACTION_ON_MISSING_EVIDENCE: Recommendation text indicates NO_ACTION_MONITOR was selected solely because intervention data is missing."
+      );
+    }
   }
 
   return {

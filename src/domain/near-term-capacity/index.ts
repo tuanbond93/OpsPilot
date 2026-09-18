@@ -7,5 +7,6 @@ export * from "./multi-option/critic";
 export * from "./multi-option/evaluators/cost-evaluator";
 export * from "./multi-option/evaluators/capacity-evaluator";
 export * from "./multi-option/evaluators/sla-evaluator";
+export * from "./multi-option/sources/vehicle-source-adapter";
 export * from "./multi-option/engine";
 

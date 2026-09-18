@@ -1,10 +1,12 @@
 import type { CapacityAction, CurrentRisk, LeadFact } from "../../loop";
 import type { DecisionOptionCost } from "../types";
+import type { VehicleRateEvidence } from "../sources/vehicle-source-adapter";
 
 export function evaluateOptionCost(
   optionType: CapacityAction | "REQUEST_MORE_INFORMATION",
   _facts: CurrentRisk,
-  _lead: LeadFact | null
+  _lead: LeadFact | null,
+  rateEvidence?: VehicleRateEvidence | null
 ): DecisionOptionCost {
   switch (optionType) {
     case "NO_ACTION_MONITOR":
@@ -28,12 +30,38 @@ export function evaluateOptionCost(
       };
 
     case "ADD_VEHICLE":
+      if (rateEvidence && rateEvidence.rate_vnd !== null && !rateEvidence.is_stale) {
+        return {
+          incremental_cost_vnd: rateEvidence.rate_vnd,
+          value_vnd: rateEvidence.rate_vnd,
+          evidence_status: rateEvidence.evidence_status,
+          source: rateEvidence.source_ref,
+          notes: `Áp dụng định mức chi phí (${rateEvidence.vehicle_class}, cơ sở tính: ${rateEvidence.rate_basis || "chuyến"}).`,
+        };
+      }
+      if (rateEvidence?.is_stale) {
+        return {
+          incremental_cost_vnd: null,
+          value_vnd: null,
+          evidence_status: "UNKNOWN",
+          source: rateEvidence.source_ref,
+          notes: rateEvidence.stale_reason || "Biểu phí đã hết hạn hoặc quá thời hạn hiệu lực.",
+        };
+      }
+      // STRICT RULE: UNKNOWN != 0. Must remain null with status UNKNOWN.
+      return {
+        incremental_cost_vnd: null,
+        value_vnd: null,
+        evidence_status: "UNKNOWN",
+        source: null,
+        notes: "Chưa có biểu phí định mức hoặc thỏa thuận giá khả dụng.",
+      };
+
     case "ADD_MANPOWER":
     case "REALLOCATE_AVAILABLE_CAPACITY":
     case "HOLD_LOW_PRIORITY_ECOM":
     case "HUMAN_INVESTIGATION_REQUIRED":
     default:
-      // STRICT RULE: UNKNOWN != 0. Must remain null with status UNKNOWN.
       return {
         incremental_cost_vnd: null,
         value_vnd: null,
@@ -52,4 +80,32 @@ export function formatCostDisplay(cost: DecisionOptionCost): string {
     return "0 đ (Chi phí can thiệp phát sinh)";
   }
   return `${cost.incremental_cost_vnd.toLocaleString("vi-VN")} đ`;
+}
+
+/**
+ * Calculates projected incremental cost difference: ADD_VEHICLE cost - NO_ACTION cost.
+ * STRICT RULE: If either cost is UNKNOWN, difference is UNKNOWN.
+ * NEVER label this as SAVING or ROI.
+ */
+export function computeProjectedCostDifference(
+  addVehicleCost: DecisionOptionCost,
+  noActionCost: DecisionOptionCost
+): { difference_vnd: number | null; display: string } {
+  if (
+    addVehicleCost.evidence_status === "UNKNOWN" ||
+    addVehicleCost.incremental_cost_vnd === null ||
+    noActionCost.evidence_status === "UNKNOWN" ||
+    noActionCost.incremental_cost_vnd === null
+  ) {
+    return {
+      difference_vnd: null,
+      display: "UNKNOWN",
+    };
+  }
+
+  const diff = addVehicleCost.incremental_cost_vnd - noActionCost.incremental_cost_vnd;
+  return {
+    difference_vnd: diff,
+    display: diff >= 0 ? `+${diff.toLocaleString("vi-VN")} đ` : `${diff.toLocaleString("vi-VN")} đ`,
+  };
 }
