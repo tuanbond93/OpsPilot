@@ -259,6 +259,11 @@ export async function GET(request: NextRequest) {
         { data: scopes },
         { data: groups },
         { data: topics },
+        { data: case2Incident },
+        { data: case2History },
+        { data: case2Orders },
+        { data: case2WorkOrders },
+        { data: laoCaiIncidents },
       ] = await Promise.all([
         db.from("near_term_capacity_cases").select("*").order("created_at", { ascending: false }).limit(10),
         db.from("checkpoint_dispatch_audits").select("*").order("checkpoint_at", { ascending: false }).limit(5),
@@ -274,6 +279,11 @@ export async function GET(request: NextRequest) {
         db.from("telegram_user_scopes").select("*"),
         db.from("telegram_pilot_groups").select("*"),
         db.from("telegram_pilot_topics").select("*"),
+        db.from("incidents").select("*").eq("id", "e4c983cb-937b-4aa2-865d-4987dd8bc151").maybeSingle(),
+        db.from("incident_history").select("*").eq("incident_id", "e4c983cb-937b-4aa2-865d-4987dd8bc151").order("recorded_at", { ascending: false }).limit(10),
+        db.from("order_snapshots").select("id, order_code, warehouse_id, weight_kg, reason_code, created_at, sync_run_id").in("order_code", ["GYYW9RDQ_CPTT","GYYW9RD8_CPTT","GYYXRR3R","GYYTDMKL_CPTT","GYY8M89R","GYYTDMWK_CPTT","GYYTDMKR_CPTT","GYYTDEQQ_CPTT","GYYTDMHX_CPTT"]).order("created_at", { ascending: false }).limit(30),
+        db.from("execution_work_orders").select("*").eq("decision_id", "3597fbd3-3ea9-471b-b6c2-399b1dce9297"),
+        db.from("incidents").select("id, status, reason_code, last_detected_at").eq("warehouse_id", "21158000").order("last_detected_at", { ascending: false }).limit(5),
       ]);
 
       return NextResponse.json({
@@ -287,6 +297,13 @@ export async function GET(request: NextRequest) {
         shadowCandidates: shadowCandidates || [],
         checkpointTelemetry: checkpointTelemetry || [],
         detectorTelemetry: detectorTelemetry || [],
+        case2OutcomeAudit: {
+          incident: case2Incident || null,
+          incidentHistory: case2History || [],
+          trackedOrders: case2Orders || [],
+          workOrders: case2WorkOrders || [],
+          laoCaiIncidents: laoCaiIncidents || [],
+        },
         orderSnapshots: {
           total: totalOrdersCount || 0,
           withWeight: ordersWithWeight || 0,
