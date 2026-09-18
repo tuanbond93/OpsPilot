@@ -379,7 +379,21 @@ export async function POST(request: NextRequest) {
     const nearTermFact = parseNearTermFactCallbackData(update.callback_query.data);
     if (nearTermFact) {
       try {
-        const result = await new NearTermCapacityRuntimeService(client).consumeInitialAnswer(nearTermFact.caseId, nearTermFact.answer, member.id, String(chat.id), Number(message.message_id), Number(update.update_id));
+        const responderInfo = {
+          displayName: member.display_name || displayName(sender) || "Lead kho",
+          role: member.pilot_role || member.role || "Lead kho",
+          capturedAt: new Date(),
+          originalText: message.text,
+        };
+        const result = await new NearTermCapacityRuntimeService(client).consumeInitialAnswer(
+          nearTermFact.caseId,
+          nearTermFact.answer,
+          member.id,
+          String(chat.id),
+          Number(message.message_id),
+          Number(update.update_id),
+          responderInfo
+        );
         const text = result.status === "DETAIL_REQUESTED" ? "Đã ghi nhận. Hãy reply đúng định dạng facts được yêu cầu." : result.status === "ALREADY_RESPONDED" ? ALREADY_RESPONDED_USER_MESSAGE : result.status === "INVALID_TARGET" ? "Phản hồi không hợp lệ hoặc đã hết hiệu lực." : "Đã ghi nhận facts; OpsPilot đang kiểm tra an toàn.";
         return NextResponse.json({ method: "answerCallbackQuery", callback_query_id: update.callback_query.id, text, show_alert: result.status === "INVALID_TARGET" });
       } catch (error) { return NextResponse.json({ method: "answerCallbackQuery", callback_query_id: update.callback_query.id, text: `Chưa thể ghi nhận facts: ${error instanceof Error ? error.message : String(error)}`.slice(0, 190), show_alert: true }); }

@@ -3,7 +3,7 @@ import { generate } from "@/ai/provider";
 import { logger } from "@/observability/logger";
 import { buildContext, critique, detectCandidate, formatOperationalRiskPromptSummary, type AiRecommendation, type CurrentRisk, type DecisionContext, type IncomingAnswer, type LeadFact } from "@/domain/near-term-capacity";
 import { TelegramClient } from "@/integrations/telegram/telegram-client";
-import { buildNearTermFactCallbackData, formatNearTermDetailRequest, formatNearTermFactRequest, nearTermFactButtons, type NearTermFactAnswer } from "@/integrations/telegram/near-term-capacity-message";
+import { buildNearTermFactCallbackData, formatNearTermDetailRequest, formatNearTermFactConfirmation, formatNearTermFactRequest, nearTermFactButtons, type NearTermFactAnswer } from "@/integrations/telegram/near-term-capacity-message";
 import { NearTermCapacityDecisionBridge } from "@/services/near-term-capacity-decision-bridge";
 import { NearTermCapacityShadowService } from "@/services/near-term-capacity-shadow";
 import { resolveAuthorizedRecipients, resolveProvince, type ResolvedRecipient, type ScopeResolutionResult } from "@/notifications/gateway/scope-resolver";
@@ -510,13 +510,45 @@ export class NearTermCapacityRuntimeService {
       throw sendError;
     }
   }
-  async consumeInitialAnswer(caseId: string, answer: NearTermFactAnswer, memberId: string, chatId: string, messageId: number, updateId: number) {
+  async consumeInitialAnswer(
+    caseId: string,
+    answer: NearTermFactAnswer,
+    memberId: string,
+    chatId: string,
+    messageId: number,
+    updateId: number,
+    responderInfo?: {
+      displayName?: string;
+      role?: string;
+      capturedAt?: string | Date;
+      originalText?: string;
+    }
+  ) {
     const row = await this.activeCaseById(caseId);
     if (!row || row.status !== "FACT_REQUESTED") return { status: "ALREADY_RESPONDED" as const };
     const { data: event } = await this.db.from("near_term_capacity_events").select("id,payload").eq("case_id", caseId).eq("event_type", "FACT_REQUEST_SENT").maybeSingle();
     if (!event || String(event.payload?.telegramMessageId) !== String(messageId) || String(event.payload?.memberId) !== memberId) return { status: "INVALID_TARGET" as const };
     const incoming = answer as IncomingAnswer;
     await this.event(caseId, "FACT_INITIAL_RESPONSE_RECEIVED", `telegram:${memberId}`, { interactionId: caseId, answer, chatId, messageId, updateId });
+
+    try {
+      const originalText = responderInfo?.originalText || formatNearTermFactRequest(row.current_risk_snapshot, policy.nearTermWindowMinutes);
+      const confirmationText = formatNearTermFactConfirmation(originalText, {
+        answer,
+        responderName: responderInfo?.displayName || "Lead kho",
+        responderRole: responderInfo?.role,
+        answeredAt: responderInfo?.capturedAt || new Date(),
+      });
+      await this.telegram.editMessageText(chatId, messageId, confirmationText, { inlineKeyboard: [] });
+    } catch (editError) {
+      logger.warn("Failed to edit Telegram message with fact confirmation (fail-soft)", {
+        caseId,
+        messageId,
+        chatId,
+        error: editError instanceof Error ? editError.message : String(editError),
+      });
+    }
+
     if (answer === "CONFIRMED_ETA" || answer === "UNCERTAIN_ETA") {
       const { error } = await this.db.from("near_term_capacity_cases").update({ status: "FACT_CAPTURED", updated_at: new Date().toISOString() }).eq("id", caseId).eq("status", "FACT_REQUESTED");
       if (error) throw error;

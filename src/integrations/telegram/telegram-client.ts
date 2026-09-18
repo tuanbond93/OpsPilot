@@ -124,6 +124,84 @@ export class TelegramClient implements HealthCheckable {
     throw new Error(`Telegram sendMessage failed after ${this.maxRetries} attempts.`);
   }
 
+  /** Edits an existing message in a pilot group or channel (e.g., removing inline buttons and appending confirmation). */
+  async editMessageText(
+    chatId: string,
+    messageId: number | string,
+    text: string,
+    options: { inlineKeyboard?: InlineKeyboardButton[][]; parseMode?: "HTML" | "MarkdownV2" } = {}
+  ): Promise<{ messageId: string; response: any }> {
+    if (!this.botToken) throw new Error("Telegram bot token is not configured.");
+    if (!chatId.trim()) throw new Error("Telegram pilot group is not configured.");
+    const url = `https://api.telegram.org/bot${this.botToken}/editMessageText`;
+    let delay = 1000;
+
+    for (let attempt = 1; attempt <= this.maxRetries; attempt++) {
+      const controller = new AbortController();
+      const id = setTimeout(() => controller.abort(), this.timeoutMs);
+
+      try {
+        const res = await fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            chat_id: chatId,
+            message_id: Number(messageId),
+            text,
+            disable_web_page_preview: true,
+            ...(options.parseMode ? { parse_mode: options.parseMode } : {}),
+            reply_markup: options.inlineKeyboard
+              ? {
+                  inline_keyboard: options.inlineKeyboard.map((row) =>
+                    row.map((button) =>
+                      button.copyText
+                        ? { text: button.text, copy_text: { text: button.copyText } }
+                        : { text: button.text, callback_data: button.callbackData }
+                    )
+                  ),
+                }
+              : { inline_keyboard: [] },
+          }),
+          signal: controller.signal,
+        });
+
+        clearTimeout(id);
+        const json = await res.json();
+
+        if (res.status === 429) {
+          const retryAfter = json.parameters?.retry_after || 10;
+          this.lastFailureAt = new Date().toISOString();
+          this.lastErrorReason = `Rate limited: retry after ${retryAfter} seconds`;
+          await new Promise((resolve) => setTimeout(resolve, retryAfter * 1000));
+          continue;
+        }
+
+        if (!res.ok || !json.ok) {
+          throw new Error(json.description || `Telegram editMessageText returned status ${res.status}`);
+        }
+
+        this.lastSuccessAt = new Date().toISOString();
+        return {
+          messageId: String(json.result?.message_id || messageId),
+          response: json,
+        };
+      } catch (err: any) {
+        clearTimeout(id);
+        this.lastFailureAt = new Date().toISOString();
+        this.lastErrorReason = err?.message || String(err);
+
+        if (attempt === this.maxRetries) {
+          throw err;
+        }
+
+        await new Promise((resolve) => setTimeout(resolve, delay));
+        delay *= 2;
+      }
+    }
+
+    throw new Error(`Telegram editMessageText failed after ${this.maxRetries} attempts.`);
+  }
+
   /**
    * Health Check Implementation
    */
