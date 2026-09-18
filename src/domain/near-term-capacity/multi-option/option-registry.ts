@@ -4,12 +4,24 @@ import { evaluateOptionCost } from "./evaluators/cost-evaluator";
 import { evaluateOptionCapacity } from "./evaluators/capacity-evaluator";
 import { evaluateOptionSla } from "./evaluators/sla-evaluator";
 
+export const REQUESTED_INFORMATION_ITEMS = [
+  "current available vehicle count",
+  "vehicle class/capacity",
+  "estimated arrival time",
+  "station clearance throughput",
+  "order SLA deadlines",
+];
+
 export function generateCandidateOptions(
   facts: CurrentRisk,
   lead: LeadFact | null,
   rootCause: RootCauseEvaluation
 ): DecisionOption[] {
   const options: DecisionOption[] = [];
+
+  const isSmallBacklog =
+    rootCause.category === "NO_MATERIAL_GAP" ||
+    rootCause.category === "NO_MATERIAL_CAPACITY_GAP";
 
   // 1. NO_ACTION_MONITOR (Baseline operational continuity)
   const noActionCost = evaluateOptionCost("NO_ACTION_MONITOR", facts, lead);
@@ -21,8 +33,16 @@ export function generateCandidateOptions(
     option_type: "NO_ACTION_MONITOR",
     description:
       "Giữ nguyên hiện trạng, xử lý bằng năng lực hiện có của trạm và kiểm tra lại tại checkpoint tiếp theo.",
-    feasible: true,
+    feasibility_status: "FEASIBLE",
+    feasibility_reason: null,
     infeasible_reason: null,
+    economic: {
+      status: "JUSTIFIED",
+      reason: "Duy trì năng lực hiện có không phát sinh chi phí can thiệp tăng thêm.",
+    },
+    economic_status: "JUSTIFIED",
+    economic_reason: "Duy trì năng lực hiện có không phát sinh chi phí can thiệp tăng thêm.",
+    feasible: true,
     evidence_refs: facts.evidenceRefs || [],
     cost: noActionCost,
     capacity: noActionCapacity,
@@ -35,24 +55,36 @@ export function generateCandidateOptions(
     risks: [
       "Tồn kho có thể không giải tỏa kịp nếu phát sinh hàng lớn đột xuất hoặc năng suất ca thấp.",
     ],
-    confidence: rootCause.category === "NO_MATERIAL_CAPACITY_GAP" ? 0.9 : 0.6,
+    confidence: isSmallBacklog ? 0.85 : 0.5,
   });
 
   // 2. ADD_VEHICLE
-  // If backlog is trivial (< 500kg / 20 orders) and Lead says no incoming, adding a truck is economically unjustified.
-  const isTrivial = rootCause.category === "NO_MATERIAL_CAPACITY_GAP";
+  // Feasibility is CONDITIONALLY_FEASIBLE because vehicle availability, class, and schedule are unevidenced.
+  // Economic justification is separate: NOT_JUSTIFIED for small backlog, UNKNOWN for large/unmeasured backlog.
   const addVehicleCost = evaluateOptionCost("ADD_VEHICLE", facts, lead);
   const addVehicleCapacity = evaluateOptionCapacity("ADD_VEHICLE", facts, lead);
   const addVehicleSla = evaluateOptionSla("ADD_VEHICLE", facts, lead, rootCause);
+
+  const addVehicleEconomicStatus = isSmallBacklog ? "NOT_JUSTIFIED" : "UNKNOWN";
+  const addVehicleEconomicReason = isSmallBacklog
+    ? "Tồn kho nhỏ (dưới 500 kg / 20 đơn), không có nhu cầu kinh tế để điều thêm xe"
+    : "Chưa có biểu phí định mức xe ngoài để đối soát hiệu quả kinh tế";
 
   options.push({
     option_id: "OPT_ADD_VEHICLE",
     option_type: "ADD_VEHICLE",
     description: "Điều động thêm phương tiện vận tải tăng cường để giải tỏa lượng hàng dồn ứ.",
-    feasible: !isTrivial,
-    infeasible_reason: isTrivial
-      ? "ECONOMICALLY_UNNECESSARY (Tồn kho nhỏ, không có nhu cầu điều xe tăng cường)"
-      : null,
+    feasibility_status: "CONDITIONALLY_FEASIBLE",
+    feasibility_reason: "Chưa xác nhận khả dụng xe, tải trọng và thời gian đến trạm",
+    infeasible_reason: null,
+    economic: {
+      status: addVehicleEconomicStatus,
+      reason: addVehicleEconomicReason,
+    },
+    economic_status: addVehicleEconomicStatus,
+    economic_reason: addVehicleEconomicReason,
+    // feasible boolean is true ONLY when feasibility_status === "FEASIBLE"
+    feasible: false,
     evidence_refs: facts.evidenceRefs || [],
     cost: addVehicleCost,
     capacity: addVehicleCapacity,
@@ -64,11 +96,12 @@ export function generateCandidateOptions(
     unknowns: [
       "Chưa có biểu phí xe ngoài được chuẩn hóa",
       "Chưa có dữ liệu định vị và thời gian xe có thể đến trạm",
+      "Chưa xác định tải trọng xe khả dụng",
     ],
     risks: [
       "Chi phí xe ngoài chưa xác định có thể gây lãng phí nếu tải gom thực tế không đủ",
     ],
-    confidence: isTrivial ? 0.1 : 0.5,
+    confidence: isSmallBacklog ? 0.2 : 0.4,
   });
 
   // 3. REALLOCATE_EXISTING_CAPACITY
@@ -81,9 +114,18 @@ export function generateCandidateOptions(
     option_id: "OPT_REALLOCATE_EXISTING_CAPACITY",
     option_type: "REALLOCATE_AVAILABLE_CAPACITY",
     description: "Điều chuyển các tuyến xe hoặc chuyến xe trống lân cận để hỗ trợ giải tỏa trạm.",
-    feasible: false,
+    feasibility_status: "INFEASIBLE",
+    feasibility_reason:
+      "NO_GOVERNED_INTER_WAREHOUSE_CAPACITY_TELEMETRY (Chưa tích hợp dữ liệu tải xe liên trạm/tuyến lân cận)",
     infeasible_reason:
       "NO_GOVERNED_INTER_WAREHOUSE_CAPACITY_TELEMETRY (Chưa tích hợp dữ liệu tải xe liên trạm/tuyến lân cận)",
+    economic: {
+      status: "UNKNOWN",
+      reason: null,
+    },
+    economic_status: "UNKNOWN",
+    economic_reason: null,
+    feasible: false,
     evidence_refs: [],
     cost: reallocateCost,
     capacity: reallocateCapacity,
@@ -106,9 +148,18 @@ export function generateCandidateOptions(
     option_id: "OPT_ADD_MANPOWER",
     option_type: "ADD_MANPOWER",
     description: "Huy động thêm nhân sự/tài xế tại chỗ để đẩy nhanh khâu bốc xếp, phân loại.",
-    feasible: false,
+    feasibility_status: "INFEASIBLE",
+    feasibility_reason:
+      "NO_GOVERNED_MANPOWER_ROSTER_SOURCE (Chưa tích hợp hệ thống chấm công và phân ca nhân sự trạm)",
     infeasible_reason:
       "NO_GOVERNED_MANPOWER_ROSTER_SOURCE (Chưa tích hợp hệ thống chấm công và phân ca nhân sự trạm)",
+    economic: {
+      status: "UNKNOWN",
+      reason: null,
+    },
+    economic_status: "UNKNOWN",
+    economic_reason: null,
+    feasible: false,
     evidence_refs: [],
     cost: manpowerCost,
     capacity: manpowerCapacity,
@@ -130,9 +181,17 @@ export function generateCandidateOptions(
   options.push({
     option_id: "OPT_REQUEST_MORE_INFORMATION",
     option_type: "REQUEST_MORE_INFORMATION",
-    description: "Yêu cầu Lead hoặc Manager trạm cung cấp thêm thông tin thực tế về phương tiện và năng lực.",
-    feasible: true,
+    description: `Yêu cầu bổ sung dữ liệu vận hành còn thiếu: ${REQUESTED_INFORMATION_ITEMS.join(", ")}.`,
+    feasibility_status: "FEASIBLE",
+    feasibility_reason: null,
     infeasible_reason: null,
+    economic: {
+      status: "JUSTIFIED",
+      reason: "Thu thập thông tin vận hành qua hệ thống không phát sinh chi phí can thiệp tăng thêm.",
+    },
+    economic_status: "JUSTIFIED",
+    economic_reason: "Thu thập thông tin vận hành qua hệ thống không phát sinh chi phí can thiệp tăng thêm.",
+    feasible: true,
     evidence_refs: [],
     cost: requestCost,
     capacity: requestCapacity,

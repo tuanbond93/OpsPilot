@@ -11,32 +11,27 @@ export function buildMultiOptionMatrix(
   options: DecisionOption[]
 ): MultiOptionMatrix {
   const rows: MultiOptionMatrixRow[] = options.map((opt) => {
-    const costText = opt.feasible
-      ? formatCostDisplay(opt.cost)
-      : opt.cost.value_vnd !== null
-        ? formatCostDisplay(opt.cost)
-        : "UNKNOWN (Không khả thi)";
+    const costText = formatCostDisplay(opt.cost);
+    const capacityText = formatCapacityDisplay(opt.capacity);
+    const slaText = formatSlaDisplay(opt.sla);
 
-    const capacityText = opt.feasible
-      ? formatCapacityDisplay(opt.capacity)
-      : "UNKNOWN (Không khả thi)";
-
-    const slaText = opt.feasible
-      ? formatSlaDisplay(opt.sla)
-      : "UNKNOWN (Không khả thi)";
-
-    const mainRisk = opt.infeasible_reason
-      ? `Không khả thi: ${opt.infeasible_reason}`
+    const mainRisk = opt.feasibility_reason
+      ? `Điều kiện / Trở ngại: ${opt.feasibility_reason}`
       : opt.risks[0] || "Không xác định";
 
     return {
       option: opt.description,
       option_type: opt.option_type,
-      feasible: opt.feasible,
+      feasibility_status: opt.feasibility_status,
+      feasibility_reason: opt.feasibility_reason,
+      economic_status: opt.economic.status,
+      incremental_cost_display: costText,
       cost_display: costText,
       capacity_impact: capacityText,
       sla_impact: slaText,
       main_risk: mainRisk,
+      unknown_fields: opt.unknowns,
+      feasible: opt.feasible,
     };
   });
 
@@ -52,16 +47,23 @@ export function buildMultiOptionMatrix(
 
 export function formatOptionMatrixMarkdown(matrix: MultiOptionMatrix): string {
   const header = [
-    `### BẢNG SO SÁNH PHƯƠNG ÁN RA QUYẾT ĐỊNH (SHADOW GATE 3A)`,
+    `### BẢNG SO SÁNH PHƯƠNG ÁN RA QUYẾT ĐỊNH (SHADOW GATE 3A.1)`,
     `Kho: **${matrix.warehouse_name}** | Nguyên nhân gốc rễ: **${matrix.root_cause.category}** (Độ tin cậy: ${Math.round(matrix.root_cause.confidence * 100)}%)`,
     "",
-    "| Phương án | Khả thi | Chi phí (VND) | Tác động năng lực | Tác động SLA | Rủi ro chính / Lý do |",
-    "|---|---|---|---|---|---|",
+    "| Phương án | Khả thi | Đánh giá kinh tế | Chi phí phát sinh | Năng lực bổ sung | Tác động SLA | Rủi ro / Điều kiện |",
+    "|---|---|---|---|---|---|---|",
   ];
 
   const lines = matrix.rows.map((r) => {
-    const feasibleStr = r.feasible ? "✅ CÓ" : "❌ KHÔNG";
-    return `| **${r.option_type}** | ${feasibleStr} | ${r.cost_display} | ${r.capacity_impact} | ${r.sla_impact} | ${r.main_risk} |`;
+    const feasBadge =
+      r.feasibility_status === "FEASIBLE"
+        ? "✅ FEASIBLE"
+        : r.feasibility_status === "CONDITIONALLY_FEASIBLE"
+          ? "⚠️ CONDITIONAL"
+          : r.feasibility_status === "INFEASIBLE"
+            ? "❌ INFEASIBLE"
+            : "❓ UNKNOWN";
+    return `| **${r.option_type}** | ${feasBadge} | ${r.economic_status} | ${r.incremental_cost_display} | ${r.capacity_impact} | ${r.sla_impact} | ${r.main_risk} |`;
   });
 
   return [...header, ...lines].join("\n");

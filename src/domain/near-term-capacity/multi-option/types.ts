@@ -5,7 +5,10 @@ export type RootCauseCategory =
   | "MANPOWER_SHORTAGE"
   | "INCOMING_VOLUME_RISK"
   | "PROCESS_DELAY"
-  | "SLA_AGING_RISK"
+  | "BACKLOG_AGING_RISK"
+  | "BACKLOG_ACCUMULATION"
+  | "CAPACITY_CAUSE_UNKNOWN"
+  | "NO_MATERIAL_GAP"
   | "NO_MATERIAL_CAPACITY_GAP"
   | "UNKNOWN";
 
@@ -17,12 +20,28 @@ export interface RootCauseEvaluation {
   reasoning: string;
 }
 
+export type FeasibilityStatus =
+  | "FEASIBLE"
+  | "CONDITIONALLY_FEASIBLE"
+  | "INFEASIBLE"
+  | "UNKNOWN";
+
+export type EconomicStatus = "JUSTIFIED" | "NOT_JUSTIFIED" | "UNKNOWN";
+
+export interface DecisionOptionEconomic {
+  status: EconomicStatus;
+  reason: string | null;
+}
+
 export type OptionCostStatus = "MEASURED" | "GOVERNED_RATE" | "MODELED" | "UNKNOWN";
 
 export interface DecisionOptionCost {
-  value_vnd: number | null;
+  incremental_cost_vnd: number | null;
+  /** @deprecated Use incremental_cost_vnd */
+  value_vnd?: number | null;
   evidence_status: OptionCostStatus;
   source: string | null;
+  notes?: string;
 }
 
 export type OptionCapacityStatus = "MEASURED" | "GOVERNED" | "MODELED" | "UNKNOWN";
@@ -56,8 +75,13 @@ export interface DecisionOption {
   option_id: string;
   option_type: CapacityAction | "REQUEST_MORE_INFORMATION";
   description: string;
-  feasible: boolean;
-  infeasible_reason: string | null;
+  feasibility_status: FeasibilityStatus;
+  feasibility_reason: string | null;
+  /** @deprecated Use feasibility_reason */
+  infeasible_reason?: string | null;
+  economic: DecisionOptionEconomic;
+  economic_status?: EconomicStatus;
+  economic_reason?: string | null;
   evidence_refs: string[];
   cost: DecisionOptionCost;
   capacity: DecisionOptionCapacity;
@@ -69,16 +93,23 @@ export interface DecisionOption {
   unknowns: string[];
   risks: string[];
   confidence: number;
+  /** Convenience boolean: true only when feasibility_status === "FEASIBLE" */
+  feasible: boolean;
 }
 
 export interface MultiOptionMatrixRow {
   option: string;
   option_type: string;
-  feasible: boolean;
-  cost_display: string;
+  feasibility_status: FeasibilityStatus;
+  feasibility_reason: string | null;
+  economic_status: EconomicStatus;
+  incremental_cost_display: string;
+  cost_display?: string;
   capacity_impact: string;
   sla_impact: string;
   main_risk: string;
+  unknown_fields: string[];
+  feasible?: boolean;
 }
 
 export interface MultiOptionMatrix {
@@ -102,4 +133,5 @@ export interface MultiOptionDecisionResult {
   critic_verdict: "VALID" | "INVALID";
   critic_flags: string[];
   missing_data: string[];
+  requested_information?: string[];
 }

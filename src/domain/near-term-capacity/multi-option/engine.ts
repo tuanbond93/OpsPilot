@@ -33,32 +33,47 @@ export async function runMultiOptionEvaluation(
   let tradeoff_summary = "";
   let confidence = 0.5;
 
+  let requested_information: string[] | undefined = undefined;
+
   const missing_data: string[] = [
     "Biểu phí xe ngoài / xe tăng cường chưa có trong hệ thống",
     "Dữ liệu tải trọng và khả dụng thực tế của đội xe chưa kết nối",
     "Công suất phân loại/bốc xếp theo giờ tại trạm chưa được đo lường",
   ];
 
-  if (rootCause.category === "NO_MATERIAL_CAPACITY_GAP") {
+  if (
+    rootCause.category === "NO_MATERIAL_GAP" ||
+    rootCause.category === "NO_MATERIAL_CAPACITY_GAP"
+  ) {
     // Verified small backlog (e.g. Case #002)
     recommended_option = "NO_ACTION_MONITOR";
     recommendation_reason =
-      "Tồn kho ở mức thấp và Lead xác nhận không có hàng về thêm đáng kể; năng lực kho hiện tại đủ xử lý theo ca làm việc tiêu chuẩn.";
+      "Tồn kho ở mức thấp và Lead xác nhận không có hàng về thêm đáng kể; không có khoảng trống năng lực trọng yếu. Duy trì hiện trạng không phát sinh chi phí can thiệp tăng thêm.";
     tradeoff_summary =
-      "Giữ nguyên hiện trạng không phát sinh chi phí điều xe ngoài; rủi ro vận hành thấp do khối lượng hàng nhỏ.";
-    confidence = 0.9;
-  } else if (rootCause.category === "SLA_AGING_RISK") {
-    // Large backlog (e.g. Case #003: 11.7 tonnes / 87 orders)
-    // Both options have critical unknowns:
-    // - NO_ACTION: clearance speed unknown without station sorting rate
-    // - ADD_VEHICLE: cost and vehicle availability unknown
-    // Therefore, comparative evidence is mathematically insufficient to safely rank options without guessing.
-    recommended_option = "INSUFFICIENT_EVIDENCE";
+      "Duy trì năng lực hiện có không phát sinh chi phí can thiệp ngoài; điều xe tăng cường không có cơ sở kinh tế với lượng tồn kho nhỏ.";
+    confidence = 0.85;
+  } else if (
+    rootCause.category === "CAPACITY_CAUSE_UNKNOWN" ||
+    rootCause.category === "BACKLOG_ACCUMULATION" ||
+    rootCause.category === "BACKLOG_AGING_RISK"
+  ) {
+    // Large backlog with missing telemetry (e.g. Case #003: 11.7 tonnes / 87 orders)
+    // Feasible options cannot be safely ranked between NO_ACTION and ADD_VEHICLE
+    // without fleet availability, cost matrix, and throughput.
+    // REQUEST_MORE_INFORMATION is the first-class operational recommendation.
+    recommended_option = "REQUEST_MORE_INFORMATION";
     recommendation_reason =
-      "Tồn kho dồn ứ lớn (87 đơn / 11.7 tấn) nhưng thiếu dữ liệu định mức xe ngoài và công suất xử lý theo giờ tại trạm; chưa đủ bằng chứng để chứng minh điều xe hay giữ nguyên sẽ tối ưu hơn.";
+      "Tồn kho dồn ứ lớn nhưng trạm thiếu các dữ liệu nền tảng về đội xe, định mức chi phí và công suất giải tỏa; cần yêu cầu bổ sung thông tin vận hành trước khi quyết định can thiệp nguồn lực.";
     tradeoff_summary =
-      "Cần bổ sung: (1) biểu phí xe ngoài, (2) giờ xe khả dụng, (3) tốc độ giải tỏa nội bộ trước khi có thể kết luận phương án tối ưu.";
-    confidence = 0.4;
+      "Cần bổ sung: (1) số lượng xe khả dụng, (2) tải trọng xe, (3) giờ xe đến, (4) năng suất trạm, (5) hạn SLA đơn hàng trước khi có thể kết luận phương án tối ưu.";
+    confidence = 0.75;
+    requested_information = [
+      "current available vehicle count",
+      "vehicle class/capacity",
+      "estimated arrival time",
+      "station clearance throughput",
+      "order SLA deadlines",
+    ];
   } else if (rootCause.category === "INCOMING_VOLUME_RISK") {
     recommended_option = "REQUEST_MORE_INFORMATION";
     recommendation_reason =
@@ -66,6 +81,11 @@ export async function runMultiOptionEvaluation(
     tradeoff_summary =
       "Tránh điều xe non khi chưa biết lượng hàng thực tế; yêu cầu Lead cập nhật chi tiết.";
     confidence = 0.7;
+    requested_information = [
+      "expected incoming freight kg",
+      "freight arrival window",
+      "vehicle dispatch readiness",
+    ];
   } else {
     recommended_option = "INSUFFICIENT_EVIDENCE";
     recommendation_reason =
@@ -79,6 +99,7 @@ export async function runMultiOptionEvaluation(
     recommended_option,
     recommendation_reason,
     tradeoff_summary,
+    root_cause: rootCause,
   };
 
   const critic = critiqueMultiOptionRecommendation(preliminaryResult, candidates);
@@ -100,5 +121,6 @@ export async function runMultiOptionEvaluation(
     critic_verdict: critic.verdict,
     critic_flags: critic.flags,
     missing_data,
+    requested_information,
   };
 }

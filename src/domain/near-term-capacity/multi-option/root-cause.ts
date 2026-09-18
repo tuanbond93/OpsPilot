@@ -35,11 +35,11 @@ export function evaluateRootCause(
   if (lead?.incoming === "CONFIRMED_ETA" || lead?.incoming === "UNCERTAIN_ETA") {
     return {
       category: "INCOMING_VOLUME_RISK",
-      confidence: lead.incoming === "CONFIRMED_ETA" ? 0.85 : 0.65,
+      confidence: lead.incoming === "CONFIRMED_ETA" ? 0.75 : 0.6,
       evidence,
       unknowns,
       reasoning:
-        "Lead trạm xác nhận sắp có thêm hàng về trong cửa sổ 4 giờ tới; có nguy cơ vượt tải nếu không chuẩn bị trước nguồn lực.",
+        "Lead trạm xác nhận sắp có thêm hàng về trong cửa sổ 4 giờ tới; có nguy cơ tích tụ tồn kho nếu không chuẩn bị trước nguồn lực.",
     };
   }
 
@@ -51,8 +51,8 @@ export function evaluateRootCause(
 
   if (isSmallBacklog && lead?.incoming === "NO_SIGNIFICANT_INCOMING") {
     return {
-      category: "NO_MATERIAL_CAPACITY_GAP",
-      confidence: 0.9,
+      category: "NO_MATERIAL_GAP",
+      confidence: 0.85,
       evidence,
       unknowns,
       reasoning:
@@ -67,19 +67,19 @@ export function evaluateRootCause(
 
   if (isLargeBacklog && lead?.incoming === "NO_SIGNIFICANT_INCOMING") {
     return {
-      category: "SLA_AGING_RISK",
-      confidence: 0.6,
+      category: "CAPACITY_CAUSE_UNKNOWN",
+      confidence: 0.4, // Low confidence: cannot attribute cause without fleet/throughput telemetry
       evidence,
       unknowns,
       reasoning:
-        "Tồn kho khối lượng lớn đang dồn ứ tại trạm có nguy cơ chậm SLA; tuy nhiên nguyên nhân do thiếu xe hay chậm khâu xử lý nội bộ chưa thể phân định do thiếu dữ liệu đội xe và năng suất trạm.",
+        "Tồn kho khối lượng lớn dồn ứ tại trạm (tích lũy tồn kho); tuy nhiên nguyên nhân do thiếu xe, trạm phân loại chậm, hay hàng chờ gom chưa thể quy kết do thiếu dữ liệu đội xe và năng suất trạm.",
     };
   }
 
   // 4. Default / Unresolved
   return {
     category: "UNKNOWN",
-    confidence: 0.3,
+    confidence: 0.25,
     evidence,
     unknowns,
     reasoning:
