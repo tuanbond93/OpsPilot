@@ -58,6 +58,7 @@ export type VehicleAvailabilityEvidenceStatus =
   | "MODELED"
   | "AUTHORIZED_OPERATIONAL_FACT"
   | "SYSTEM_AUTHORIZED_IMPORT"
+  | "OWNER_CONFIRMED_RECURRING_SCHEDULE"
   | "UNKNOWN";
 
 export type AuthorizedOperationalRole =
@@ -68,6 +69,155 @@ export type AuthorizedOperationalRole =
   | "LEAD"
   | "MANAGER"
   | "ADMIN";
+
+export interface VehicleAvailabilitySchedule {
+  warehouse_id: string;
+  supplier_name: string;
+  vehicle_class: string;
+  planned_available_count: number;
+  recurrence_type: "DAILY";
+  timezone: string;
+  local_start_time: string;
+  local_end_time: string;
+  effective_from: string;
+  effective_until?: string | null;
+  supplied_by: string;
+  supplier_role: AuthorizedOperationalRole;
+  source_ref: string;
+  provenance_status: "OWNER_CONFIRMED_RECURRING_SCHEDULE";
+}
+
+export function evaluateDailyWindow(
+  evalTime: number | string | Date,
+  startTime: string = "07:00",
+  endTime: string = "10:00",
+  timeZone: string = "Asia/Ho_Chi_Minh"
+): {
+  isWithinWindow: boolean;
+  isBeforeWindow: boolean;
+  isAfterWindow: boolean;
+  status: "PLANNED_AVAILABLE_NOW" | "SCHEDULED_AVAILABLE";
+  localDate: string;
+  localTime: string;
+} {
+  const dateObj = new Date(evalTime);
+  const formatter = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    hourCycle: "h23",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+  const parts = formatter.formatToParts(dateObj);
+  let year = "1970", month = "01", day = "01", hour = "00", minute = "00";
+  for (const p of parts) {
+    if (p.type === "year") year = p.value;
+    if (p.type === "month") month = p.value;
+    if (p.type === "day") day = p.value;
+    if (p.type === "hour") hour = p.value;
+    if (p.type === "minute") minute = p.value;
+  }
+  const currentMinutes = parseInt(hour, 10) * 60 + parseInt(minute, 10);
+  const [startH, startM] = startTime.split(":").map((v) => parseInt(v, 10));
+  const [endH, endM] = endTime.split(":").map((v) => parseInt(v, 10));
+  const startMinutes = startH * 60 + (startM || 0);
+  const endMinutes = endH * 60 + (endM || 0);
+
+  const localDate = `${year}-${month}-${day}`;
+  const localTime = `${hour.padStart(2, "0")}:${minute.padStart(2, "0")}`;
+
+  if (currentMinutes >= startMinutes && currentMinutes < endMinutes) {
+    return {
+      isWithinWindow: true,
+      isBeforeWindow: false,
+      isAfterWindow: false,
+      status: "PLANNED_AVAILABLE_NOW",
+      localDate,
+      localTime,
+    };
+  } else if (currentMinutes < startMinutes) {
+    return {
+      isWithinWindow: false,
+      isBeforeWindow: true,
+      isAfterWindow: false,
+      status: "SCHEDULED_AVAILABLE",
+      localDate,
+      localTime,
+    };
+  } else {
+    return {
+      isWithinWindow: false,
+      isBeforeWindow: false,
+      isAfterWindow: true,
+      status: "SCHEDULED_AVAILABLE",
+      localDate,
+      localTime,
+    };
+  }
+}
+
+function parseEffectiveDate(dateStr: string, isEnd = false): number {
+  if (!dateStr) return isEnd ? Infinity : -Infinity;
+  if (dateStr.length === 10 && dateStr.includes("-")) {
+    return new Date(`${dateStr}T${isEnd ? "23:59:59" : "00:00:00"}+07:00`).getTime();
+  }
+  return new Date(dateStr).getTime();
+}
+
+export function evaluateScheduleEvidence(
+  sched: VehicleAvailabilitySchedule | any,
+  evalMs: number,
+  warehouseId: string,
+  vehicleClass: string
+): VehicleAvailabilityEvidence | null {
+  if (sched.effective_from) {
+    const fromMs = parseEffectiveDate(sched.effective_from, false);
+    if (!isNaN(fromMs) && evalMs < fromMs) {
+      return null;
+    }
+  }
+  if (sched.effective_until) {
+    const untilMs = parseEffectiveDate(sched.effective_until, true);
+    if (!isNaN(untilMs) && evalMs > untilMs) {
+      return null;
+    }
+  }
+
+  const windowEval = evaluateDailyWindow(
+    evalMs,
+    sched.local_start_time || "07:00",
+    sched.local_end_time || "10:00",
+    sched.timezone || "Asia/Ho_Chi_Minh"
+  );
+
+  const localDate = windowEval.localDate;
+  const startTime = sched.local_start_time || "07:00";
+  const endTime = sched.local_end_time || "10:00";
+  const earliestAvailableAt = `${localDate}T${startTime}:00+07:00`;
+  const validUntil = `${localDate}T${endTime}:00+07:00`;
+
+  return {
+    warehouse_id: sched.warehouse_id || warehouseId,
+    vehicle_id: null,
+    vehicle_class: sched.vehicle_class || vehicleClass,
+    available: false,
+    availability_status: windowEval.status,
+    available_at: earliestAvailableAt,
+    remaining_capacity_kg: null,
+    source_ref: sched.source_ref,
+    captured_at: sched.effective_from || new Date(evalMs).toISOString(),
+    evidence_status: "OWNER_CONFIRMED_RECURRING_SCHEDULE",
+    supplier_name: sched.supplier_name,
+    available_count: sched.planned_available_count,
+    earliest_available_at: earliestAvailableAt,
+    valid_until: validUntil,
+    supplied_by: sched.supplied_by || null,
+    supplier_role: sched.supplier_role || null,
+  };
+}
 
 export interface VehicleAvailabilityEvidence {
   warehouse_id: string;
@@ -212,6 +362,7 @@ export interface GovernedVehicleSourceConfig {
   capacities?: Record<string, GovernedCapacityRecord>;
   availabilities?: GovernedAvailabilityRecord[];
   availabilityFacts?: VehicleAvailabilityFact[];
+  schedules?: VehicleAvailabilitySchedule[];
   maxRateAgeDays?: number;
   evaluationTime?: string | number | Date;
 }
@@ -617,12 +768,27 @@ export class GovernedVehicleSourceAdapter implements VehicleSourceAdapter {
         error = res?.error;
       }
 
-      if (error || !data) {
-        return [];
-      }
+      const rows: any[] = (!error && data) ? (Array.isArray(data) ? data : [data]) : [];
 
-      const rows = Array.isArray(data) ? data : [data];
-      if (rows.length === 0) return [];
+      // Query recurring schedules if table exists (fail-soft)
+      let schedRows: any[] = [];
+      try {
+        let schedQuery: any = this.config.db!
+          .from("vehicle_fleet_availability_schedules")
+          .select("*")
+          .eq("warehouse_id", warehouseId);
+
+        if (vehicleClass) {
+          schedQuery = schedQuery.eq("vehicle_class", vehicleClass);
+        }
+
+        if (typeof schedQuery.then === "function") {
+          const res = await schedQuery;
+          schedRows = res?.data || [];
+        }
+      } catch {
+        schedRows = [];
+      }
 
       const evalMs = evaluationTime
         ? new Date(evaluationTime).getTime()
@@ -630,7 +796,11 @@ export class GovernedVehicleSourceAdapter implements VehicleSourceAdapter {
         ? new Date(this.config.evaluationTime).getTime()
         : Date.now();
 
-      return rows.map((row: any) => {
+      // 1. Process point-in-time facts
+      const liveBySupplier = new Map<string, VehicleAvailabilityEvidence>();
+      const unassociatedLive: VehicleAvailabilityEvidence[] = [];
+
+      for (const row of rows) {
         const isOperationalFact =
           (typeof row.source_ref === "string" && row.source_ref.startsWith("AUTHORIZED_OPERATIONAL_FACT")) ||
           row.evidence_status === "AUTHORIZED_OPERATIONAL_FACT";
@@ -652,7 +822,7 @@ export class GovernedVehicleSourceAdapter implements VehicleSourceAdapter {
           row.available
         );
 
-        return {
+        const ev: VehicleAvailabilityEvidence = {
           warehouse_id: row.warehouse_id,
           vehicle_id: row.vehicle_id ?? null,
           vehicle_class: row.vehicle_class,
@@ -670,7 +840,48 @@ export class GovernedVehicleSourceAdapter implements VehicleSourceAdapter {
           supplied_by: row.supplied_by ?? null,
           supplier_role: row.supplier_role ?? null,
         };
-      });
+
+        const supKey = (row.supplier_name || "").toUpperCase();
+        if (supKey) {
+          if (!liveBySupplier.has(supKey) || availStatus !== "UNKNOWN") {
+            liveBySupplier.set(supKey, ev);
+          }
+        } else {
+          unassociatedLive.push(ev);
+        }
+      }
+
+      // 2. Process recurring schedules
+      const schedBySupplier = new Map<string, VehicleAvailabilityEvidence>();
+      for (const sRow of schedRows) {
+        const ev = evaluateScheduleEvidence(sRow, evalMs, warehouseId, vehicleClass || sRow.vehicle_class);
+        if (ev && sRow.supplier_name) {
+          schedBySupplier.set(sRow.supplier_name.toUpperCase(), ev);
+        }
+      }
+
+      // 3. Precedence: Fresh live fact > Recurring schedule > Expired live fact > UNKNOWN
+      const allSuppliers = new Set<string>([
+        ...liveBySupplier.keys(),
+        ...schedBySupplier.keys(),
+      ]);
+
+      const results: VehicleAvailabilityEvidence[] = [];
+      for (const supKey of allSuppliers) {
+        const liveEv = liveBySupplier.get(supKey);
+        const schedEv = schedBySupplier.get(supKey);
+
+        if (liveEv && liveEv.availability_status !== "UNKNOWN") {
+          results.push(liveEv);
+        } else if (schedEv) {
+          results.push(schedEv);
+        } else if (liveEv) {
+          results.push(liveEv);
+        }
+      }
+
+      results.push(...unassociatedLive);
+      return results;
     } catch {
       return [];
     }
@@ -729,10 +940,12 @@ export class GovernedVehicleSourceAdapter implements VehicleSourceAdapter {
       : this.config.evaluationTime
       ? new Date(this.config.evaluationTime).getTime()
       : Date.now();
-    const results: VehicleAvailabilityEvidence[] = [];
 
-    // 1. Check availabilityFacts (highest priority in Gate 3D.1 / Gate 3D.1A)
+    // 1. Process point-in-time live facts
     const facts = this.config.availabilityFacts || [];
+    const liveEvidenceBySupplier = new Map<string, VehicleAvailabilityEvidence>();
+    const unassociatedLive: VehicleAvailabilityEvidence[] = [];
+
     for (const fact of facts) {
       if (
         fact.warehouse_id === warehouseId &&
@@ -745,7 +958,7 @@ export class GovernedVehicleSourceAdapter implements VehicleSourceAdapter {
           evalMs
         );
 
-        results.push({
+        const ev: VehicleAvailabilityEvidence = {
           warehouse_id: warehouseId,
           vehicle_id: null,
           vehicle_class: fact.vehicle_class,
@@ -762,43 +975,95 @@ export class GovernedVehicleSourceAdapter implements VehicleSourceAdapter {
           valid_until: fact.valid_until,
           supplied_by: fact.supplied_by,
           supplier_role: fact.supplier_role,
-        });
+        };
+
+        if (fact.supplier_name) {
+          const supKey = fact.supplier_name.toUpperCase();
+          if (!liveEvidenceBySupplier.has(supKey) || availStatus !== "UNKNOWN") {
+            liveEvidenceBySupplier.set(supKey, ev);
+          }
+        } else {
+          unassociatedLive.push(ev);
+        }
       }
     }
 
-    // 2. Check legacy / governed availabilities
-    const availabilities = this.config.availabilities || [];
-    for (const a of availabilities) {
-      if (
-        a.warehouse_id === warehouseId &&
-        (!vehicleClass || a.vehicle_class.toUpperCase() === vehicleClass.toUpperCase())
-      ) {
-        const { status: availStatus, available } = computeAvailabilityStatus(
-          a.available_count,
-          a.earliest_available_at || a.available_at,
-          a.valid_until,
-          evalMs,
-          a.available
-        );
+    // 2. Process recurring schedules
+    const schedules = this.config.schedules || [];
+    const schedEvidenceBySupplier = new Map<string, VehicleAvailabilityEvidence>();
 
-        results.push({
-          warehouse_id: a.warehouse_id,
-          vehicle_id: a.vehicle_id ?? null,
-          vehicle_class: a.vehicle_class,
-          available,
-          availability_status: availStatus,
-          available_at: a.available_at ?? null,
-          remaining_capacity_kg: a.remaining_capacity_kg ?? null,
-          source_ref: a.source_ref,
-          captured_at: a.captured_at ?? null,
-          evidence_status: availStatus === "UNKNOWN" ? "UNKNOWN" : (a.evidence_status || "GOVERNED"),
-          supplier_name: a.supplier_name ?? null,
-          available_count: a.available_count ?? (available === true ? 1 : 0),
-          earliest_available_at: a.earliest_available_at ?? a.available_at ?? null,
-          valid_until: a.valid_until ?? null,
-          supplied_by: a.supplied_by ?? null,
-          supplier_role: a.supplier_role ?? null,
-        });
+    for (const sched of schedules) {
+      if (
+        sched.warehouse_id === warehouseId &&
+        (!vehicleClass || sched.vehicle_class.toUpperCase() === vehicleClass.toUpperCase())
+      ) {
+        const ev = evaluateScheduleEvidence(sched, evalMs, warehouseId, vehicleClass || sched.vehicle_class);
+        if (ev && sched.supplier_name) {
+          schedEvidenceBySupplier.set(sched.supplier_name.toUpperCase(), ev);
+        }
+      }
+    }
+
+    // 3. Combine with deterministic precedence:
+    // Priority 1: Fresh live fact (availability_status !== "UNKNOWN")
+    // Priority 2: Recurring schedule
+    // Priority 3: Expired live fact
+    const allSuppliers = new Set<string>([
+      ...liveEvidenceBySupplier.keys(),
+      ...schedEvidenceBySupplier.keys(),
+    ]);
+
+    const results: VehicleAvailabilityEvidence[] = [];
+
+    for (const supKey of allSuppliers) {
+      const liveEv = liveEvidenceBySupplier.get(supKey);
+      const schedEv = schedEvidenceBySupplier.get(supKey);
+
+      if (liveEv && liveEv.availability_status !== "UNKNOWN") {
+        results.push(liveEv);
+      } else if (schedEv) {
+        results.push(schedEv);
+      } else if (liveEv) {
+        results.push(liveEv);
+      }
+    }
+
+    results.push(...unassociatedLive);
+
+    // 4. Fallback to legacy availabilities if no facts or schedules
+    if (results.length === 0 && this.config.availabilities) {
+      for (const a of this.config.availabilities) {
+        if (
+          a.warehouse_id === warehouseId &&
+          (!vehicleClass || a.vehicle_class.toUpperCase() === vehicleClass.toUpperCase())
+        ) {
+          const { status: availStatus, available } = computeAvailabilityStatus(
+            a.available_count,
+            a.earliest_available_at || a.available_at,
+            a.valid_until,
+            evalMs,
+            a.available
+          );
+
+          results.push({
+            warehouse_id: a.warehouse_id,
+            vehicle_id: a.vehicle_id ?? null,
+            vehicle_class: a.vehicle_class,
+            available,
+            availability_status: availStatus,
+            available_at: a.available_at ?? null,
+            remaining_capacity_kg: a.remaining_capacity_kg ?? null,
+            source_ref: a.source_ref,
+            captured_at: a.captured_at ?? null,
+            evidence_status: availStatus === "UNKNOWN" ? "UNKNOWN" : (a.evidence_status || "GOVERNED"),
+            supplier_name: a.supplier_name ?? null,
+            available_count: a.available_count ?? (available === true ? 1 : 0),
+            earliest_available_at: a.earliest_available_at ?? a.available_at ?? null,
+            valid_until: a.valid_until ?? null,
+            supplied_by: a.supplied_by ?? null,
+            supplier_role: a.supplier_role ?? null,
+          });
+        }
       }
     }
 

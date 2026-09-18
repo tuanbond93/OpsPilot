@@ -1,5 +1,5 @@
 import type { CurrentRisk, LeadFact } from "../loop";
-import type { DecisionOption, EconomicStatus, FeasibilityStatus, RootCauseEvaluation } from "./types";
+import type { DecisionOption, DecisionOptionCapacity, EconomicStatus, FeasibilityStatus, RootCauseEvaluation } from "./types";
 import { evaluateOptionCost, computeProjectedCostDifference } from "./evaluators/cost-evaluator";
 import { evaluateOptionCapacity } from "./evaluators/capacity-evaluator";
 import { evaluateOptionSla } from "./evaluators/sla-evaluator";
@@ -173,6 +173,10 @@ export function generateCandidateOptions(
       addVehicleFeasibility = "CONDITIONALLY_FEASIBLE";
       addVehicleFeasibilityReason = `Phương tiện dự kiến khả dụng lúc ${currentAvailability.earliest_available_at || currentAvailability.available_at}; chưa sẵn sàng điều động ngay`;
       addVehicleFeasibilityEvidence = `Phương tiện đang được lên lịch (dự kiến đến ${currentAvailability.earliest_available_at || currentAvailability.available_at})`;
+    } else if (availStatus === "PLANNED_AVAILABLE_NOW") {
+      addVehicleFeasibility = "CONDITIONALLY_FEASIBLE";
+      addVehicleFeasibilityReason = `Kế hoạch điều độ định kỳ ghi nhận ${currentAvailability.available_count || 1} xe dự kiến khả dụng trong khung giờ hiện tại; cần xác nhận thực tế trước khi điều động`;
+      addVehicleFeasibilityEvidence = `Kế hoạch điều độ định kỳ đã xác nhận (ref: ${currentAvailability.source_ref || "recurring_schedule"})`;
     } else if (availStatus === "AVAILABLE_NOW") {
       if (
         currentAvailability.evidence_status === "AUTHORIZED_OPERATIONAL_FACT" ||
@@ -227,6 +231,18 @@ export function generateCandidateOptions(
       : "";
     const supplierLabel = rateItem?.supplier_name ? ` (${rateItem.supplier_name})` : "";
 
+    const plannedCount = currentAvailability.available_count ?? null;
+    const unitPayloadKg = vehicleEvidence?.capacity?.usable_payload_kg ?? null;
+    const plannedCapacityKg = (plannedCount !== null && unitPayloadKg !== null)
+      ? plannedCount * unitPayloadKg
+      : null;
+
+    const optionCapacity: DecisionOptionCapacity = {
+      ...addVehicleCapacity,
+      planned_capacity_kg: plannedCapacityKg,
+      planned_available_count: plannedCount,
+    };
+
     options.push({
       option_id: supplierSlug ? `OPT_ADD_VEHICLE${supplierSlug}` : "OPT_ADD_VEHICLE",
       option_type: "ADD_VEHICLE",
@@ -246,7 +262,7 @@ export function generateCandidateOptions(
       availability: availabilityStatusDisplay,
       evidence_refs: facts.evidenceRefs || [],
       cost: addVehicleCost,
-      capacity: addVehicleCapacity,
+      capacity: optionCapacity,
       sla: addVehicleSla,
       projected_incremental_cost_difference: costDiff.difference_vnd,
       projected_cost_difference_display: costDiff.display,

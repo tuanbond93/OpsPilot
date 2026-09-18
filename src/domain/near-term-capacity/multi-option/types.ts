@@ -62,6 +62,8 @@ export interface DecisionOptionCapacity {
   capacity_gap_before: string | null;
   capacity_gap_after: string | null;
   status: OptionCapacityStatus;
+  planned_capacity_kg?: number | null;
+  planned_available_count?: number | null;
 }
 
 export type SlaProjectedEffect = "IMPROVE" | "NEUTRAL" | "WORSEN" | "UNKNOWN";
@@ -83,6 +85,7 @@ export interface DecisionOptionSla {
 
 export type VehicleAvailabilityStatus =
   | "AVAILABLE_NOW"
+  | "PLANNED_AVAILABLE_NOW"
   | "SCHEDULED_AVAILABLE"
   | "UNAVAILABLE"
   | "UNKNOWN";
