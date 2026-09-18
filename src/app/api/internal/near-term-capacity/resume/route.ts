@@ -9,6 +9,7 @@ import {
 } from "@/services/near-term-capacity-runtime";
 import { computeEvidenceMetrics, explainAuditRootCauses } from "@/services/near-term-capacity-evidence";
 import { NearTermCapacityShadowService } from "@/services/near-term-capacity-shadow";
+import { getManagerDecisionDestination } from "@/services/decision-telegram-shadow";
 import { NearTermCapacityMultiOptionShadowService, isMultiOptionShadowEnabled } from "@/services/near-term-capacity-multi-option-shadow";
 import { resolveAuthorizedRecipients, resolveProvince } from "@/notifications/gateway/scope-resolver";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
