@@ -34,6 +34,7 @@ export type LeadFact = {
   incomingType?: "B2B" | "ECOM" | "MIXED" | null;
   availableVehicles?: number | null; availableManpower?: number | null;
   confidence: "HIGH" | "MEDIUM" | "LOW";
+  supportingNote?: string | null;
   expectedIncomingKgStatus?: FactDataStatus;
   availableVehiclesStatus?: FactDataStatus;
   availableManpowerStatus?: FactDataStatus;

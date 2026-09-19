@@ -13,6 +13,9 @@ import { getManagerDecisionDestination } from "@/services/decision-telegram-shad
 import { NearTermCapacityMultiOptionShadowService, isMultiOptionShadowEnabled } from "@/services/near-term-capacity-multi-option-shadow";
 import { resolveAuthorizedRecipients, resolveProvince } from "@/notifications/gateway/scope-resolver";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
+import { InboundEvidenceService } from "@/domain/near-term-capacity";
+import { isInboundEvidenceShadowEnabled } from "@/services/near-term-capacity-runtime";
+import { resolveWarehouseTelegramTopic, TELEGRAM_ROUTING_LIMITATION_NOTE } from "@/integrations/telegram/topic-router";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
@@ -98,7 +101,7 @@ export async function GET(request: NextRequest) {
   }
 
   const isCron = isCronAuthorized(request);
-  let isAuthorized = isCron || caseId === GOLDEN_CASE_ID || action === "multi-option-shadow";
+  let isAuthorized = isCron || caseId === GOLDEN_CASE_ID || action === "multi-option-shadow" || action === "inbound-evidence";
   let actor = isCron ? "cron_secret_authorized" : `system_governed:${caseId}`;
 
   if (!isAuthorized) {
@@ -261,6 +264,110 @@ export async function GET(request: NextRequest) {
         warehouseId: targetCase.warehouse_id,
         warehouseName: targetCase.warehouse_name,
         result,
+      });
+    }
+
+    if (action === "inbound-evidence") {
+      const inboundService = new InboundEvidenceService(db);
+      const currentTimeParam = searchParams.get("currentTime");
+      const evalTime = currentTimeParam ? new Date(currentTimeParam) : new Date();
+
+      const PILOT_WAREHOUSES: Array<{ id: string; name: string }> = [
+        { id: "21161000", name: "Kho Giao Hàng Nặng - TP Yên Bái - Yên Bái" },
+        { id: "21158000", name: "Kho Giao Hàng Nặng - TP Lào Cai - Lào Cai" },
+        { id: "21160000", name: "Kho Giao Hàng Nặng - Việt Trì - Phú Thọ" },
+      ];
+
+      const [
+        snapshots,
+        routingLeadResults,
+        routingManagerResult,
+        { count: totalOrdersCount },
+        { count: ordersWithWeight },
+        { count: ordersWithoutWeight },
+      ] = await Promise.all([
+        Promise.all(
+          PILOT_WAREHOUSES.map(async (wh) => {
+            return inboundService.computeInboundEvidence(wh.id, wh.name, evalTime);
+          })
+        ),
+        Promise.all(
+          PILOT_WAREHOUSES.map(async (wh) => {
+            return resolveWarehouseTelegramTopic(db, { warehouseId: wh.id, warehouseName: wh.name, role: "LEAD" });
+          })
+        ),
+        resolveWarehouseTelegramTopic(db, { warehouseId: "21161000", role: "MANAGER" }),
+        db.from("order_snapshots").select("*", { count: "exact", head: true }),
+        db.from("order_snapshots").select("*", { count: "exact", head: true }).not("weight_kg", "is", null),
+        db.from("order_snapshots").select("*", { count: "exact", head: true }).is("weight_kg", null),
+      ]);
+
+      const warehouseEvidence = PILOT_WAREHOUSES.map((wh, idx) => {
+        const snap = snapshots[idx];
+        const route = routingLeadResults[idx];
+        return {
+          warehouseId: wh.id,
+          warehouseName: wh.name,
+          checkpointAt: snap.checkpointAt || snap.capturedAt,
+          sourceFreshness: snap.sourceFreshness || null,
+          totalOrdersFound: snap.totalOrdersFound || 0,
+          operatingWindowStatus: snap.status,
+          isWithinOperatingWindow: snap.operatingWindow.isWithinWindow,
+          forecastHorizon: snap.horizon,
+          currentBacklog: snap.currentBacklog,
+          inbound: {
+            totalInboundOrders: snap.inbound.totalInboundOrders,
+            pickedNotTransferred: snap.inbound.pickedNotTransferred,
+            inTransfer: snap.inbound.inTransfer,
+            arrivalConfirmedExcluded: snap.inbound.arrivalConfirmedExcluded,
+            etaKnownOrders: snap.inbound.etaKnownOrders,
+            etaUnknownOrders: snap.inbound.etaUnknownOrders,
+            earliestEta: snap.inbound.earliestEta,
+            latestEta: snap.inbound.latestEta,
+          },
+          sanitizedSampleOrderIds: snap.sanitizedSampleOrderIds || {
+            pickedNotTransferred: [],
+            inTransfer: [],
+            arrivalConfirmed: [],
+          },
+          preliminaryRiskLevel: snap.riskAssessment.preliminaryRiskLevel,
+          summaryVi: snap.riskAssessment.summaryVi,
+          telegramRouting: {
+            status: route.status,
+            chatId: route.status === "ROUTED" ? route.chatId : null,
+            messageThreadId: route.status === "ROUTED" ? route.messageThreadId : null,
+            topicTitle: route.status === "ROUTED" ? route.topicTitle : null,
+            province: route.status === "ROUTED" ? route.province : null,
+          },
+        };
+      });
+
+      return NextResponse.json({
+        ok: true,
+        action: "inbound-evidence",
+        timestamp: new Date().toISOString(),
+        evaluationTime: evalTime.toISOString(),
+        shadowEnabled: isInboundEvidenceShadowEnabled(),
+        etaTruthCheck: {
+          etaSource: "NOT_AVAILABLE",
+          etaStatus: "UNKNOWN",
+          rationale: "Neither Rillnet API payload nor GHN tracking provides an estimated arrival timestamp field. Only historical event timestamps (end_pick_time, end_delivery_time, end_success_time) exist.",
+        },
+        weightTruthCheck: {
+          lineage: "Rillnet raw max_weight (grams) -> mapper (max_weight / 1000) -> order_snapshots.weight_kg",
+          unknownNotZeroEnforced: true,
+          totalOrdersCount: totalOrdersCount || 0,
+          ordersWithWeight: ordersWithWeight || 0,
+          ordersWithoutWeight: ordersWithoutWeight || 0,
+          weightCoveragePercent: totalOrdersCount ? Math.round(((ordersWithWeight || 0) / totalOrdersCount) * 1000) / 10 : 0,
+        },
+        telegramRoutingAudit: {
+          generalFallback: "DISABLED",
+          missingMapping: "FAIL_CLOSED",
+          managerDecisionTopic: routingManagerResult,
+          limitationNote: TELEGRAM_ROUTING_LIMITATION_NOTE,
+        },
+        warehouses: warehouseEvidence,
       });
     }
 

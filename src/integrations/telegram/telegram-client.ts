@@ -55,10 +55,18 @@ export class TelegramClient implements HealthCheckable {
   async sendToChat(
     chatId: string,
     text: string,
-    options: { inlineKeyboard?: InlineKeyboardButton[][]; parseMode?: "HTML" | "MarkdownV2"; messageThreadId?: number | null } = {}
+    options: {
+      inlineKeyboard?: InlineKeyboardButton[][];
+      parseMode?: "HTML" | "MarkdownV2";
+      messageThreadId?: number | null;
+      requireTopic?: boolean;
+    } = {}
   ): Promise<{ messageId: string; response: any }> {
     if (!this.botToken) throw new Error("Telegram bot token is not configured.");
     if (!chatId.trim()) throw new Error("Telegram pilot group is not configured.");
+    if (options.requireTopic && (!Number.isSafeInteger(options.messageThreadId) || Number(options.messageThreadId) <= 0)) {
+      throw new Error("TELEGRAM_ROUTING_STATUS: TOPIC_MAPPING_MISSING - Operational warehouse messages require a valid message_thread_id > 0");
+    }
     const url = `https://api.telegram.org/bot${this.botToken}/sendMessage`;
     let delay = 1000;
 

@@ -394,7 +394,16 @@ export async function POST(request: NextRequest) {
           Number(update.update_id),
           responderInfo
         );
-        const text = result.status === "DETAIL_REQUESTED" ? "Đã ghi nhận. Hãy reply đúng định dạng facts được yêu cầu." : result.status === "ALREADY_RESPONDED" ? ALREADY_RESPONDED_USER_MESSAGE : result.status === "INVALID_TARGET" ? "Phản hồi không hợp lệ hoặc đã hết hiệu lực." : "Đã ghi nhận facts; OpsPilot đang kiểm tra an toàn.";
+        const text =
+          result.status === "DETAIL_REQUESTED"
+            ? (nearTermFact.answer === "EXCEPTION_REPORTED"
+                ? "Đã ghi nhận có ngoại lệ. Hãy reply nêu rõ sự cố vận hành."
+                : "Đã ghi nhận. Hãy reply đúng định dạng facts được yêu cầu.")
+            : result.status === "ALREADY_RESPONDED"
+            ? ALREADY_RESPONDED_USER_MESSAGE
+            : result.status === "INVALID_TARGET"
+            ? "Phản hồi không hợp lệ hoặc đã hết hiệu lực."
+            : "Đã ghi nhận facts; OpsPilot đang kiểm tra an toàn.";
         return NextResponse.json({ method: "answerCallbackQuery", callback_query_id: update.callback_query.id, text, show_alert: result.status === "INVALID_TARGET" });
       } catch (error) { return NextResponse.json({ method: "answerCallbackQuery", callback_query_id: update.callback_query.id, text: `Chưa thể ghi nhận facts: ${error instanceof Error ? error.message : String(error)}`.slice(0, 190), show_alert: true }); }
     }
@@ -545,7 +554,10 @@ export async function POST(request: NextRequest) {
     try {
       const result = await new NearTermCapacityRuntimeService(client).consumeDetailFromTelegramReply(member.id, Number(message.reply_to_message.message_id), text);
       if (result.handled && "status" in result) {
-        const reply = result.status === "INVALID_DETAIL" ? "Facts chưa đúng định dạng. Reply lại: KG=<số>; ETA=<ISO-8601>; TYPE=B2B|ECOM|MIXED." : result.status === "HUMAN_INVESTIGATION_REQUIRED" ? "Đã ghi nhận facts; cần kiểm tra thêm bằng chứng trước khi tạo quyết định." : result.status === "DECISION_READY" ? "Đã ghi nhận facts và tạo shadow decision để Owner review." : "Facts đã được ghi nhận trước đó.";
+        if (!threadId && chat.type !== "private") {
+          return NextResponse.json({ error: "TOPIC_MAPPING_MISSING", message: "Operational warehouse replies require a valid message_thread_id" }, { status: 400 });
+        }
+        const reply = result.status === "INVALID_DETAIL" ? "Facts chưa đúng định dạng. Reply lại: KG=<số>; ETA=<ISO-8601>; TYPE=B2B|ECOM|MIXED." : result.status === "HUMAN_INVESTIGATION_REQUIRED" ? "Đã ghi nhận ngoại lệ/facts; OpsPilot đang phân tích xử lý." : result.status === "DECISION_READY" ? "Đã ghi nhận facts và tạo shadow decision để Owner review." : "Facts đã được ghi nhận trước đó.";
         return NextResponse.json({ method: "sendMessage", chat_id: chat.id, reply_to_message_id: message.message_id, ...(threadId ? { message_thread_id: threadId } : {}), text: reply });
       }
     } catch (error) { return NextResponse.json({ error: "NEAR_TERM_CAPACITY_FACT_RESUME_FAILED", message: error instanceof Error ? error.message : String(error) }, { status: 503 }); }

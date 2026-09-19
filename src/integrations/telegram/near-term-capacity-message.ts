@@ -4,10 +4,139 @@ import {
   type AiRecommendation,
   type CurrentRisk,
   type DecisionContext,
+  type InboundEvidenceSnapshot,
   type LeadFact,
 } from "@/domain/near-term-capacity";
 
 function escape(value: string): string { return value.replace(/[&<>]/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" })[char]!); }
+
+/** New 3 decision-first quick action buttons for Lead */
+export const inboundEvidenceActionButtons = [
+  ["✅ Đã có phương án", "ACTION_PLANNED"],
+  ["⚠️ Có ngoại lệ", "EXCEPTION_REPORTED"],
+  ["🆘 Cần hỗ trợ", "ASSISTANCE_REQUESTED"],
+] as const;
+
+export type InboundEvidenceAction = typeof inboundEvidenceActionButtons[number][1];
+
+/** Legacy fact buttons kept for backward compatibility */
+export const nearTermFactButtons = [
+  ["Có — biết khá chắc giờ hàng về", "CONFIRMED_ETA"],
+  ["Có — nhưng chưa chắc giờ hàng về", "UNCERTAIN_ETA"],
+  ["Không có thêm đáng kể", "NO_SIGNIFICANT_INCOMING"],
+  ["Chưa xác định", "UNKNOWN"],
+] as const;
+
+export type LegacyNearTermFactAnswer = typeof nearTermFactButtons[number][1];
+export type NearTermFactAnswer = LegacyNearTermFactAnswer | InboundEvidenceAction;
+
+const compactAnswerCodes: Record<NearTermFactAnswer, string> = {
+  CONFIRMED_ETA: "C",
+  UNCERTAIN_ETA: "U",
+  NO_SIGNIFICANT_INCOMING: "N",
+  UNKNOWN: "X",
+  ACTION_PLANNED: "P",
+  EXCEPTION_REPORTED: "E",
+  ASSISTANCE_REQUESTED: "S",
+};
+const answerByCompactCode = Object.fromEntries(Object.entries(compactAnswerCodes).map(([answer, code]) => [code, answer])) as Record<string, NearTermFactAnswer | undefined>;
+const legacyAnswerPattern = "CONFIRMED_ETA|UNCERTAIN_ETA|NO_SIGNIFICANT_INCOMING|UNKNOWN|ACTION_PLANNED|EXCEPTION_REPORTED|ASSISTANCE_REQUESTED";
+
+export function buildNearTermFactCallbackData(caseId: string, answer: NearTermFactAnswer) {
+  const code = compactAnswerCodes[answer];
+  if (!code) throw new Error("INVALID_NEAR_TERM_FACT_CALLBACK");
+  const value = `opspcap:${caseId}:${code}`;
+  if (!/^opspcap:[0-9a-f-]{36}:[CUNXPES]$/i.test(value) || Buffer.byteLength(value) > 64) throw new Error("INVALID_NEAR_TERM_FACT_CALLBACK");
+  return value;
+}
+
+export function parseNearTermFactCallbackData(value: unknown): { caseId: string; answer: NearTermFactAnswer } | null {
+  if (typeof value !== "string" || Buffer.byteLength(value) > 64) return null;
+  const compact = /^opspcap:([0-9a-f-]{36}):([CUNXPES])$/i.exec(value);
+  if (compact) {
+    const answer = answerByCompactCode[compact[2].toUpperCase()];
+    return answer ? { caseId: compact[1].toLowerCase(), answer } : null;
+  }
+  const legacy = new RegExp(`^opspcap:([0-9a-f-]{36}):(${legacyAnswerPattern})$`, "i").exec(value);
+  return legacy ? { caseId: legacy[1].toLowerCase(), answer: legacy[2].toUpperCase() as NearTermFactAnswer } : null;
+}
+
+/** Formats operational exception reply prompt */
+export function formatOperationalExceptionPrompt(): string {
+  return "Vui lòng reply tin nhắn này để nêu rõ ngoại lệ vận hành tại kho (ví dụ: xe hỏng, thiếu người bốc xếp, kho gặp sự cố...).";
+}
+
+/** Deprecated legacy prompt kept for backward compatibility */
+export function formatNearTermDetailRequest() {
+  return "Vui lòng reply đúng 1 dòng: KG=<số>; ETA=<ISO-8601>; TYPE=B2B|ECOM|MIXED. Chỉ cung cấp facts, không chọn phương án xử lý.";
+}
+
+export const nearTermFactAnswerLabels: Record<NearTermFactAnswer, string> = {
+  CONFIRMED_ETA: "Có — biết khá chắc giờ hàng về",
+  UNCERTAIN_ETA: "Có — nhưng chưa chắc giờ hàng về",
+  NO_SIGNIFICANT_INCOMING: "Không có thêm hàng đáng kể",
+  UNKNOWN: "Chưa xác định",
+  ACTION_PLANNED: "Đã có phương án",
+  EXCEPTION_REPORTED: "Có ngoại lệ vận hành",
+  ASSISTANCE_REQUESTED: "Cần hỗ trợ năng lực",
+};
+
+/**
+ * Formats decision-first Lead prompt using deterministic Inbound Evidence snapshot.
+ * Eliminates manual Lead volume estimation.
+ */
+export function formatInboundEvidenceLeadPrompt(snapshot: InboundEvidenceSnapshot): string {
+  const warehouse = escape(snapshot.warehouseName || snapshot.warehouseId);
+  const horizonText = snapshot.horizon
+    ? `${formatVietnamTime(snapshot.horizon.start)} – ${formatVietnamTime(snapshot.horizon.end)}`
+    : "Trong khung giờ hôm nay (07:00–17:00)";
+
+  const backlog = snapshot.currentBacklog;
+  const inbound = snapshot.inbound;
+
+  const backlogKnownWeight = backlog.knownOrders > 0
+    ? `${backlog.knownWeightKg} kg (${backlog.knownOrders} đơn)`
+    : "Chưa có dữ liệu";
+  const backlogUnknownWeight = backlog.unknownWeightOrders > 0
+    ? `\n• Đơn chưa có khối lượng: ${backlog.unknownWeightOrders} đơn`
+    : "";
+
+  const picked = inbound.pickedNotTransferred;
+  const pickedWeight = picked.knownOrders > 0 ? `${picked.knownWeightKg} kg` : "Chưa có kg";
+  const pickedUnknown = picked.unknownWeightOrders > 0 ? `; ${picked.unknownWeightOrders} đơn chưa có kg` : "";
+
+  const transfer = inbound.inTransfer;
+  const transferWeight = transfer.knownOrders > 0 ? `${transfer.knownWeightKg} kg` : "Chưa có kg";
+  const transferUnknown = transfer.unknownWeightOrders > 0 ? `; ${transfer.unknownWeightOrders} đơn chưa có kg` : "";
+
+  let etaText = "Chưa có ETA xác định";
+  if (inbound.earliestEta) {
+    etaText = inbound.earliestEta === inbound.latestEta || !inbound.latestEta
+      ? `Khoảng ${formatVietnamTime(inbound.earliestEta)}`
+      : `Từ ${formatVietnamTime(inbound.earliestEta)} đến ${formatVietnamTime(inbound.latestEta)}`;
+  }
+
+  return [
+    "🟠 OPSPILOT — CẢNH BÁO NĂNG LỰC XỬ LÝ",
+    "",
+    `Kho: ${warehouse}`,
+    `Khung giờ theo dõi: ${horizonText}`,
+    "",
+    "📦 TỒN KHO HIỆN TẠI",
+    `• Số đơn tồn: ${backlog.orderCount} đơn`,
+    `• Khối lượng đã biết: ${backlogKnownWeight}${backlogUnknownWeight}`,
+    "",
+    "🚚 HÀNG DỰ KIẾN VỀ (HỆ THỐNG GHI NHẬN)",
+    `• Đã gom / Chờ chuyển: ${picked.orderCount} đơn (${pickedWeight}${pickedUnknown})`,
+    `• Đang trên đường: ${transfer.orderCount} đơn (${transferWeight}${transferUnknown})`,
+    `• Giờ hàng về (ETA): ${etaText}`,
+    "",
+    "⚠️ ĐÁNH GIÁ SƠ BỘ",
+    `• ${escape(snapshot.riskAssessment.summaryVi)}`,
+    "",
+    "👉 Xác nhận tình trạng xử lý của kho:",
+  ].join("\n");
+}
 
 /** Fact-only prompt: Lead is never asked to choose an operational action. */
 export function formatNearTermFactRequest(facts: CurrentRisk, windowMinutes: number) {
@@ -27,46 +156,6 @@ export function formatNearTermFactRequest(facts: CurrentRisk, windowMinutes: num
     "Thông tin này được dùng để đánh giá kho có nguy cơ không xử lý hết hàng trong thời gian tới hay không.",
   ].join("\n");
 }
-
-export const nearTermFactButtons = [
-  ["Có — biết khá chắc giờ hàng về", "CONFIRMED_ETA"], ["Có — nhưng chưa chắc giờ hàng về", "UNCERTAIN_ETA"],
-  ["Không có thêm đáng kể", "NO_SIGNIFICANT_INCOMING"], ["Chưa xác định", "UNKNOWN"],
-] as const;
-
-export type NearTermFactAnswer = typeof nearTermFactButtons[number][1];
-const compactAnswerCodes: Record<NearTermFactAnswer, string> = {
-  CONFIRMED_ETA: "C",
-  UNCERTAIN_ETA: "U",
-  NO_SIGNIFICANT_INCOMING: "N",
-  UNKNOWN: "X",
-};
-const answerByCompactCode = Object.fromEntries(Object.entries(compactAnswerCodes).map(([answer, code]) => [code, answer])) as Record<string, NearTermFactAnswer | undefined>;
-const legacyAnswerPattern = "CONFIRMED_ETA|UNCERTAIN_ETA|NO_SIGNIFICANT_INCOMING|UNKNOWN";
-export function buildNearTermFactCallbackData(caseId: string, answer: NearTermFactAnswer) {
-  const value = `opspcap:${caseId}:${compactAnswerCodes[answer]}`;
-  if (!/^opspcap:[0-9a-f-]{36}:[CUNX]$/i.test(value) || Buffer.byteLength(value) > 64) throw new Error("INVALID_NEAR_TERM_FACT_CALLBACK");
-  return value;
-}
-export function parseNearTermFactCallbackData(value: unknown): { caseId: string; answer: NearTermFactAnswer } | null {
-  if (typeof value !== "string" || Buffer.byteLength(value) > 64) return null;
-  const compact = /^opspcap:([0-9a-f-]{36}):([CUNX])$/i.exec(value);
-  if (compact) {
-    const answer = answerByCompactCode[compact[2].toUpperCase()];
-    return answer ? { caseId: compact[1].toLowerCase(), answer } : null;
-  }
-  const legacy = new RegExp(`^opspcap:([0-9a-f-]{36}):(${legacyAnswerPattern})$`, "i").exec(value);
-  return legacy ? { caseId: legacy[1].toLowerCase(), answer: legacy[2].toUpperCase() as NearTermFactAnswer } : null;
-}
-export function formatNearTermDetailRequest() {
-  return "Vui lòng reply đúng 1 dòng: KG=<số>; ETA=<ISO-8601>; TYPE=B2B|ECOM|MIXED. Chỉ cung cấp facts, không chọn phương án xử lý.";
-}
-
-export const nearTermFactAnswerLabels: Record<NearTermFactAnswer, string> = {
-  CONFIRMED_ETA: "Có — biết khá chắc giờ hàng về",
-  UNCERTAIN_ETA: "Có — nhưng chưa chắc giờ hàng về",
-  NO_SIGNIFICANT_INCOMING: "Không có thêm hàng đáng kể",
-  UNKNOWN: "Chưa xác định",
-};
 
 export function formatVietnamTime(dateOrIso: Date | string): string {
   const d = typeof dateOrIso === "string" ? new Date(dateOrIso) : dateOrIso;

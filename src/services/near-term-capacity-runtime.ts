@@ -1,15 +1,19 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { generate } from "@/ai/provider";
 import { logger } from "@/observability/logger";
-import { buildContext, critique, detectCandidate, formatOperationalRiskPromptSummary, type AiRecommendation, type CurrentRisk, type DecisionContext, type IncomingAnswer, type LeadFact } from "@/domain/near-term-capacity";
+import { buildContext, critique, detectCandidate, formatOperationalRiskPromptSummary, type AiRecommendation, type CurrentRisk, type DecisionContext, type IncomingAnswer, type LeadFact, InboundEvidenceService } from "@/domain/near-term-capacity";
 import { TelegramClient } from "@/integrations/telegram/telegram-client";
-import { buildNearTermFactCallbackData, formatNearTermDetailRequest, formatNearTermFactConfirmation, formatNearTermFactRequest, nearTermFactButtons, type NearTermFactAnswer } from "@/integrations/telegram/near-term-capacity-message";
+import { buildNearTermFactCallbackData, formatNearTermDetailRequest, formatNearTermFactConfirmation, formatNearTermFactRequest, formatOperationalExceptionPrompt, nearTermFactButtons, type NearTermFactAnswer } from "@/integrations/telegram/near-term-capacity-message";
 import { NearTermCapacityDecisionBridge } from "@/services/near-term-capacity-decision-bridge";
 import { NearTermCapacityShadowService } from "@/services/near-term-capacity-shadow";
 import { NearTermCapacityMultiOptionShadowService, isMultiOptionShadowEnabled } from "@/services/near-term-capacity-multi-option-shadow";
 import { resolveAuthorizedRecipients, resolveProvince, type ResolvedRecipient, type ScopeResolutionResult } from "@/notifications/gateway/scope-resolver";
 
 export const NEAR_TERM_SHADOW_MODE = "SHADOW_DECISION_WITH_LIVE_FACT_COLLECTION" as const;
+
+export function isInboundEvidenceShadowEnabled(): boolean {
+  return process.env.INBOUND_EVIDENCE_V2_SHADOW_ENABLED !== "false";
+}
 
 /** Stage 1 Governed Multi-Warehouse Rollout: strictly bounded to 3 verified pilot hubs */
 export const STAGE_1_PILOT_WAREHOUSES = [
@@ -233,7 +237,7 @@ export class NearTermCapacityRuntimeService {
       if (!recipient) { await this.clearFactRequestClaim(row.id); return false; }
       const facts = row.current_risk_snapshot;
       const keyboard = nearTermFactButtons.map(([text, answer]) => [{ text, callbackData: buildNearTermFactCallbackData(row.id, answer) }]);
-      const sent = await this.telegram.sendToChat(recipient.chatId, formatNearTermFactRequest(facts, policy.nearTermWindowMinutes), { inlineKeyboard: keyboard, messageThreadId: recipient.messageThreadId });
+      const sent = await this.telegram.sendToChat(recipient.chatId, formatNearTermFactRequest(facts, policy.nearTermWindowMinutes), { inlineKeyboard: keyboard, messageThreadId: recipient.messageThreadId, requireTopic: true });
       await this.event(row.id, "FACT_REQUEST_SENT", actor, { interactionId: row.id, telegramMessageId: sent.messageId, memberId: recipient.member.memberId, messageThreadId: recipient.messageThreadId, province: recipient.province, mode: NEAR_TERM_SHADOW_MODE });
       await this.clearFactRequestClaim(row.id);
       return true;
@@ -486,6 +490,21 @@ export class NearTermCapacityRuntimeService {
         .catch((e) => logger.warn("Multi-option shadow evaluation failed at checkpoint:", { error: e }));
     }
 
+    if (isInboundEvidenceShadowEnabled()) {
+      void new InboundEvidenceService(this.db)
+        .computeInboundEvidence(selected.facts.warehouseId, selected.facts.warehouseName)
+        .then((snapshot) => {
+          logger.info("Inbound evidence v2 shadow evaluation:", {
+            warehouseId: selected.facts.warehouseId,
+            status: snapshot.status,
+            backlogOrders: snapshot.currentBacklog.orderCount,
+            totalInboundOrders: snapshot.inbound.totalInboundOrders,
+            preliminaryRisk: snapshot.riskAssessment.preliminaryRiskLevel,
+          });
+        })
+        .catch((e) => logger.warn("Inbound evidence shadow evaluation failed:", { error: e }));
+    }
+
     const keyboard = nearTermFactButtons.map(([text, answer]) => [{
       text,
       callbackData: buildNearTermFactCallbackData(caseRow.id, answer),
@@ -495,7 +514,7 @@ export class NearTermCapacityRuntimeService {
       const sent = await this.telegram.sendToChat(
         selected.recipient.chatId,
         formatNearTermFactRequest(selected.facts, policy.nearTermWindowMinutes),
-        { inlineKeyboard: keyboard, messageThreadId: selected.recipient.messageThreadId }
+        { inlineKeyboard: keyboard, messageThreadId: selected.recipient.messageThreadId, requireTopic: true }
       );
       await this.event(caseRow.id, "FACT_REQUEST_SENT", actor, {
         interactionId: caseRow.id,
@@ -557,23 +576,43 @@ export class NearTermCapacityRuntimeService {
       });
     }
 
-    if (answer === "CONFIRMED_ETA" || answer === "UNCERTAIN_ETA") {
+    if (answer === "CONFIRMED_ETA" || answer === "UNCERTAIN_ETA" || answer === "EXCEPTION_REPORTED") {
       const { error } = await this.db.from("near_term_capacity_cases").update({ status: "FACT_CAPTURED", updated_at: new Date().toISOString() }).eq("id", caseId).eq("status", "FACT_REQUESTED");
       if (error) throw error;
-      const sent = await this.telegram.sendToChat(chatId, formatNearTermDetailRequest());
+      const threadId = event?.payload?.messageThreadId ? Number(event.payload.messageThreadId) : null;
+      const promptText = answer === "EXCEPTION_REPORTED" ? formatOperationalExceptionPrompt() : formatNearTermDetailRequest();
+      const sent = await this.telegram.sendToChat(chatId, promptText, { messageThreadId: threadId, requireTopic: true });
       await this.event(caseId, "FACT_DETAIL_REQUEST_SENT", "near_term_capacity", { telegramMessageId: sent.messageId, interactionId: `${caseId}:detail`, answer });
       return { status: "DETAIL_REQUESTED" as const };
     }
-    return this.persistAndDecide(row, factFrom(incoming, `telegram:${memberId}`, caseId));
+    const mappedIncoming: IncomingAnswer =
+      answer === "ACTION_PLANNED"
+        ? "NO_SIGNIFICANT_INCOMING"
+        : answer === "ASSISTANCE_REQUESTED"
+        ? "UNCERTAIN_ETA"
+        : (incoming as IncomingAnswer);
+    return this.persistAndDecide(row, factFrom(mappedIncoming, `telegram:${memberId}`, caseId));
   }
   async consumeDetailReply(caseId: string, memberId: string, text: string) {
     const row = await this.activeCaseById(caseId);
     if (!row || row.status !== "FACT_CAPTURED") return { status: "NOT_AWAITING_DETAILS" as const };
     const initial = await this.db.from("near_term_capacity_events").select("payload").eq("case_id", caseId).eq("event_type", "FACT_INITIAL_RESPONSE_RECEIVED").maybeSingle();
-    const answer = initial.data?.payload?.answer as IncomingAnswer | undefined;
+    const answer = initial.data?.payload?.answer as NearTermFactAnswer | undefined;
+    if (answer === "EXCEPTION_REPORTED") {
+      const fact: LeadFact = {
+        interactionId: `${caseId}:detail`,
+        suppliedBy: `telegram:${memberId}`,
+        capturedAt: new Date().toISOString(),
+        source: "HUMAN_OPERATIONAL_GROUND_TRUTH",
+        incoming: "UNCERTAIN_ETA",
+        confidence: "MEDIUM",
+        supportingNote: text.slice(0, 300),
+      };
+      return this.persistAndDecide(row, fact);
+    }
     const detail = parseLeadDetail(text);
     if (!answer || !detail) return { status: "INVALID_DETAIL" as const };
-    return this.persistAndDecide(row, factFrom(answer, `telegram:${memberId}`, `${caseId}:detail`, detail));
+    return this.persistAndDecide(row, factFrom(answer as IncomingAnswer, `telegram:${memberId}`, `${caseId}:detail`, detail));
   }
   async consumeDetailFromTelegramReply(memberId: string, replyToMessageId: number, text: string) {
     const { data: detailEvents } = await this.db.from("near_term_capacity_events").select("case_id,payload").eq("event_type", "FACT_DETAIL_REQUEST_SENT");
