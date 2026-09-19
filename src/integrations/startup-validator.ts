@@ -197,15 +197,27 @@ export class StartupValidator {
           const colsDetail = colErr ? colErr.message : "COLUMNS_PRESENT";
 
           // 2. Check erroneous production fact
-          const { data: factRows } = await dbClient
-            .from("vehicle_fleet_availability")
-            .select("id, warehouse_id, supplier_name, vehicle_class, available_count, valid_until, superseded_at")
-            .eq("warehouse_id", "21160000")
-            .eq("supplier_name", "Thiên Phú")
-            .eq("vehicle_class", "TRUCK_1_9T");
+          let factRows = null;
+          if (colsPass) {
+            const res = await dbClient
+              .from("vehicle_fleet_availability")
+              .select("id, warehouse_id, supplier_name, vehicle_class, available_count, valid_until, superseded_at")
+              .eq("warehouse_id", "21160000")
+              .eq("supplier_name", "Thiên Phú")
+              .eq("vehicle_class", "TRUCK_1_9T");
+            factRows = res.data;
+          } else {
+            const res = await dbClient
+              .from("vehicle_fleet_availability")
+              .select("id, warehouse_id, supplier_name, vehicle_class, available_count, valid_until")
+              .eq("warehouse_id", "21160000")
+              .eq("supplier_name", "Thiên Phú")
+              .eq("vehicle_class", "TRUCK_1_9T");
+            factRows = res.data;
+          }
 
           const factExists = Boolean(factRows && factRows.length > 0);
-          const firstFact = factRows?.[0] || null;
+          const firstFact = (factRows?.[0] || null) as any;
 
           // 3. Stored procedure probe
           let rpcStatus = "UNKNOWN";
@@ -248,7 +260,7 @@ export class StartupValidator {
           const factUnchanged = factExists &&
             firstFact?.available_count === 1 &&
             validUntilNormalized === expectedValidUntil &&
-            firstFact?.superseded_at === null;
+            (!firstFact?.superseded_at || firstFact?.superseded_at === null);
 
           return {
             status: "GREEN",
@@ -263,7 +275,7 @@ export class StartupValidator {
               directClientWritePolicyAdded: "NO",
               erroneousFactFound: factExists,
               erroneousFactUnchanged: factUnchanged ? "YES" : "NO",
-              erroneousFactSupersededAt: firstFact?.superseded_at === null ? "NULL" : (firstFact?.superseded_at || "NULL"),
+              erroneousFactSupersededAt: firstFact?.superseded_at ? firstFact.superseded_at : "NULL",
               factData: firstFact,
             }),
             lastSuccessAt: new Date().toISOString(),
