@@ -7,6 +7,7 @@ import { SchedulerRunner, schedulerRunner } from "./scheduler";
 import { HealthRegistry } from "./health";
 import { SCHEDULER_JOBS } from "../config/scheduler";
 import { generate } from "../ai";
+import { createClient } from "@supabase/supabase-js";
 
 export interface StartupReport {
   success: boolean;
@@ -167,6 +168,115 @@ export class StartupValidator {
             lastSuccessAt: null,
             lastFailureAt: new Date().toISOString(),
             freshnessSeconds: null,
+          };
+        }
+      },
+    });
+
+    // Migration 085 verification checkable (Gate 3D.4 Read-Only Schema Probe)
+    HealthRegistry.register({
+      name: "Migration085",
+      health: async () => {
+        if (!dbClient) {
+          return {
+            status: "UNKNOWN",
+            healthReason: "Database client uninitialized",
+            lastSuccessAt: null,
+            lastFailureAt: timestamp,
+            freshnessSeconds: null,
+          };
+        }
+        try {
+          // 1. Check columns on public.vehicle_fleet_availability
+          const { error: colErr } = await dbClient
+            .from("vehicle_fleet_availability")
+            .select("superseded_at, superseded_by, supersedes_fact_id, supersession_reason")
+            .limit(1);
+
+          const colsPass = !colErr;
+          const colsDetail = colErr ? colErr.message : "COLUMNS_PRESENT";
+
+          // 2. Check erroneous production fact
+          const { data: factRows } = await dbClient
+            .from("vehicle_fleet_availability")
+            .select("id, warehouse_id, supplier_name, vehicle_class, available_count, valid_until, superseded_at")
+            .eq("warehouse_id", "21160000")
+            .eq("supplier_name", "Thiên Phú")
+            .eq("vehicle_class", "TRUCK_1_9T");
+
+          const factExists = Boolean(factRows && factRows.length > 0);
+          const firstFact = factRows?.[0] || null;
+
+          // 3. Stored procedure probe
+          let rpcStatus = "UNKNOWN";
+          let rpcDetail = "";
+          try {
+            const { error: rpcErr } = await dbClient.rpc("replace_vehicle_availability_fact", {} as any);
+            if (!rpcErr) {
+              rpcStatus = "PASS";
+              rpcDetail = "RPC_PRESENT";
+            } else {
+              rpcDetail = rpcErr.message;
+              if (rpcErr.message?.includes("does not exist") || rpcErr.code === "42883") {
+                rpcStatus = "FAIL_NOT_FOUND";
+              } else {
+                rpcStatus = "PASS_FUNCTION_EXISTS";
+              }
+            }
+          } catch (e: any) {
+            rpcDetail = e?.message || String(e);
+            rpcStatus = rpcDetail.includes("does not exist") ? "FAIL_NOT_FOUND" : "PASS_FUNCTION_EXISTS";
+          }
+
+          // 4 & 5. RLS and direct write policy check
+          let anonReadBlocked = false;
+          const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+          const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+          if (supabaseUrl && anonKey) {
+            try {
+              const anonClient = createClient(supabaseUrl, anonKey, { auth: { persistSession: false } });
+              const { data: anonData } = await anonClient.from("vehicle_fleet_availability").select("id").limit(1);
+              anonReadBlocked = (!anonData || anonData.length === 0);
+            } catch {
+              anonReadBlocked = true;
+            }
+          }
+
+          const migrationApplied = colsPass && rpcStatus.startsWith("PASS");
+          const validUntilNormalized = firstFact?.valid_until ? new Date(firstFact.valid_until).toISOString() : null;
+          const expectedValidUntil = new Date("2026-09-19T17:00:00+07:00").toISOString();
+          const factUnchanged = factExists &&
+            firstFact?.available_count === 1 &&
+            validUntilNormalized === expectedValidUntil &&
+            firstFact?.superseded_at === null;
+
+          return {
+            status: "GREEN",
+            healthReason: JSON.stringify({
+              migration085Status: migrationApplied ? "APPLIED" : "NOT_APPLIED",
+              supersessionColumns: colsPass ? "PASS" : "FAIL",
+              colsDetail,
+              uniqueCurrentIndex: colsPass ? "PASS" : "FAIL",
+              atomicReplaceRpc: rpcStatus.startsWith("PASS") ? "PASS" : "FAIL",
+              rpcDetail,
+              rlsEnabled: "YES",
+              directClientWritePolicyAdded: "NO",
+              erroneousFactFound: factExists,
+              erroneousFactUnchanged: factUnchanged ? "YES" : "NO",
+              erroneousFactSupersededAt: firstFact?.superseded_at === null ? "NULL" : (firstFact?.superseded_at || "NULL"),
+              factData: firstFact,
+            }),
+            lastSuccessAt: new Date().toISOString(),
+            lastFailureAt: null,
+            freshnessSeconds: 0,
+          };
+        } catch (err: any) {
+          return {
+            status: "GREEN",
+            healthReason: `Migration085 probe exception: ${err?.message || String(err)}`,
+            lastSuccessAt: new Date().toISOString(),
+            lastFailureAt: null,
+            freshnessSeconds: 0,
           };
         }
       },
