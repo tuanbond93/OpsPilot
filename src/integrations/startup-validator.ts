@@ -251,10 +251,11 @@ export class StartupValidator {
             rpcDetail = e?.message || String(e);
           }
 
-          // 3b. Probe with anon (must be denied permission)
+          // 3b. Probe with anon (must be denied permission or hidden from schema cache)
           const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
           const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
           let anonClient = null;
+          let anonRpcDetail = "";
           if (supabaseUrl && anonKey) {
             try {
               anonClient = createClient(supabaseUrl, anonKey, { auth: { persistSession: false } });
@@ -270,12 +271,22 @@ export class StartupValidator {
                 p_supplied_by: "system",
                 p_supplier_role: "SYSTEM_ADMIN",
               });
-              if (anonRpcErr && (anonRpcErr.message?.includes("permission denied") || anonRpcErr.code === "42501")) {
-                rpcPublicRevoked = true;
-              } else if (anonRpcErr && anonRpcErr.message?.includes("not found")) {
-                rpcPublicRevoked = true;
+              if (anonRpcErr) {
+                anonRpcDetail = `[anon code=${anonRpcErr.code} msg=${anonRpcErr.message}]`;
+                const msgLower = (anonRpcErr.message || "").toLowerCase();
+                if (
+                  anonRpcErr.code === "42501" ||
+                  anonRpcErr.code === "PGRST202" ||
+                  msgLower.includes("permission denied") ||
+                  msgLower.includes("could not find") ||
+                  msgLower.includes("schema cache") ||
+                  msgLower.includes("not found")
+                ) {
+                  rpcPublicRevoked = true;
+                }
               }
-            } catch {
+            } catch (e: any) {
+              anonRpcDetail = `[anon exception: ${e?.message || String(e)}]`;
               rpcPublicRevoked = true;
             }
           }
@@ -285,26 +296,32 @@ export class StartupValidator {
           let indexDetail = "";
           try {
             // Attempt to insert an identical active fact for the same tuple (warehouse: 21160000, Thiên Phú, TRUCK_1_9T)
-            const { error: dupErr } = await dbClient.from("vehicle_fleet_availability").insert({
+            // Values must satisfy chk_fleet_avail_boolean_consistency: available=true and available_count > 0, available_at <= captured_at
+            const nowIso = new Date().toISOString();
+            const { data: dupData, error: dupErr } = await dbClient.from("vehicle_fleet_availability").insert({
               warehouse_id: "21160000",
               supplier_name: "Thiên Phú",
               vehicle_class: "TRUCK_1_9T",
-              available: false,
+              available: true,
               available_count: 1,
-              available_at: new Date().toISOString(),
-              captured_at: new Date().toISOString(),
+              available_at: nowIso,
+              captured_at: nowIso,
               valid_until: new Date(Date.now() + 3600000).toISOString(),
               source_ref: "PROBE_DUPLICATE_CHECK",
               supplied_by: "system",
               supplier_role: "SYSTEM_ADMIN",
               superseded_at: null, // explicitly NULL to test partial unique index
-            });
+            }).select("id");
 
             if (dupErr && (dupErr.message?.includes("uq_fleet_avail_single_current") || dupErr.code === "23505")) {
               uniqueIndexPass = true;
               indexDetail = "INDEX_ACTIVE_AND_ENFORCED";
             } else {
-              indexDetail = dupErr ? dupErr.message : "NO_ERROR_RETURNED";
+              indexDetail = dupErr ? `[${dupErr.code}] ${dupErr.message}` : "NO_ERROR_RETURNED";
+              if (!dupErr && dupData && dupData.length > 0) {
+                // Safety cleanup if insert unexpectedly succeeded
+                await dbClient.from("vehicle_fleet_availability").delete().eq("source_ref", "PROBE_DUPLICATE_CHECK");
+              }
             }
           } catch (e: any) {
             indexDetail = e?.message || String(e);
@@ -342,24 +359,26 @@ export class StartupValidator {
           const expectedValidUntil = new Date("2026-09-19T17:00:00+07:00").toISOString();
           const originalValidUntilPreserved = validUntilNormalized === expectedValidUntil;
 
+          const migrationAllPass = colsPass && rpcServiceRoleAllowed && rpcPublicRevoked && uniqueIndexPass;
+
           return {
             status: "GREEN",
             healthReason: JSON.stringify({
-              migration085Status: (colsPass && rpcServiceRoleAllowed && uniqueIndexPass) ? "APPLIED" : "FAILED",
+              migration085Status: migrationAllPass ? "APPLIED" : "FAILED",
               supersessionColumns: colsPass ? "PASS" : "FAIL",
               uniqueCurrentIndex: uniqueIndexPass ? "PASS" : "FAIL",
               indexDetail,
               atomicReplaceRpc: rpcServiceRoleAllowed ? "PASS" : "FAIL",
               rpcPublicRevoked: rpcPublicRevoked ? "YES" : "NO",
               rpcServiceRoleAllowed: rpcServiceRoleAllowed ? "YES" : "NO",
-              rpcDetail,
+              rpcDetail: `${rpcDetail} ${anonRpcDetail}`.trim(),
               rlsEnabled: anonReadBlocked ? "YES" : "NO",
               directClientWritePolicyAdded: directClientWritePolicyAdded ? "YES" : "NO",
               oldBadFactOriginalValidUntilPreserved: originalValidUntilPreserved ? "YES" : "NO",
               oldBadFactSupersededAt: firstFact?.superseded_at === null ? "NULL" : (firstFact?.superseded_at || "NULL"),
               oldBadFactActiveNow: isActiveNow ? "YES" : "NO",
               runtimeSupersessionCompatible: "YES",
-              readyForNewLiveFact: (colsPass && rpcServiceRoleAllowed && uniqueIndexPass) ? "YES" : "NO",
+              readyForNewLiveFact: migrationAllPass ? "YES" : "NO",
             }),
             lastSuccessAt: new Date().toISOString(),
             lastFailureAt: null,
