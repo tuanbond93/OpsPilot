@@ -100,25 +100,14 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ ok: false, error: "INVALID_CASE_ID" }, { status: 400 });
   }
 
+  // No diagnostic or shadow action is public.  In particular, a known case ID
+  // must never act as an authentication substitute.
   const isCron = isCronAuthorized(request);
-  let isAuthorized = isCron || (caseId === GOLDEN_CASE_ID && action === "status") || action === "multi-option-shadow";
-  let actor = isCron ? "cron_secret_authorized" : `system_governed:${caseId}`;
-
-  // Sensitive diagnostic and operational endpoints are strictly authenticated
-  if (action === "inbound-evidence") {
-    isAuthorized = false;
-  }
-
-  if (!isAuthorized) {
-    if (isCron) {
-      isAuthorized = true;
-      actor = "cron_secret_authorized";
-    } else {
-      const access = await authorizeApiRequest(request, "MANAGE_SYSTEM", { limit: 10, windowMs: 60_000 });
-      if (!access.ok) return access.response;
-      if (access.identity?.actor) actor = access.identity.actor;
-      isAuthorized = true;
-    }
+  let actor = "cron_secret_authorized";
+  if (!isCron) {
+    const access = await authorizeApiRequest(request, "MANAGE_SYSTEM", { limit: 10, windowMs: 60_000 });
+    if (!access.ok) return access.response;
+    actor = access.identity?.actor || "authenticated_manager";
   }
 
   try {
@@ -300,7 +289,9 @@ export async function GET(request: NextRequest) {
       ] = await Promise.all([
         Promise.all(
           PILOT_WAREHOUSES.map(async (wh) => {
-            return inboundService.computeInboundEvidence(wh.id, wh.name, evalTime, { isReplay });
+            return isReplay
+              ? inboundService.computeReplayInboundEvidence(wh.id, wh.name, evalTime)
+              : inboundService.computeNaturalInboundEvidence(wh.id, wh.name);
           })
         ),
         Promise.all(
@@ -313,6 +304,23 @@ export async function GET(request: NextRequest) {
         db.from("order_snapshots").select("*", { count: "exact", head: true }).not("weight_kg", "is", null),
         db.from("order_snapshots").select("*", { count: "exact", head: true }).is("weight_kg", null),
       ]);
+
+      // Counts only: the endpoint never returns raw orders.  This makes the
+      // population lineage auditable without exposing operational PII.
+      const { data: latestSuccessfulSync } = await db
+        .from("sync_runs")
+        .select("id,fetched_order_count,normalized_order_count")
+        .eq("status", "success")
+        .order("started_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      const syncRunId = latestSuccessfulSync?.id || null;
+      const [{ count: completeInboundPopulationCount }, { count: incidentSelectedCount }] = syncRunId
+        ? await Promise.all([
+            db.from("inbound_order_observations").select("*", { count: "exact", head: true }).eq("sync_run_id", syncRunId),
+            db.from("order_snapshots").select("*", { count: "exact", head: true }).eq("sync_run_id", syncRunId),
+          ])
+        : [{ count: null }, { count: null }];
 
       const warehouseEvidence = PILOT_WAREHOUSES.map((wh, idx) => {
         const snap = snapshots[idx];
@@ -392,6 +400,15 @@ export async function GET(request: NextRequest) {
           ordersWithWeight: ordersWithWeight || 0,
           ordersWithoutWeight: ordersWithoutWeight || 0,
           weightCoveragePercent: totalOrdersCount ? Math.round(((ordersWithWeight || 0) / totalOrdersCount) * 1000) / 10 : 0,
+        },
+        sourcePopulationCheck: {
+          syncRunId,
+          rawSyncOrderCount: latestSuccessfulSync?.fetched_order_count ?? null,
+          normalizedOrderCount: latestSuccessfulSync?.normalized_order_count ?? null,
+          completeInboundPopulationCount: completeInboundPopulationCount ?? null,
+          incidentSelectedCount: incidentSelectedCount ?? null,
+          orderSnapshotPopulationType: "INCIDENT_FILTERED",
+          inboundEvidenceSource: "inbound_order_observations",
         },
         telegramRoutingAudit: {
           generalFallback: "DISABLED",

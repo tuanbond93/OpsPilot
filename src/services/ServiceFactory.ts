@@ -115,7 +115,8 @@ export class ServiceFactory {
       syncLockRepo,
       triageAuditRepo,
       playbookDirectiveRepo,
-      client ? new SupabaseLaneObservationRepository(client) : null
+      client ? new SupabaseLaneObservationRepository(client) : null,
+      RepositoryFactory.getInboundOrderObservationRepository(client)
     );
   }
   public static getPlannerService(client?: SupabaseClient): IPlannerService {

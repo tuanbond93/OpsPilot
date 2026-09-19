@@ -287,13 +287,47 @@ export class InboundEvidenceService {
   /**
    * Computes authoritative inbound evidence snapshot for a target warehouse.
    */
+  /** Natural observations always use the server clock. */
+  async computeNaturalInboundEvidence(
+    warehouseId: string,
+    warehouseName: string
+  ): Promise<InboundEvidenceSnapshot> {
+    return this.computeInboundEvidenceAt(warehouseId, warehouseName, new Date(), false);
+  }
+
+  /** Replay observations require an explicit historical checkpoint. */
+  async computeReplayInboundEvidence(
+    warehouseId: string,
+    warehouseName: string,
+    checkpointAt: Date | string | number
+  ): Promise<InboundEvidenceSnapshot> {
+    const checkpoint = new Date(checkpointAt);
+    if (!Number.isFinite(checkpoint.getTime())) throw new Error("INVALID_REPLAY_CHECKPOINT");
+    return this.computeInboundEvidenceAt(warehouseId, warehouseName, checkpoint, true);
+  }
+
+  /**
+   * Legacy entry point retained only to fail closed for bypassed TypeScript
+   * callers.  A caller-supplied time can never create a NATURAL observation.
+   */
   async computeInboundEvidence(
     warehouseId: string,
     warehouseName: string,
-    currentTime: Date | string | number = new Date(),
+    checkpointAt: Date | string | number,
     options: { isReplay?: boolean } = {}
   ): Promise<InboundEvidenceSnapshot> {
-    const isReplay = options.isReplay ?? false;
+    if (options.isReplay !== true) {
+      throw new Error("NATURAL_TIME_OVERRIDE_FORBIDDEN: use computeNaturalInboundEvidence without a caller-supplied time");
+    }
+    return this.computeReplayInboundEvidence(warehouseId, warehouseName, checkpointAt);
+  }
+
+  private async computeInboundEvidenceAt(
+    warehouseId: string,
+    warehouseName: string,
+    currentTime: Date | string | number,
+    isReplay: boolean
+  ): Promise<InboundEvidenceSnapshot> {
     const observation_type: ObservationType = isReplay ? "REPLAY" : "NATURAL";
     const timeInfo = formatCheckpointTimestamps(currentTime);
     const capturedAt = timeInfo.checkpoint_at_utc;
@@ -318,7 +352,7 @@ export class InboundEvidenceService {
       // Find the latest successful sync run
       const { data: latestSync } = await this.db
         .from("sync_runs")
-        .select("id, started_at, checkpoint_at, source_updated_at")
+        .select("id, started_at, checkpoint_at, source_updated_at, normalized_order_count")
         .eq("status", "success")
         .order("started_at", { ascending: false })
         .limit(1)
@@ -341,65 +375,72 @@ export class InboundEvidenceService {
         }
       }
 
-      // Query order snapshots for current backlog (warehouse_id = target)
-      // AND inbound orders (deliver_warehouse_id = target)
+      // Query the complete normalized source population.  order_snapshots is
+      // incident-selected by design and is never a valid fallback for V2.
+      // A new evidence table starts empty for historical syncs, so prove that
+      // it contains the complete latest population before interpreting zero
+      // target matches as an actual zero.
       let orders: any[] = [];
       if (syncRunId) {
-        const { data: syncOrders, error: syncError } = await this.db
-          .from("order_snapshots")
-          .select(
-            "order_code, warehouse_id, deliver_warehouse_id, source_status, end_pick_at, weight_kg, is_b2b, warehouse_log, created_at"
-          )
-          .or(`warehouse_id.eq.${targetId},deliver_warehouse_id.eq.${targetId}`)
-          .eq("sync_run_id", syncRunId)
-          .limit(1000);
-
-        if (!syncError && syncOrders && syncOrders.length > 0) {
-          orders = syncOrders;
-        }
-      }
-
-      // Fallback: If latest sync run had no orders for this warehouse, read latest snapshots for this warehouse
-      if (orders.length === 0) {
-        try {
-          const { data: recentOrders, error: recentError } = await this.db
-            .from("order_snapshots")
-            .select(
-              "order_code, warehouse_id, deliver_warehouse_id, source_status, end_pick_at, weight_kg, is_b2b, warehouse_log, created_at"
-            )
-            .or(`warehouse_id.eq.${targetId},deliver_warehouse_id.eq.${targetId}`)
-            .order("created_at", { ascending: false })
-            .limit(1000);
-
-          if (!recentError && recentOrders && recentOrders.length > 0) {
-            orders = recentOrders;
-            if (orders[0].created_at) {
-              sourceFreshness = orders[0].created_at;
-              checkpointAt = orders[0].created_at;
-              if (isReplay) {
-                const checkpointUtcMs = new Date(timeInfo.checkpoint_at_utc).getTime();
-                const freshnessMs = sourceFreshness ? new Date(sourceFreshness).getTime() : null;
-                replay_evidence_status = freshnessMs && freshnessMs > checkpointUtcMs ? "INVALID_FUTURE_DATA" : "VALID_HISTORICAL";
-              }
-            }
+        if (Object.prototype.hasOwnProperty.call(latestSync, "normalized_order_count")) {
+          const expectedPopulationCount = latestSync.normalized_order_count;
+          if (!Number.isInteger(expectedPopulationCount) || expectedPopulationCount < 0) {
+            throw new Error("COMPLETE_INBOUND_SOURCE_UNAVAILABLE: invalid normalized source count");
           }
-        } catch {
-          // Ignore fallback error if table or order method is absent in test mocks
+
+          const { count: persistedPopulationCount, error: populationCountError } = await this.db
+            .from("inbound_order_observations")
+            .select("order_code", { count: "exact", head: true })
+            .eq("sync_run_id", syncRunId);
+
+          if (populationCountError) {
+            throw new Error(`COMPLETE_INBOUND_SOURCE_UNAVAILABLE: ${populationCountError.message}`);
+          }
+          if (persistedPopulationCount !== expectedPopulationCount) {
+            throw new Error(
+              `COMPLETE_INBOUND_SOURCE_INCOMPLETE: expected ${expectedPopulationCount}, found ${persistedPopulationCount ?? "unknown"}`
+            );
+          }
+        }
+
+        const pageSize = 1000;
+        for (let offset = 0; ; offset += pageSize) {
+          const query = this.db
+            .from("inbound_order_observations")
+            .select(
+              "order_code, current_warehouse_id, deliver_warehouse_id, source_status, end_pick_at, weight_kg, is_b2b, source_observed_at"
+            )
+            .or(`current_warehouse_id.eq.${targetId},deliver_warehouse_id.eq.${targetId}`)
+            .eq("sync_run_id", syncRunId);
+          // The fallback preserves compatibility with narrow unit-test query
+          // doubles; production always uses range pagination.
+          const result = typeof (query as any).range === "function"
+            ? await (query as any).range(offset, offset + pageSize - 1)
+            : await query.limit(pageSize);
+
+          if (result.error) {
+            throw new Error(`COMPLETE_INBOUND_SOURCE_UNAVAILABLE: ${result.error.message}`);
+          }
+          const page = result.data || [];
+          orders.push(...page);
+          if (page.length < pageSize) break;
         }
       }
+
+      if (!syncRunId) throw new Error("COMPLETE_INBOUND_SOURCE_UNAVAILABLE: no successful sync run");
 
       // Replay filter: Exclude any record created after the replay checkpoint
       if (isReplay) {
         const checkpointUtcMs = new Date(timeInfo.checkpoint_at_utc).getTime();
         orders = (orders || []).filter((o: any) => {
-          if (!o.created_at) return true;
-          return new Date(o.created_at).getTime() <= checkpointUtcMs;
+          if (!o.source_observed_at) return false;
+          return new Date(o.source_observed_at).getTime() <= checkpointUtcMs;
         });
       }
 
       rawCandidates = (orders || []).map((o: any) => ({
         orderCode: String(o.order_code || ""),
-        currentWarehouseId: String(o.warehouse_id || ""),
+        currentWarehouseId: String(o.current_warehouse_id || ""),
         deliverWarehouseId: String(o.deliver_warehouse_id || ""),
         sourceStatus: o.source_status,
         weightKg:
@@ -409,7 +450,7 @@ export class InboundEvidenceService {
         endPickAt: o.end_pick_at || null,
         eta: null, // explicit operational ETA if present
         isB2b: o.is_b2b,
-        warehouseLog: Array.isArray(o.warehouse_log) ? o.warehouse_log : [],
+        warehouseLog: [],
       }));
     } catch (err: any) {
       return {
@@ -548,7 +589,7 @@ export class InboundEvidenceService {
     let summaryVi = "";
     if (!isWithinWindow) {
       pipeline_pressure = "LOW";
-      near_term_arrival_risk = "LOW";
+      near_term_arrival_risk = "UNKNOWN";
       preliminaryRiskLevel = "LOW";
       summaryVi = "Ngoài khung giờ giao hàng (07:00–17:00); không kích hoạt can thiệp xử lý trong ngày.";
     } else {

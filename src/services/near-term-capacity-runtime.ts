@@ -492,7 +492,7 @@ export class NearTermCapacityRuntimeService {
 
     if (isInboundEvidenceShadowEnabled()) {
       void new InboundEvidenceService(this.db)
-        .computeInboundEvidence(selected.facts.warehouseId, selected.facts.warehouseName)
+        .computeNaturalInboundEvidence(selected.facts.warehouseId, selected.facts.warehouseName)
         .then((snapshot) => {
           logger.info("Inbound evidence v2 shadow evaluation:", {
             warehouseId: selected.facts.warehouseId,

@@ -155,6 +155,24 @@ describe("Evidence-Based Inbound Detection Engine (Criteria 11–24)", () => {
     expect(earlyResult.horizon).toBeNull();
   });
 
+  it.each(["2026-09-19T06:59:00+07:00", "2026-09-19T17:00:00+07:00", "2026-09-19T21:00:00+07:00"])("Criterion 16B: outside window keeps arrival risk UNKNOWN at %s", async (checkpointAt) => {
+    const mockDb = {
+      from: vi.fn(() => ({
+        select: vi.fn(() => ({
+          eq: vi.fn(() => ({
+            order: vi.fn(() => ({
+              limit: vi.fn(() => ({ maybeSingle: vi.fn().mockResolvedValue({ data: { id: "sync-1", started_at: "2026-09-19T01:00:00Z" } }) })),
+            })),
+          })),
+          or: vi.fn(() => ({ eq: vi.fn(() => ({ limit: vi.fn().mockResolvedValue({ data: [], error: null }) })) })),
+        })),
+      })),
+    } as any;
+    const snapshot = await new InboundEvidenceService(mockDb).computeReplayInboundEvidence(TARGET_WH, "Yên Bái Hub", checkpointAt);
+    expect(snapshot.status).toBe("OUTSIDE_OPERATING_WINDOW");
+    expect(snapshot.riskAssessment.near_term_arrival_risk).toBe("UNKNOWN");
+  });
+
   it("Criterion 17: computes 4-hour forecast horizon within operating window", () => {
     // 10:00 ICT -> 4h horizon -> 14:00 ICT
     const midMorning = "2026-09-19T10:00:00+07:00";
@@ -217,10 +235,11 @@ describe("Evidence-Based Inbound Detection Engine (Criteria 11–24)", () => {
                 data: [
                   {
                     order_code: "ORD_WITH_ETA",
-                    warehouse_id: UPSTREAM_WH,
+                    current_warehouse_id: UPSTREAM_WH,
                     deliver_warehouse_id: TARGET_WH,
                     source_status: "transporting",
                     weight_kg: 20.0,
+                    source_observed_at: "2026-09-19T03:00:00Z",
                   },
                 ],
                 error: null,
@@ -233,7 +252,7 @@ describe("Evidence-Based Inbound Detection Engine (Criteria 11–24)", () => {
 
     const service = new InboundEvidenceService(mockDb);
     // Execute at 11:00 ICT
-    const snapshot = await service.computeInboundEvidence(
+    const snapshot = await service.computeReplayInboundEvidence(
       TARGET_WH,
       "Yên Bái Hub",
       "2026-09-19T11:00:00+07:00"
@@ -254,7 +273,7 @@ describe("Evidence-Based Inbound Detection Engine (Criteria 11–24)", () => {
     } as any;
 
     const service = new InboundEvidenceService(failingDb);
-    const snapshot = await service.computeInboundEvidence(
+    const snapshot = await service.computeReplayInboundEvidence(
       TARGET_WH,
       "Yên Bái Hub",
       "2026-09-19T11:00:00+07:00"

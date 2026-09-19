@@ -5,6 +5,10 @@ import { RepositoryFactory } from "@/repositories/RepositoryFactory";
 export const dynamic = "force-dynamic";
 
 export async function GET() {
+  // Sync timing and error metadata are diagnostics, not a public production API.
+  if (process.env.NODE_ENV === "production") {
+    return NextResponse.json({ error: "NOT_FOUND" }, { status: 404 });
+  }
   try {
     const dbClient = createAdminClient();
     const repo = RepositoryFactory.getSyncRunRepository(dbClient);

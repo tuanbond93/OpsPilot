@@ -40,14 +40,14 @@ describe("INBOUND_EVIDENCE_V2_SHADOW Hardening & Verification Suite", () => {
     mockGetUser.mockReset();
   });
 
-  // 1 & 2. Security: Unauthenticated and random bearer handling in route
-  it("Test 1 & 2: route authorization security logic requires cron or MANAGE_SYSTEM", async () => {
+  // 1 & 2. Security: all internal actions, including multi-option shadow, require auth.
+  it("Test 1 & 2: route authorization denies no-auth and random bearer before action handling", async () => {
     mockGetUser.mockResolvedValue({ data: { user: null }, error: { message: "Auth session missing" } });
 
     const { GET } = await import("@/app/api/internal/near-term-capacity/resume/route");
 
     // Case A: NO_AUTH
-    const reqNoAuth = new NextRequest("http://localhost:3000/api/internal/near-term-capacity/resume?action=inbound-evidence");
+    const reqNoAuth = new NextRequest("http://localhost:3000/api/internal/near-term-capacity/resume?action=multi-option-shadow&caseId=11111111-1111-4111-8111-111111111111");
     process.env.AUTH_ENFORCEMENT_ENABLED = "true";
     (process.env as any).NODE_ENV = "production";
 
@@ -57,7 +57,7 @@ describe("INBOUND_EVIDENCE_V2_SHADOW Hardening & Verification Suite", () => {
     expect(dataNoAuth.error).toBe("AUTHENTICATION_REQUIRED");
 
     // Case B: RANDOM_BEARER
-    const reqRandomBearer = new NextRequest("http://localhost:3000/api/internal/near-term-capacity/resume?action=inbound-evidence", {
+    const reqRandomBearer = new NextRequest("http://localhost:3000/api/internal/near-term-capacity/resume?action=multi-option-shadow&caseId=11111111-1111-4111-8111-111111111111", {
       headers: {
         authorization: "Bearer invalid_random_token_12345",
       },
@@ -101,22 +101,23 @@ describe("INBOUND_EVIDENCE_V2_SHADOW Hardening & Verification Suite", () => {
 
     const service = new InboundEvidenceService(mockDb);
 
-    // Natural mode (no options.isReplay)
-    const naturalSnap = await service.computeInboundEvidence(
-      TARGET_WH,
-      "Yên Bái Hub",
-      new Date()
-    );
+    // Natural mode has no caller-controlled evaluation time.
+    const naturalSnap = await service.computeNaturalInboundEvidence(TARGET_WH, "Yên Bái Hub");
     expect(naturalSnap.observation_type).toBe("NATURAL");
 
     // Replay mode (isReplay = true)
-    const replaySnap = await service.computeInboundEvidence(
+    const replaySnap = await service.computeReplayInboundEvidence(
       TARGET_WH,
       "Yên Bái Hub",
-      "2026-09-19T13:00:00+07:00",
-      { isReplay: true }
+      "2026-09-19T13:00:00+07:00"
     );
     expect(replaySnap.observation_type).toBe("REPLAY");
+  });
+
+  it("Test 4B: rejects a caller-supplied time on the legacy entry point", async () => {
+    const service = new InboundEvidenceService({ from: vi.fn() } as any);
+    await expect(service.computeInboundEvidence(TARGET_WH, "Yên Bái Hub", "2020-01-01T00:00:00Z", { isReplay: false }))
+      .rejects.toThrow("NATURAL_TIME_OVERRIDE_FORBIDDEN");
   });
 
   // 5. Timezone semantics: 13:00 +07 == 06:00Z
@@ -157,17 +158,17 @@ describe("INBOUND_EVIDENCE_V2_SHADOW Hardening & Verification Suite", () => {
                 data: [
                   {
                     order_code: "ORD_PAST",
-                    warehouse_id: UPSTREAM_WH,
+                    current_warehouse_id: UPSTREAM_WH,
                     deliver_warehouse_id: TARGET_WH,
                     source_status: "transporting",
-                    created_at: "2026-09-19T05:30:00Z", // Past: included
+                    source_observed_at: "2026-09-19T05:30:00Z", // Past: included
                   },
                   {
                     order_code: "ORD_FUTURE",
-                    warehouse_id: UPSTREAM_WH,
+                    current_warehouse_id: UPSTREAM_WH,
                     deliver_warehouse_id: TARGET_WH,
                     source_status: "transporting",
-                    created_at: "2026-09-19T06:30:00Z", // Future: must be filtered out
+                    source_observed_at: "2026-09-19T06:30:00Z", // Future: must be filtered out
                   },
                 ],
                 error: null,
@@ -179,11 +180,10 @@ describe("INBOUND_EVIDENCE_V2_SHADOW Hardening & Verification Suite", () => {
     } as any;
 
     const service = new InboundEvidenceService(mockDbFuture);
-    const snap = await service.computeInboundEvidence(
+    const snap = await service.computeReplayInboundEvidence(
       TARGET_WH,
       "Yên Bái Hub",
-      checkpointTime,
-      { isReplay: true }
+      checkpointTime
     );
 
     expect(snap.replay_evidence_status).toBe("INVALID_FUTURE_DATA");
@@ -217,19 +217,19 @@ describe("INBOUND_EVIDENCE_V2_SHADOW Hardening & Verification Suite", () => {
                 data: [
                   {
                     order_code: "ORD_TR_1",
-                    warehouse_id: UPSTREAM_WH,
+                    current_warehouse_id: UPSTREAM_WH,
                     deliver_warehouse_id: TARGET_WH,
                     source_status: "transporting",
                     weight_kg: 20.0,
-                    created_at: "2026-09-19T04:00:00Z",
+                    source_observed_at: "2026-09-19T04:00:00Z",
                   },
                   {
                     order_code: "ORD_PICKED_2",
-                    warehouse_id: UPSTREAM_WH,
+                    current_warehouse_id: UPSTREAM_WH,
                     deliver_warehouse_id: TARGET_WH,
                     source_status: "picked",
                     weight_kg: 15.0,
-                    created_at: "2026-09-19T04:10:00Z",
+                    source_observed_at: "2026-09-19T04:10:00Z",
                   },
                 ],
                 error: null,
@@ -241,10 +241,10 @@ describe("INBOUND_EVIDENCE_V2_SHADOW Hardening & Verification Suite", () => {
     } as any;
 
     const service = new InboundEvidenceService(mockDb);
-    const snap = await service.computeInboundEvidence(
+    const snap = await service.computeReplayInboundEvidence(
       TARGET_WH,
       "Yên Bái Hub",
-      "2026-09-19T11:00:00+07:00"
+      "2026-09-19T13:00:00+07:00"
     );
 
     // Total pipeline has 2 orders
@@ -264,11 +264,11 @@ describe("INBOUND_EVIDENCE_V2_SHADOW Hardening & Verification Suite", () => {
     // Generate 60 in-transfer orders (high pipeline pressure)
     const largeVolumeOrders = Array.from({ length: 60 }, (_, i) => ({
       order_code: `ORD_${i}`,
-      warehouse_id: UPSTREAM_WH,
+      current_warehouse_id: UPSTREAM_WH,
       deliver_warehouse_id: TARGET_WH,
       source_status: "transporting",
       weight_kg: 10.0,
-      created_at: "2026-09-19T04:00:00Z",
+      source_observed_at: "2026-09-19T04:00:00Z",
     }));
 
     const mockDb = {
@@ -299,7 +299,7 @@ describe("INBOUND_EVIDENCE_V2_SHADOW Hardening & Verification Suite", () => {
     } as any;
 
     const service = new InboundEvidenceService(mockDb);
-    const snap = await service.computeInboundEvidence(
+    const snap = await service.computeReplayInboundEvidence(
       TARGET_WH,
       "Yên Bái Hub",
       "2026-09-19T11:00:00+07:00"

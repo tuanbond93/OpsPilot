@@ -37,6 +37,8 @@ import { MockDashboardRepository } from "./mock/MockDashboardRepository";
 import type { IOrderSnapshotRepository } from "./interfaces/IOrderSnapshotRepository";
 import { SupabaseOrderSnapshotRepository } from "./supabase/SupabaseOrderSnapshotRepository";
 import { MockOrderSnapshotRepository } from "./mock/MockOrderSnapshotRepository";
+import { SupabaseInboundOrderObservationRepository } from "./supabase/SupabaseInboundOrderObservationRepository";
+import type { IInboundOrderObservationRepository } from "./interfaces/IInboundOrderObservationRepository";
 
 import type { IProjectionRunRepository } from "./interfaces/IProjectionRunRepository";
 import { SupabaseProjectionRunRepository } from "@/connectors/supabase/repositories/projection-run-repository";
@@ -75,6 +77,7 @@ export class RepositoryFactory {
   private static historyRepo: IIncidentHistoryRepository | null = null;
   private static exceptionRepo: IExceptionRepository | null = null;
   private static orderSnapshotRepo: IOrderSnapshotRepository | null = null;
+  private static inboundOrderObservationRepo: IInboundOrderObservationRepository | null = null;
   private static syncLockRepo: ISyncLockRepository | null = null;
   private static decisionRepo: IDecisionRepository | null = null;
   private static executionWorkOrderRepo: IExecutionWorkOrderRepository | null = null;
@@ -356,6 +359,13 @@ export class RepositoryFactory {
     return this.triageAuditRepo;
   }
 
+  static getInboundOrderObservationRepository(client?: SupabaseClient | null): IInboundOrderObservationRepository | null {
+    // There is intentionally no in-memory fallback: V2 must report unavailable
+    // when its complete governed source cannot be persisted.
+    if (!client) return null;
+    return new SupabaseInboundOrderObservationRepository(client);
+  }
+
   static getPlaybookDirectiveRepository(client?: SupabaseClient): IPlaybookDirectiveRepository {
     if (client) return new SupabasePlaybookDirectiveRepository(client);
     if (this.playbookDirectiveRepo) return this.playbookDirectiveRepo;
@@ -378,6 +388,7 @@ export class RepositoryFactory {
     this.historyRepo = null;
     this.exceptionRepo = null;
     this.orderSnapshotRepo = null;
+    this.inboundOrderObservationRepo = null;
     this.syncLockRepo = null;
     this.decisionRepo = null;
     this.executionWorkOrderRepo = null;

@@ -1,6 +1,7 @@
 import type { ISyncService, SyncOptions, SyncSummary } from "../interfaces/ISyncService";
 import type { ISyncRunRepository } from "@/repositories/interfaces/ISyncRunRepository";
 import type { IOrderSnapshotRepository, OrderSnapshotRow } from "@/repositories/interfaces/IOrderSnapshotRepository";
+import type { IInboundOrderObservationRepository, InboundOrderObservationRow } from "@/repositories/interfaces/IInboundOrderObservationRepository";
 import type { IIncidentRepository } from "@/repositories/interfaces/IIncidentRepository";
 import type { IIncidentHistoryRepository } from "@/repositories/interfaces/IIncidentHistoryRepository";
 import type { IExceptionRepository } from "@/repositories/interfaces/IExceptionRepository";
@@ -12,6 +13,7 @@ import type { IPlaybookDirectiveRepository } from "@/repositories/interfaces/IPl
 import type { PhaseTimingInfo, DetectedBottleneck } from "@/jobs/sync-rillnet";
 import type { SyncPhase, SyncRunRow } from "@/connectors/supabase/types";
 import { RillnetConnector } from "@/connectors/rillnet";
+import type { NormalizedRillnetOrder } from "@/connectors/rillnet";
 import { aggregateIncidents, inspectOrderForIncident, REASON_CODE_MAP } from "@/engine/incident";
 import { FollowupEngine } from "@/engine/followup";
 import { ActionQueue } from "@/engine/action-queue";
@@ -111,7 +113,8 @@ export class SyncService implements ISyncService {
     private syncLockRepo: ISyncLockRepository | null = null,
     private triageAuditRepo: ITriageAuditRepository | null = null,
     private playbookDirectiveRepo: IPlaybookDirectiveRepository | null = null,
-    private laneObservationRepo: LaneObservationRepository | null = null
+    private laneObservationRepo: LaneObservationRepository | null = null,
+    private inboundOrderObservationRepo: IInboundOrderObservationRepository | null = null
   ) {}
 
   async runSync(_options?: SyncOptions): Promise<SyncSummary> {
@@ -679,6 +682,33 @@ export class SyncService implements ISyncService {
               await this.orderSnapshotRepo.insertBatch(snapshotRows, 500);
             } catch {
               // Fallback
+            }
+          }
+          // Persist the complete normalized source population separately from
+          // incident-selected order_snapshots.  This contains only the fields
+          // needed for inbound evidence and deliberately excludes customer PII.
+          if (this.inboundOrderObservationRepo && snapshotResult.orders) {
+            try {
+              const observedAt = sourceUpdatedAt || snapshotResult.fetchedAt || startedAt;
+              const rows: InboundOrderObservationRow[] = snapshotResult.orders
+                .map((order: NormalizedRillnetOrder) => ({
+                  sync_run_id: syncRunId,
+                  order_code: String(order.orderCode || "").trim(),
+                  current_warehouse_id: order.warehouseId || null,
+                  deliver_warehouse_id: order.deliverWarehouseId || null,
+                  source_status: String(order.status || "").trim(),
+                  end_pick_at: order.endPickAt || null,
+                  weight_kg: order.weightKg ?? null,
+                  is_b2b: order.isB2b ?? null,
+                  source_observed_at: observedAt,
+                }))
+                .filter((row: InboundOrderObservationRow) => Boolean(row.order_code) && Boolean(row.source_status));
+              await this.inboundOrderObservationRepo.insertBatch(rows, 500);
+            } catch (error) {
+              // Incident processing remains isolated, but a missing complete
+              // population makes V2 report UNAVAILABLE rather than falling
+              // back to incident-selected rows.
+              logger.info({ component: "SyncService", operation: "persistInboundObservationPopulation", status: "error", message: "Complete inbound observation persistence failed", metadata: { error: error instanceof Error ? error.message : String(error) } });
             }
           }
           // Passive observation inspects the full normalized population and is
