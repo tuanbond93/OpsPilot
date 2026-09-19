@@ -1,12 +1,12 @@
 # OpsPilot Level C — Gate 3D.4 Evidence Lock & Remediation
-**Phase 2A — Manager Vehicle Availability Confirmation UI Deployment**
+**Phase 2B — Atomic Fact Supersession & Human Correction Path Deployment**
 
 - **Gate**: `GATE_3D.4_FIRST_REAL_LIVE_VEHICLE_AVAILABILITY_FACT`
-- **Phase**: `PHASE_2A_MANAGER_VEHICLE_AVAILABILITY_CONFIRMATION_UI`
-- **Timestamp (ICT)**: `2026-09-19T15:32:00+07:00`
-- **Gate Evidence Status**: `NOT_PROVEN_PENDING_REAL_AUTHENTICATED_MANAGER_WRITE`
+- **Phase**: `PHASE_2B_ATOMIC_FACT_SUPERSESSION`
+- **Timestamp (ICT)**: `2026-09-19T15:58:00+07:00`
+- **Gate Evidence Status**: `NOT_PROVEN_PENDING_DIRECT_OWNER_CORRECTION_WRITE`
 - **084 SQL Script Executed**: `NO` (Strictly unexecuted reference artifact)
-- **Live Facts Written in Phase 2A**: `0`
+- **Live Facts Written in Phase 2B**: `0`
 
 ---
 
@@ -14,10 +14,10 @@
 
 - **Canonical URL**: `https://opspilot-tau-lyart.vercel.app`
 - **Manager Confirmation UI Route**: `https://opspilot-tau-lyart.vercel.app/operations/vehicle-availability`
-- **Production Deployment ID**: `dpl_GWBDa9Dpr1VUzFZkoxgDFtq3ecsp`
-- **Deployed Commit**: `3c49df2` (`feat(level-c): add manager vehicle availability confirmation UI and tests`)
-- **Git Head**: `3c49df2`
-- **Production Health Status**: `GREEN` (Checked at `2026-09-19T08:31:42.836Z` — `realtime: GREEN`, `scheduler: GREEN`, `aiprovider: GREEN`, `rillnet: GREEN`, `database: GREEN`, `telegram: GREEN`)
+- **Production Deployment ID**: `dpl_HESTnfRNv2sDdmk6iHrvT6QszN1j`
+- **Deployed Commit**: `513d55f` (`feat(level-c): add migration 085 atomic vehicle availability supersession and UI replacement warning`)
+- **Git Head**: `513d55f`
+- **Production Health Status**: `GREEN` (Checked at `2026-09-19T08:58:23.187Z` — `realtime: GREEN`, `scheduler: GREEN`, `aiprovider: GREEN`, `rillnet: GREEN`, `database: GREEN`, `telegram: GREEN`)
 
 ---
 
