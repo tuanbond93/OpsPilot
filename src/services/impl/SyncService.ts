@@ -27,6 +27,8 @@ import warehouseAssignments from "@/data/warehouse-assignments.generated.json";
 import { LaneObservationService } from "@/domain/lane-observation";
 import type { LaneObservationRepository } from "@/domain/lane-observation";
 
+const INBOUND_OBSERVATION_SOURCE = "RILLNET" as const;
+
 type WarehouseAssignment = { warehouseId: string; warehouseName: string; zone: string };
 const warehouseZoneById = new Map((warehouseAssignments.warehouses as WarehouseAssignment[]).map((warehouse) => [warehouse.warehouseId, warehouse.zone]));
 const warehouseZoneByName = new Map((warehouseAssignments.warehouses as WarehouseAssignment[]).map((warehouse) => [warehouse.warehouseName, warehouse.zone]));
@@ -42,6 +44,74 @@ function isPersistedUuid(value: unknown): value is string {
 function safeErrorMessage(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
   return message.replace(/https?:\/\/[^\s]+/g, "[URL REDACTED]").slice(0, 500);
+}
+
+/**
+ * Establishes the governed per-run observation identity before any incident
+ * selection happens. Rillnet supplies only a snapshot-level timestamp, not a
+ * trustworthy per-order update timestamp, so conflicting duplicates cannot be
+ * ordered safely and block population completion.
+ */
+export function buildCompleteInboundObservationPopulation(
+  syncRunId: string,
+  orders: NormalizedRillnetOrder[],
+  sourceObservedAt: string
+): {
+  rows: InboundOrderObservationRow[];
+  normalizedPopulationCount: number;
+  duplicateIdenticalCount: number;
+  duplicateConflictCount: number;
+  duplicateConflictOrderCodes: string[];
+} {
+  const byOrderCode = new Map<string, InboundOrderObservationRow>();
+  let duplicateIdenticalCount = 0;
+  let duplicateConflictCount = 0;
+  const duplicateConflictOrderCodes: string[] = [];
+
+  for (const order of orders) {
+    const row: InboundOrderObservationRow = {
+      sync_run_id: syncRunId,
+      source_system: INBOUND_OBSERVATION_SOURCE,
+      order_code: String(order.orderCode || "").trim(),
+      current_warehouse_id: order.warehouseId || null,
+      deliver_warehouse_id: order.deliverWarehouseId || null,
+      source_status: String(order.status || "").trim(),
+      end_pick_at: order.endPickAt || null,
+      weight_kg: order.weightKg ?? null,
+      is_b2b: order.isB2b ?? null,
+      source_observed_at: sourceObservedAt,
+    };
+    if (!row.order_code || !row.source_status) {
+      throw new Error("INVALID_NORMALIZED_INBOUND_OBSERVATION");
+    }
+
+    const existing = byOrderCode.get(row.order_code);
+    if (!existing) {
+      byOrderCode.set(row.order_code, row);
+      continue;
+    }
+
+    const equivalent = existing.current_warehouse_id === row.current_warehouse_id
+      && existing.deliver_warehouse_id === row.deliver_warehouse_id
+      && existing.source_status === row.source_status
+      && existing.end_pick_at === row.end_pick_at
+      && existing.weight_kg === row.weight_kg
+      && existing.is_b2b === row.is_b2b;
+    if (!equivalent) {
+      duplicateConflictCount += 1;
+      duplicateConflictOrderCodes.push(row.order_code);
+      continue;
+    }
+    duplicateIdenticalCount += 1;
+  }
+
+  return {
+    rows: [...byOrderCode.values()],
+    normalizedPopulationCount: orders.length,
+    duplicateIdenticalCount,
+    duplicateConflictCount,
+    duplicateConflictOrderCodes,
+  };
 }
 export const ORDERED_SYNC_PHASES: SyncPhase[] = [
   "CREATED",
@@ -591,12 +661,93 @@ export class SyncService implements ISyncService {
             });
         }
 
+        // Even a zero-order snapshot needs an explicit COMPLETE manifest so
+        // the reader can distinguish a governed zero from an absent source.
+        if (!snapshotResult.orders || snapshotResult.orders.length === 0) {
+          if (!this.inboundOrderObservationRepo) {
+            // In-memory legacy runs retain their existing behavior but cannot
+            // become inbound-evidence authoritative: no manifest exists.
+            logger.info({ component: "SyncService", operation: "inboundPopulation", status: "info", message: "Inbound population repository unavailable; run is not evidence-authoritative." });
+          } else {
+            const emptyManifest = {
+            sync_run_id: syncRunId,
+            source_system: INBOUND_OBSERVATION_SOURCE,
+            normalized_population_count: 0,
+            expected_observation_count: 0,
+            duplicate_identical_count: 0,
+            duplicate_conflict_count: 0,
+          };
+            try {
+              await this.inboundOrderObservationRepo.startPopulation(emptyManifest);
+              const persistedCount = await this.inboundOrderObservationRepo.countPersisted(syncRunId, INBOUND_OBSERVATION_SOURCE);
+              if (persistedCount !== 0) throw new Error(`INBOUND_POPULATION_COUNT_MISMATCH: expected 0, found ${persistedCount}`);
+              await this.inboundOrderObservationRepo.completePopulation({
+                ...emptyManifest,
+                persisted_observation_count: 0,
+                population_completed_at: new Date().toISOString(),
+              });
+            } catch (error) {
+              const reason = safeErrorMessage(error);
+              await this.inboundOrderObservationRepo.failPopulation({ sync_run_id: syncRunId, source_system: INBOUND_OBSERVATION_SOURCE, failure_reason: reason });
+              throw error;
+            }
+          }
+        }
+
         // Re-normalize and load exceptions if snapshot is available
         if (snapshotResult.orders && snapshotResult.orders.length > 0) {
           const tNormStart = performance.now();
           logPhaseStart("normalizeOrders");
           normalizedOrderCount = snapshotResult.orders.length;
           recordPhase("normalizeOrders", performance.now() - tNormStart, normalizedOrderCount, 1, normalizedOrderCount, 0, "Mapped raw orders to normalized objects");
+
+          // This is the inbound-evidence authority boundary. It intentionally
+          // precedes exception handling, aggregateIncidents, and every
+          // inspectOrderForIncident call so incident selection cannot affect
+          // the complete normalized population.
+          if (!this.inboundOrderObservationRepo) {
+            logger.info({ component: "SyncService", operation: "inboundPopulation", status: "info", message: "Inbound population repository unavailable; run is not evidence-authoritative." });
+          } else {
+            const observedAt = sourceUpdatedAt || snapshotResult.fetchedAt || startedAt;
+            let population;
+            try {
+              population = buildCompleteInboundObservationPopulation(syncRunId, snapshotResult.orders, observedAt);
+            const manifestInput = {
+              sync_run_id: syncRunId,
+              source_system: INBOUND_OBSERVATION_SOURCE,
+              normalized_population_count: population.normalizedPopulationCount,
+              expected_observation_count: population.rows.length,
+              duplicate_identical_count: population.duplicateIdenticalCount,
+              duplicate_conflict_count: population.duplicateConflictCount,
+            };
+            await this.inboundOrderObservationRepo.startPopulation(manifestInput);
+            if (population.duplicateConflictCount > 0) {
+              throw new Error(`DUPLICATE_INBOUND_ORDER_CONFLICT:${population.duplicateConflictOrderCodes.join(",")}`);
+            }
+            await this.inboundOrderObservationRepo.insertBatch(population.rows, 500);
+            const persistedCount = await this.inboundOrderObservationRepo.countPersisted(syncRunId, INBOUND_OBSERVATION_SOURCE);
+            if (persistedCount !== manifestInput.expected_observation_count) {
+              throw new Error(`INBOUND_POPULATION_COUNT_MISMATCH: expected ${manifestInput.expected_observation_count}, found ${persistedCount}`);
+            }
+              await this.inboundOrderObservationRepo.completePopulation({
+                ...manifestInput,
+                persisted_observation_count: persistedCount,
+                population_completed_at: new Date().toISOString(),
+              });
+            } catch (error) {
+              const reason = safeErrorMessage(error);
+              try {
+                await this.inboundOrderObservationRepo.failPopulation({
+                  sync_run_id: syncRunId,
+                  source_system: INBOUND_OBSERVATION_SOURCE,
+                  failure_reason: reason,
+                });
+              } catch (manifestError) {
+                throw new Error(`INBOUND_POPULATION_FAILURE_UNRECORDED: ${reason}; ${safeErrorMessage(manifestError)}`);
+              }
+              throw error;
+            }
+          }
 
           const tExStart = performance.now();
           logPhaseStart("loadExceptions");
@@ -682,33 +833,6 @@ export class SyncService implements ISyncService {
               await this.orderSnapshotRepo.insertBatch(snapshotRows, 500);
             } catch {
               // Fallback
-            }
-          }
-          // Persist the complete normalized source population separately from
-          // incident-selected order_snapshots.  This contains only the fields
-          // needed for inbound evidence and deliberately excludes customer PII.
-          if (this.inboundOrderObservationRepo && snapshotResult.orders) {
-            try {
-              const observedAt = sourceUpdatedAt || snapshotResult.fetchedAt || startedAt;
-              const rows: InboundOrderObservationRow[] = snapshotResult.orders
-                .map((order: NormalizedRillnetOrder) => ({
-                  sync_run_id: syncRunId,
-                  order_code: String(order.orderCode || "").trim(),
-                  current_warehouse_id: order.warehouseId || null,
-                  deliver_warehouse_id: order.deliverWarehouseId || null,
-                  source_status: String(order.status || "").trim(),
-                  end_pick_at: order.endPickAt || null,
-                  weight_kg: order.weightKg ?? null,
-                  is_b2b: order.isB2b ?? null,
-                  source_observed_at: observedAt,
-                }))
-                .filter((row: InboundOrderObservationRow) => Boolean(row.order_code) && Boolean(row.source_status));
-              await this.inboundOrderObservationRepo.insertBatch(rows, 500);
-            } catch (error) {
-              // Incident processing remains isolated, but a missing complete
-              // population makes V2 report UNAVAILABLE rather than falling
-              // back to incident-selected rows.
-              logger.info({ component: "SyncService", operation: "persistInboundObservationPopulation", status: "error", message: "Complete inbound observation persistence failed", metadata: { error: error instanceof Error ? error.message : String(error) } });
             }
           }
           // Passive observation inspects the full normalized population and is

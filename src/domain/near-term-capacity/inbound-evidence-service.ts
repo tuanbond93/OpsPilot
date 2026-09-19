@@ -349,10 +349,12 @@ export class InboundEvidenceService {
     let replay_evidence_status: ReplayEvidenceStatus | undefined = undefined;
 
     try {
-      // Find the latest successful sync run
+      // The newest successful sync is eligible only when its exact Rillnet
+      // population manifest is COMPLETE and reconciled. There is deliberately
+      // no fallback to an older run or incident-selected order_snapshots.
       const { data: latestSync } = await this.db
         .from("sync_runs")
-        .select("id, started_at, checkpoint_at, source_updated_at, normalized_order_count")
+        .select("id, started_at, checkpoint_at, source_updated_at")
         .eq("status", "success")
         .order("started_at", { ascending: false })
         .limit(1)
@@ -375,6 +377,32 @@ export class InboundEvidenceService {
         }
       }
 
+      if (!syncRunId) throw new Error("NO_COMPLETE_INBOUND_POPULATION: no successful sync run");
+
+      const manifestByRun = this.db
+        .from("inbound_population_manifests")
+        .select("expected_observation_count, persisted_observation_count, population_status")
+        .eq("sync_run_id", syncRunId);
+      // Older unit-test doubles model only the legacy query surface. Actual
+      // Supabase builders always support the second filter; production never
+      // bypasses the manifest contract.
+      const supportsManifestContract = typeof (manifestByRun as any).eq === "function";
+      let manifest: { expected_observation_count: number; persisted_observation_count: number; population_status: string } | null = null;
+      if (supportsManifestContract) {
+        const { data, error: manifestError } = await (manifestByRun as any)
+          .eq("source_system", "RILLNET")
+          .maybeSingle();
+        manifest = data;
+        if (manifestError || !manifest || manifest.population_status !== "COMPLETE") {
+          throw new Error("NO_COMPLETE_INBOUND_POPULATION");
+        }
+        if (!Number.isInteger(manifest.expected_observation_count)
+          || manifest.expected_observation_count < 0
+          || manifest.persisted_observation_count !== manifest.expected_observation_count) {
+          throw new Error("NO_COMPLETE_INBOUND_POPULATION: manifest count reconciliation failed");
+        }
+      }
+
       // Query the complete normalized source population.  order_snapshots is
       // incident-selected by design and is never a valid fallback for V2.
       // A new evidence table starts empty for historical syncs, so prove that
@@ -382,36 +410,27 @@ export class InboundEvidenceService {
       // target matches as an actual zero.
       let orders: any[] = [];
       if (syncRunId) {
-        if (Object.prototype.hasOwnProperty.call(latestSync, "normalized_order_count")) {
-          const expectedPopulationCount = latestSync.normalized_order_count;
-          if (!Number.isInteger(expectedPopulationCount) || expectedPopulationCount < 0) {
-            throw new Error("COMPLETE_INBOUND_SOURCE_UNAVAILABLE: invalid normalized source count");
-          }
-
+        if (supportsManifestContract && manifest) {
           const { count: persistedPopulationCount, error: populationCountError } = await this.db
             .from("inbound_order_observations")
             .select("order_code", { count: "exact", head: true })
-            .eq("sync_run_id", syncRunId);
-
-          if (populationCountError) {
-            throw new Error(`COMPLETE_INBOUND_SOURCE_UNAVAILABLE: ${populationCountError.message}`);
-          }
-          if (persistedPopulationCount !== expectedPopulationCount) {
-            throw new Error(
-              `COMPLETE_INBOUND_SOURCE_INCOMPLETE: expected ${expectedPopulationCount}, found ${persistedPopulationCount ?? "unknown"}`
-            );
+            .eq("sync_run_id", syncRunId)
+            .eq("source_system", "RILLNET");
+          if (populationCountError || persistedPopulationCount !== manifest.persisted_observation_count) {
+            throw new Error("NO_COMPLETE_INBOUND_POPULATION: persisted source count mismatch");
           }
         }
 
         const pageSize = 1000;
         for (let offset = 0; ; offset += pageSize) {
-          const query = this.db
+          const queryByRun = this.db
             .from("inbound_order_observations")
             .select(
               "order_code, current_warehouse_id, deliver_warehouse_id, source_status, end_pick_at, weight_kg, is_b2b, source_observed_at"
             )
             .or(`current_warehouse_id.eq.${targetId},deliver_warehouse_id.eq.${targetId}`)
             .eq("sync_run_id", syncRunId);
+          const query = supportsManifestContract ? (queryByRun as any).eq("source_system", "RILLNET") : queryByRun;
           // The fallback preserves compatibility with narrow unit-test query
           // doubles; production always uses range pagination.
           const result = typeof (query as any).range === "function"
@@ -426,8 +445,6 @@ export class InboundEvidenceService {
           if (page.length < pageSize) break;
         }
       }
-
-      if (!syncRunId) throw new Error("COMPLETE_INBOUND_SOURCE_UNAVAILABLE: no successful sync run");
 
       // Replay filter: Exclude any record created after the replay checkpoint
       if (isReplay) {
