@@ -1,6 +1,8 @@
 -- Migration 086: complete, PII-minimized normalized inbound observation population.
 -- This table is deliberately separate from order_snapshots, which remains an
 -- incident-selected evidence store used by existing incident workflows.
+-- Retention is OWNER_GOVERNED: retain until an Owner-approved purge. This
+-- migration intentionally creates no TTL, cleanup job, or destructive purge.
 
 CREATE TABLE IF NOT EXISTS public.inbound_order_observations (
   id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -42,6 +44,11 @@ CREATE INDEX IF NOT EXISTS idx_inbound_order_observations_run_current
   ON public.inbound_order_observations (sync_run_id, current_warehouse_id);
 CREATE INDEX IF NOT EXISTS idx_inbound_population_manifests_complete
   ON public.inbound_population_manifests (population_status, population_completed_at DESC);
+
+COMMENT ON TABLE public.inbound_order_observations IS
+  'RETENTION_POLICY=RETAIN_UNTIL_OWNER_APPROVED_PURGE; RETENTION_OWNER=OWNER_GOVERNED; AUTO_DELETE=NO';
+COMMENT ON TABLE public.inbound_population_manifests IS
+  'Completeness manifest for governed inbound evidence snapshots; retention is OWNER_GOVERNED.';
 
 ALTER TABLE public.inbound_order_observations ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.inbound_population_manifests ENABLE ROW LEVEL SECURITY;
