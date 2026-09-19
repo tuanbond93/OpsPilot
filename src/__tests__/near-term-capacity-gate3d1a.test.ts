@@ -178,8 +178,8 @@ describe("OpsPilot Level C — Gate 3D.1A Availability Time Semantics + Actor Pr
       supplier_name: "Thiên Phú",
       vehicle_class: "TRUCK_1_9T",
       available_count: 1,
-      earliest_available_at: "2026-09-18T22:00:00+07:00",
-      valid_until: "2026-09-19T02:00:00+07:00",
+      earliest_available_at: new Date(Date.now() + 1800000).toISOString(),
+      valid_until: new Date(Date.now() + 86400000).toISOString(),
       supplied_by: "telegram:dispatch-phutho",
       supplier_role: "DISPATCH_MANAGER",
     });
@@ -265,7 +265,7 @@ describe("OpsPilot Level C — Gate 3D.1A Availability Time Semantics + Actor Pr
       supplier_name: "Thiên Phú",
       vehicle_class: "TRUCK_1_9T",
       available_count: 1,
-      valid_until: "2026-09-19T02:00:00+07:00",
+      valid_until: new Date(Date.now() + 86400000).toISOString(),
       supplied_by: "telegram:lead-phutho",
       supplier_role: "WAREHOUSE_LEAD",
     });

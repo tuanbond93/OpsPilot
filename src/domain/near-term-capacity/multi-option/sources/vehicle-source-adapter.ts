@@ -87,6 +87,44 @@ export interface VehicleAvailabilitySchedule {
   provenance_status: "OWNER_CONFIRMED_RECURRING_SCHEDULE";
 }
 
+export function getNextCalendarDate(dateStr: string): string {
+  const [y, m, d] = dateStr.split("-").map((v) => parseInt(v, 10));
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  dt.setUTCDate(dt.getUTCDate() + 1);
+  return dt.toISOString().slice(0, 10);
+}
+
+export function normalizeTimeString(timeStr: string): string {
+  if (!timeStr) return "00:00:00";
+  const parts = timeStr.split(":").map((v) => parseInt(v, 10));
+  const h = String(isNaN(parts[0]) ? 0 : parts[0]).padStart(2, "0");
+  const m = String(isNaN(parts[1]) ? 0 : parts[1]).padStart(2, "0");
+  const s = String(isNaN(parts[2]) ? 0 : parts[2]).padStart(2, "0");
+  return `${h}:${m}:${s}`;
+}
+
+export function getTimeZoneOffsetString(date: Date, timeZone: string): string {
+  try {
+    const parts = new Intl.DateTimeFormat("en-US", {
+      timeZone,
+      timeZoneName: "longOffset",
+    }).formatToParts(date);
+    const tzPart = parts.find((p) => p.type === "timeZoneName")?.value;
+    if (tzPart) {
+      if (tzPart === "GMT") return "+00:00";
+      const match = tzPart.match(/GMT([+-]\d{1,2}):?(\d{2})?/);
+      if (match) {
+        const signAndHour = match[1].startsWith("+") || match[1].startsWith("-")
+          ? match[1][0] + match[1].slice(1).padStart(2, "0")
+          : "+" + match[1].padStart(2, "0");
+        const min = match[2] || "00";
+        return `${signAndHour}:${min}`;
+      }
+    }
+  } catch {}
+  return "+07:00";
+}
+
 export function evaluateDailyWindow(
   evalTime: number | string | Date,
   startTime: string = "07:00",
@@ -99,6 +137,7 @@ export function evaluateDailyWindow(
   status: "PLANNED_AVAILABLE_NOW" | "SCHEDULED_AVAILABLE";
   localDate: string;
   localTime: string;
+  targetDate: string;
 } {
   const dateObj = new Date(evalTime);
   const formatter = new Intl.DateTimeFormat("en-US", {
@@ -112,24 +151,26 @@ export function evaluateDailyWindow(
     second: "2-digit",
   });
   const parts = formatter.formatToParts(dateObj);
-  let year = "1970", month = "01", day = "01", hour = "00", minute = "00";
+  let year = "1970", month = "01", day = "01", hour = "00", minute = "00", second = "00";
   for (const p of parts) {
     if (p.type === "year") year = p.value;
     if (p.type === "month") month = p.value;
     if (p.type === "day") day = p.value;
     if (p.type === "hour") hour = p.value;
     if (p.type === "minute") minute = p.value;
+    if (p.type === "second") second = p.value;
   }
-  const currentMinutes = parseInt(hour, 10) * 60 + parseInt(minute, 10);
-  const [startH, startM] = startTime.split(":").map((v) => parseInt(v, 10));
-  const [endH, endM] = endTime.split(":").map((v) => parseInt(v, 10));
-  const startMinutes = startH * 60 + (startM || 0);
-  const endMinutes = endH * 60 + (endM || 0);
+  const currentSeconds = (parseInt(hour, 10) * 60 + parseInt(minute, 10)) * 60 + parseInt(second, 10);
+
+  const [startH, startM, startS] = startTime.split(":").map((v) => parseInt(v, 10));
+  const [endH, endM, endS] = endTime.split(":").map((v) => parseInt(v, 10));
+  const startSeconds = ((startH || 0) * 60 + (startM || 0)) * 60 + (startS || 0);
+  const endSeconds = ((endH || 0) * 60 + (endM || 0)) * 60 + (endS || 0);
 
   const localDate = `${year}-${month}-${day}`;
   const localTime = `${hour.padStart(2, "0")}:${minute.padStart(2, "0")}`;
 
-  if (currentMinutes >= startMinutes && currentMinutes < endMinutes) {
+  if (currentSeconds >= startSeconds && currentSeconds < endSeconds) {
     return {
       isWithinWindow: true,
       isBeforeWindow: false,
@@ -137,8 +178,9 @@ export function evaluateDailyWindow(
       status: "PLANNED_AVAILABLE_NOW",
       localDate,
       localTime,
+      targetDate: localDate,
     };
-  } else if (currentMinutes < startMinutes) {
+  } else if (currentSeconds < startSeconds) {
     return {
       isWithinWindow: false,
       isBeforeWindow: true,
@@ -146,6 +188,7 @@ export function evaluateDailyWindow(
       status: "SCHEDULED_AVAILABLE",
       localDate,
       localTime,
+      targetDate: localDate,
     };
   } else {
     return {
@@ -155,14 +198,18 @@ export function evaluateDailyWindow(
       status: "SCHEDULED_AVAILABLE",
       localDate,
       localTime,
+      targetDate: getNextCalendarDate(localDate),
     };
   }
 }
 
-function parseEffectiveDate(dateStr: string, isEnd = false): number {
+function parseEffectiveDate(dateStr: string, isEnd = false, timeZone = "Asia/Ho_Chi_Minh"): number {
   if (!dateStr) return isEnd ? Infinity : -Infinity;
   if (dateStr.length === 10 && dateStr.includes("-")) {
-    return new Date(`${dateStr}T${isEnd ? "23:59:59" : "00:00:00"}+07:00`).getTime();
+    const timePart = isEnd ? "23:59:59" : "00:00:00";
+    const sampleDate = new Date(`${dateStr}T12:00:00Z`);
+    const offset = getTimeZoneOffsetString(sampleDate, timeZone);
+    return new Date(`${dateStr}T${timePart}${offset}`).getTime();
   }
   return new Date(dateStr).getTime();
 }
@@ -173,31 +220,49 @@ export function evaluateScheduleEvidence(
   warehouseId: string,
   vehicleClass: string
 ): VehicleAvailabilityEvidence | null {
+  const tz = sched.timezone || "Asia/Ho_Chi_Minh";
+
   if (sched.effective_from) {
-    const fromMs = parseEffectiveDate(sched.effective_from, false);
+    const fromMs = parseEffectiveDate(sched.effective_from, false, tz);
     if (!isNaN(fromMs) && evalMs < fromMs) {
       return null;
     }
   }
   if (sched.effective_until) {
-    const untilMs = parseEffectiveDate(sched.effective_until, true);
+    const untilMs = parseEffectiveDate(sched.effective_until, true, tz);
     if (!isNaN(untilMs) && evalMs > untilMs) {
       return null;
     }
   }
 
+  const rawStartTime = sched.local_start_time || "07:00";
+  const rawEndTime = sched.local_end_time || "10:00";
+
   const windowEval = evaluateDailyWindow(
     evalMs,
-    sched.local_start_time || "07:00",
-    sched.local_end_time || "10:00",
-    sched.timezone || "Asia/Ho_Chi_Minh"
+    rawStartTime,
+    rawEndTime,
+    tz
   );
 
-  const localDate = windowEval.localDate;
-  const startTime = sched.local_start_time || "07:00";
-  const endTime = sched.local_end_time || "10:00";
-  const earliestAvailableAt = `${localDate}T${startTime}:00+07:00`;
-  const validUntil = `${localDate}T${endTime}:00+07:00`;
+  const targetDate = windowEval.targetDate;
+  const normStartTime = normalizeTimeString(rawStartTime);
+  const normEndTime = normalizeTimeString(rawEndTime);
+
+  const sampleTargetDate = new Date(`${targetDate}T12:00:00Z`);
+  const tzOffset = getTimeZoneOffsetString(sampleTargetDate, tz);
+
+  const earliestAvailableAt = `${targetDate}T${normStartTime}${tzOffset}`;
+  const validUntil = `${targetDate}T${normEndTime}${tzOffset}`;
+
+  // Check effective_until boundary against the target window
+  if (sched.effective_until) {
+    const untilMs = parseEffectiveDate(sched.effective_until, true, tz);
+    const targetStartMs = new Date(earliestAvailableAt).getTime();
+    if (!isNaN(untilMs) && targetStartMs > untilMs) {
+      return null;
+    }
+  }
 
   return {
     warehouse_id: sched.warehouse_id || warehouseId,
