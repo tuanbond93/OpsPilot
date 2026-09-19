@@ -50,6 +50,10 @@ export interface VehicleCapacityEvidence {
 
 import type { VehicleAvailabilityStatus } from "../types";
 export type { VehicleAvailabilityStatus } from "../types";
+import {
+  DELIVERY_OPERATING_WINDOW,
+  isWithinDeliveryOperatingWindow,
+} from "../../operating-window";
 
 export type VehicleAvailabilityEvidenceStatus =
   | "MEASURED"
@@ -220,8 +224,38 @@ export function evaluateScheduleEvidence(
   warehouseId: string,
   vehicleClass: string
 ): VehicleAvailabilityEvidence | null {
-  const tz = sched.timezone || "Asia/Ho_Chi_Minh";
+  const tz = sched.timezone || DELIVERY_OPERATING_WINDOW.timezone;
 
+  // 1. Outside Delivery Operating Window (before 07:00 or after 17:00)
+  if (!isWithinDeliveryOperatingWindow(evalMs, tz)) {
+    const nextWindow = evaluateDailyWindow(evalMs, "07:00", "10:00", tz);
+    const targetDate = nextWindow.targetDate;
+    const sampleTargetDate = new Date(`${targetDate}T12:00:00Z`);
+    const tzOffset = getTimeZoneOffsetString(sampleTargetDate, tz);
+    const earliestAvailableAt = `${targetDate}T07:00:00${tzOffset}`;
+    const validUntil = `${targetDate}T10:00:00${tzOffset}`;
+
+    return {
+      warehouse_id: sched.warehouse_id || warehouseId,
+      vehicle_id: null,
+      vehicle_class: sched.vehicle_class || vehicleClass,
+      available: null,
+      availability_status: "OUTSIDE_OPERATING_WINDOW",
+      available_at: earliestAvailableAt,
+      remaining_capacity_kg: null,
+      source_ref: sched.source_ref,
+      captured_at: sched.effective_from || new Date(evalMs).toISOString(),
+      evidence_status: "OWNER_CONFIRMED_RECURRING_SCHEDULE",
+      supplier_name: sched.supplier_name,
+      available_count: null, // do not calculate dispatchable live capacity outside operating window
+      earliest_available_at: earliestAvailableAt,
+      valid_until: validUntil,
+      supplied_by: sched.supplied_by || null,
+      supplier_role: sched.supplier_role || null,
+    };
+  }
+
+  // 2. Check effective_from / effective_until dates
   if (sched.effective_from) {
     const fromMs = parseEffectiveDate(sched.effective_from, false, tz);
     if (!isNaN(fromMs) && evalMs < fromMs) {
@@ -268,7 +302,7 @@ export function evaluateScheduleEvidence(
     warehouse_id: sched.warehouse_id || warehouseId,
     vehicle_id: null,
     vehicle_class: sched.vehicle_class || vehicleClass,
-    available: false,
+    available: windowEval.isWithinWindow ? true : false,
     availability_status: windowEval.status,
     available_at: earliestAvailableAt,
     remaining_capacity_kg: null,
@@ -351,6 +385,12 @@ export function computeAvailabilityStatus(
   evaluationTime: number,
   fallbackAvailable?: boolean | null
 ): { status: VehicleAvailabilityStatus; available: boolean | null } {
+  // 1. Operating Window Check (07:00–17:00 Asia/Ho_Chi_Minh)
+  // Delivery vehicles only operate within 07:00–17:00. Outside this window, status is OUTSIDE_OPERATING_WINDOW.
+  if (!isWithinDeliveryOperatingWindow(evaluationTime)) {
+    return { status: "OUTSIDE_OPERATING_WINDOW", available: null };
+  }
+
   const validUntilMs = validUntil ? new Date(validUntil).getTime() : Infinity;
   if (evaluationTime > validUntilMs) {
     return { status: "UNKNOWN", available: null };
@@ -985,6 +1025,15 @@ export class GovernedVehicleSourceAdapter implements VehicleSourceAdapter {
     evaluationTime?: string | number | Date
   ): Promise<VehicleAvailabilityEvidence> {
     const all = await this.queryDbAvailabilities(warehouseId, vehicleClass, evaluationTime);
+    const evalMs = evaluationTime
+      ? new Date(evaluationTime).getTime()
+      : this.config.evaluationTime
+      ? new Date(this.config.evaluationTime).getTime()
+      : Date.now();
+    const fallbackStatus: VehicleAvailabilityStatus = !isWithinDeliveryOperatingWindow(evalMs)
+      ? "OUTSIDE_OPERATING_WINDOW"
+      : "UNKNOWN";
+
     if (supplierName) {
       const match = all.find(
         (a) => a.supplier_name && a.supplier_name.toUpperCase() === supplierName.toUpperCase()
@@ -995,7 +1044,7 @@ export class GovernedVehicleSourceAdapter implements VehicleSourceAdapter {
         vehicle_id: null,
         vehicle_class: vehicleClass || null,
         available: null,
-        availability_status: "UNKNOWN",
+        availability_status: fallbackStatus,
         available_at: null,
         remaining_capacity_kg: null,
         source_ref: null,
@@ -1010,7 +1059,7 @@ export class GovernedVehicleSourceAdapter implements VehicleSourceAdapter {
         vehicle_id: null,
         vehicle_class: vehicleClass || null,
         available: null,
-        availability_status: "UNKNOWN",
+        availability_status: fallbackStatus,
         available_at: null,
         remaining_capacity_kg: null,
         source_ref: null,
@@ -1184,6 +1233,15 @@ export class GovernedVehicleSourceAdapter implements VehicleSourceAdapter {
     evaluationTime?: string | number | Date
   ): VehicleAvailabilityEvidence {
     const all = this.getInMemoryAvailabilities(warehouseId, vehicleClass, evaluationTime);
+    const evalMs = evaluationTime
+      ? new Date(evaluationTime).getTime()
+      : this.config.evaluationTime
+      ? new Date(this.config.evaluationTime).getTime()
+      : Date.now();
+    const fallbackStatus: VehicleAvailabilityStatus = !isWithinDeliveryOperatingWindow(evalMs)
+      ? "OUTSIDE_OPERATING_WINDOW"
+      : "UNKNOWN";
+
     if (supplierName) {
       const match = all.find(
         (a) => a.supplier_name && a.supplier_name.toUpperCase() === supplierName.toUpperCase()
@@ -1194,7 +1252,7 @@ export class GovernedVehicleSourceAdapter implements VehicleSourceAdapter {
         vehicle_id: null,
         vehicle_class: vehicleClass,
         available: null,
-        availability_status: "UNKNOWN",
+        availability_status: fallbackStatus,
         available_at: null,
         remaining_capacity_kg: null,
         source_ref: null,
@@ -1209,7 +1267,7 @@ export class GovernedVehicleSourceAdapter implements VehicleSourceAdapter {
         vehicle_id: null,
         vehicle_class: vehicleClass,
         available: null,
-        availability_status: "UNKNOWN",
+        availability_status: fallbackStatus,
         available_at: null,
         remaining_capacity_kg: null,
         source_ref: null,

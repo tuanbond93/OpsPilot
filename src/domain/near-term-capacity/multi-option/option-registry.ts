@@ -165,7 +165,11 @@ export function generateCandidateOptions(
 
     const availStatus = currentAvailability.availability_status || "UNKNOWN";
 
-    if (availStatus === "UNAVAILABLE") {
+    if (availStatus === "OUTSIDE_OPERATING_WINDOW") {
+      addVehicleFeasibility = "INFEASIBLE";
+      addVehicleFeasibilityReason = "Ngoài khung giờ vận hành xe giao hàng (07:00–17:00). Không thể điều động xe tại thời điểm này.";
+      addVehicleFeasibilityEvidence = "Quy chuẩn khung giờ vận hành đội xe giao hàng chặng cuối (07:00–17:00 Asia/Ho_Chi_Minh)";
+    } else if (availStatus === "UNAVAILABLE") {
       addVehicleFeasibility = "INFEASIBLE";
       addVehicleFeasibilityReason = "Không có phương tiện vận tải khả dụng tại trạm";
       addVehicleFeasibilityEvidence = `Nguồn dữ liệu xác nhận xe không khả dụng (ref: ${currentAvailability.source_ref || "fleet_roster"})`;
@@ -231,14 +235,18 @@ export function generateCandidateOptions(
       : "";
     const supplierLabel = rateItem?.supplier_name ? ` (${rateItem.supplier_name})` : "";
 
-    const plannedCount = currentAvailability.available_count ?? null;
+    const isOutsideOperating = availStatus === "OUTSIDE_OPERATING_WINDOW";
+    const plannedCount = isOutsideOperating ? null : (currentAvailability.available_count ?? null);
     const unitPayloadKg = vehicleEvidence?.capacity?.usable_payload_kg ?? null;
-    const plannedCapacityKg = (plannedCount !== null && unitPayloadKg !== null)
+    const plannedCapacityKg = (!isOutsideOperating && plannedCount !== null && unitPayloadKg !== null)
       ? plannedCount * unitPayloadKg
       : null;
 
     const optionCapacity: DecisionOptionCapacity = {
       ...addVehicleCapacity,
+      added_kg: isOutsideOperating ? null : addVehicleCapacity.added_kg,
+      added_orders: isOutsideOperating ? null : addVehicleCapacity.added_orders,
+      resulting_capacity_kg: isOutsideOperating ? addVehicleCapacity.current_capacity_kg : addVehicleCapacity.resulting_capacity_kg,
       planned_capacity_kg: plannedCapacityKg,
       planned_available_count: plannedCount,
     };

@@ -9,4 +9,5 @@ export * from "./multi-option/evaluators/capacity-evaluator";
 export * from "./multi-option/evaluators/sla-evaluator";
 export * from "./multi-option/sources/vehicle-source-adapter";
 export * from "./multi-option/engine";
+export * from "./operating-window";
 

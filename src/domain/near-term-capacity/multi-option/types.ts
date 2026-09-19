@@ -88,7 +88,8 @@ export type VehicleAvailabilityStatus =
   | "PLANNED_AVAILABLE_NOW"
   | "SCHEDULED_AVAILABLE"
   | "UNAVAILABLE"
-  | "UNKNOWN";
+  | "UNKNOWN"
+  | "OUTSIDE_OPERATING_WINDOW";
 
 export interface DecisionOption {
   option_id: string;

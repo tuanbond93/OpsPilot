@@ -45,7 +45,7 @@ describe("OpsPilot Gate 3D.4 Phase 2A — Manager Vehicle Availability Confirmat
       supplier_name: "Thiên Phú",
       vehicle_class: GOVERNED_VEHICLE_CLASS,
       earliest_available_at: "2026-09-19T15:30:00+07:00",
-      valid_until: "2026-09-19T18:00:00+07:00",
+      valid_until: "2026-09-19T17:00:00+07:00",
     };
 
     expect(validateVehicleAvailabilityForm({ ...validBase, available_count: 0 }, FIXED_NOW_MS).valid).toBe(false);
@@ -95,7 +95,7 @@ describe("OpsPilot Gate 3D.4 Phase 2A — Manager Vehicle Availability Confirmat
       vehicle_class: GOVERNED_VEHICLE_CLASS,
       available_count: 2,
       earliest_available_at: "2026-09-19T15:30:00+07:00",
-      valid_until: "2026-09-19T18:00:00+07:00",
+      valid_until: "2026-09-19T17:00:00+07:00",
     };
 
     const res = validateVehicleAvailabilityForm(validInput, FIXED_NOW_MS);
@@ -111,7 +111,7 @@ describe("OpsPilot Gate 3D.4 Phase 2A — Manager Vehicle Availability Confirmat
       vehicle_class: GOVERNED_VEHICLE_CLASS,
       available_count: 2,
       earliest_available_at: "2026-09-19T15:30:00+07:00",
-      valid_until: "2026-09-19T18:00:00+07:00",
+      valid_until: "2026-09-19T17:00:00+07:00",
     };
 
     const payload = buildSubmissionPayload(sampleInput);
@@ -132,7 +132,7 @@ describe("OpsPilot Gate 3D.4 Phase 2A — Manager Vehicle Availability Confirmat
       vehicle_class: GOVERNED_VEHICLE_CLASS,
       available_count: 2,
       earliest_available_at: "2026-09-19T15:30:00+07:00",
-      valid_until: "2026-09-19T18:00:00+07:00",
+      valid_until: "2026-09-19T17:00:00+07:00",
     };
 
     const payload = buildSubmissionPayload(sampleInput);
@@ -150,7 +150,7 @@ describe("OpsPilot Gate 3D.4 Phase 2A — Manager Vehicle Availability Confirmat
       vehicle_class: GOVERNED_VEHICLE_CLASS,
       available_count: 2,
       earliest_available_at: "2026-09-19T15:30:00+07:00",
-      valid_until: "2026-09-19T18:00:00+07:00",
+      valid_until: "2026-09-19T17:00:00+07:00",
     };
 
     const payload = buildSubmissionPayload(sampleInput);
@@ -189,7 +189,7 @@ describe("OpsPilot Gate 3D.4 Phase 2A — Manager Vehicle Availability Confirmat
     const unknownRowNull = formatFactRow({
       warehouse_id: "21158000",
       available_count: null,
-      valid_until: "2026-09-19T18:00:00+07:00",
+      valid_until: "2026-09-19T17:00:00+07:00",
     }, FIXED_NOW_MS);
 
     expect(unknownRowNull.countDisplay).toBe("UNKNOWN / NULL");
@@ -209,7 +209,7 @@ describe("OpsPilot Gate 3D.4 Phase 2A — Manager Vehicle Availability Confirmat
     const zeroRow = formatFactRow({
       warehouse_id: "21158000",
       available_count: 0,
-      valid_until: "2026-09-19T18:00:00+07:00",
+      valid_until: "2026-09-19T17:00:00+07:00",
     }, FIXED_NOW_MS);
     expect(zeroRow.status).toBe("UNAVAILABLE");
     expect(zeroRow.countDisplay).toBe("0 xe");
@@ -239,7 +239,7 @@ describe("OpsPilot Gate 3D.4 Phase 2A — Manager Vehicle Availability Confirmat
       vehicle_class: GOVERNED_VEHICLE_CLASS,
       available_count: 2,
       earliest_available_at: "2026-09-19T15:00:00+07:00",
-      valid_until: "2026-09-19T18:00:00+07:00",
+      valid_until: "2026-09-19T17:00:00+07:00",
     };
 
     const confirmation = formatSanitizedConfirmation("b0e45c71-6925-419b-8ca0-1234567890ab", input, FIXED_NOW_MS);
@@ -261,7 +261,7 @@ describe("OpsPilot Gate 3D.4 Phase 2A — Manager Vehicle Availability Confirmat
       vehicle_class: GOVERNED_VEHICLE_CLASS,
       available_count: 2,
       earliest_available_at: "2026-09-19T15:00:00+07:00",
-      valid_until: "2026-09-19T18:00:00+07:00",
+      valid_until: "2026-09-19T17:00:00+07:00",
     });
 
     const combined = `${JSON.stringify(preview)} ${JSON.stringify(confirmation)}`;

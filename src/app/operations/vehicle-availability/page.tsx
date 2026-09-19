@@ -31,6 +31,10 @@ import {
   type SanitizedConfirmation,
   type VehicleAvailabilityFormInput,
 } from "./vehicle-availability-ui-logic";
+import {
+  DELIVERY_OPERATING_WINDOW,
+  isWithinDeliveryOperatingWindow,
+} from "@/domain/near-term-capacity/operating-window";
 
 export default function VehicleAvailabilityPage() {
   const session = useOpsSession();
@@ -144,11 +148,22 @@ export default function VehicleAvailabilityPage() {
     }
   }, [authorized]);
 
+  // Delivery Operating Window evaluation (07:00–17:00 Asia/Ho_Chi_Minh)
+  const isOutsideOperatingWindow = useMemo(() => {
+    return !isWithinDeliveryOperatingWindow(new Date());
+  }, []);
+
   // Handle Form Submission
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setSubmitError(null);
     setSuccessConfirmation(null);
+
+    // Guard: Prevent submission outside operating window
+    if (isOutsideOperatingWindow) {
+      setSubmitError("Ngoài khung giờ vận hành xe giao hàng (07:00–17:00). Không thể ghi nhận availability mới.");
+      return;
+    }
 
     // Client-side validation
     const validation = validateVehicleAvailabilityForm(form);
@@ -298,6 +313,26 @@ export default function VehicleAvailabilityPage() {
                 Chỉ nhập dữ liệu xe thực tế được nhà cung cấp xác nhận sẵn sàng
               </p>
             </div>
+
+            {/* Delivery Operating Window Banner */}
+            <div className="flex items-center justify-between p-3 rounded-lg bg-slate-950/80 border border-slate-800 text-xs">
+              <div className="flex items-center gap-2 text-slate-300">
+                <Clock className="w-4 h-4 text-teal-400 shrink-0" />
+                <span className="font-medium">Giờ vận hành xe giao hàng:</span>
+              </div>
+              <span className="font-mono font-bold text-teal-300">{DELIVERY_OPERATING_WINDOW.daily_start} – {DELIVERY_OPERATING_WINDOW.daily_end} ({DELIVERY_OPERATING_WINDOW.timezone})</span>
+            </div>
+
+            {/* Outside Operating Window Warning Banner */}
+            {isOutsideOperatingWindow && (
+              <div className="p-3.5 bg-rose-950/40 border border-rose-500/50 rounded-lg text-xs text-rose-200 flex items-start gap-2.5">
+                <AlertTriangle className="w-5 h-5 shrink-0 text-rose-400 mt-0.5" />
+                <div>
+                  <p className="font-semibold text-rose-300">Ngoài khung giờ vận hành xe giao hàng (07:00–17:00).</p>
+                  <p className="text-rose-200/90 text-[11px] mt-0.5">Không thể ghi nhận availability mới.</p>
+                </div>
+              </div>
+            )}
 
             <form onSubmit={handleSubmit} className="space-y-4">
               {/* 1. Kho */}
@@ -461,13 +496,18 @@ export default function VehicleAvailabilityPage() {
               {/* Submit Button */}
               <button
                 type="submit"
-                disabled={isSubmitting}
-                className="w-full py-2.5 px-4 rounded-lg bg-teal-600 hover:bg-teal-500 disabled:bg-slate-800 disabled:text-slate-500 font-semibold text-sm text-white transition-colors flex items-center justify-center gap-2 shadow-lg"
+                disabled={isSubmitting || isOutsideOperatingWindow}
+                className="w-full py-2.5 px-4 rounded-lg bg-teal-600 hover:bg-teal-500 disabled:bg-slate-800 disabled:text-slate-500 disabled:cursor-not-allowed font-semibold text-sm text-white transition-colors flex items-center justify-center gap-2 shadow-lg"
               >
                 {isSubmitting ? (
                   <>
                     <RefreshCw className="w-4 h-4 animate-spin" />
                     <span>Đang ghi nhận...</span>
+                  </>
+                ) : isOutsideOperatingWindow ? (
+                  <>
+                    <Lock className="w-4 h-4" />
+                    <span>Ngoài giờ vận hành (07:00–17:00)</span>
                   </>
                 ) : (
                   <>
@@ -606,6 +646,10 @@ export default function VehicleAvailabilityPage() {
                           {fact.status === "AVAILABLE_NOW" ? (
                             <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-semibold bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
                               AVAILABLE_NOW
+                            </span>
+                          ) : fact.status === "OUTSIDE_OPERATING_WINDOW" ? (
+                            <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-semibold bg-purple-500/15 text-purple-300 border border-purple-500/30">
+                              OUTSIDE_OPERATING_WINDOW
                             </span>
                           ) : fact.status === "EXPIRED" ? (
                             <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-semibold bg-rose-500/10 text-rose-400 border border-rose-500/20">

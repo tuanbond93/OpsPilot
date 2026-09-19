@@ -1,3 +1,9 @@
+import {
+  DELIVERY_OPERATING_WINDOW,
+  isWithinDeliveryOperatingWindow,
+  validateDeliveryOperatingWindowTimestamps,
+} from "@/domain/near-term-capacity/operating-window";
+
 export interface WarehouseOption {
   id: string;
   name: string;
@@ -121,6 +127,21 @@ export function validateVehicleAvailabilityForm(
     }
   }
 
+  // 7. Delivery Operating Window Validation (07:00–17:00 Asia/Ho_Chi_Minh)
+  if (!errors.earliest_available_at && !errors.valid_until && form.valid_until) {
+    const windowRes = validateDeliveryOperatingWindowTimestamps(
+      form.earliest_available_at ? new Date(form.earliest_available_at).toISOString() : null,
+      new Date(form.valid_until).toISOString()
+    );
+    if (!windowRes.valid) {
+      if (windowRes.error?.includes("earliest_available_at")) {
+        errors.earliest_available_at = windowRes.error;
+      } else {
+        errors.valid_until = windowRes.error;
+      }
+    }
+  }
+
   return {
     valid: Object.keys(errors).length === 0,
     errors,
@@ -209,11 +230,14 @@ export interface FactRowDisplay {
 export function formatFactRow(fact: any, nowMs: number = Date.now()): FactRowDisplay {
   const wh = PILOT_WAREHOUSES.find((w) => w.id === fact.warehouse_id);
   const isSuperseded = Boolean(fact.superseded_at);
+  const isOutsideWindow = !isWithinDeliveryOperatingWindow(nowMs);
   const isExpired = fact.valid_until ? nowMs > new Date(fact.valid_until).getTime() : false;
 
   let status = "UNKNOWN";
   if (isSuperseded) {
     status = "SUPERSEDED";
+  } else if (isOutsideWindow) {
+    status = "OUTSIDE_OPERATING_WINDOW";
   } else if (isExpired) {
     status = "EXPIRED";
   } else if (fact.available_count === 0) {

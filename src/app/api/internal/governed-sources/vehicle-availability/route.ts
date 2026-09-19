@@ -5,6 +5,7 @@ import {
   validateVehicleAvailabilityInput,
   persistVehicleAvailabilityFact,
 } from "@/domain/near-term-capacity/multi-option/sources/vehicle-availability-service";
+import { isWithinDeliveryOperatingWindow } from "@/domain/near-term-capacity/operating-window";
 
 export const dynamic = "force-dynamic";
 
@@ -93,6 +94,8 @@ export async function GET(request: NextRequest) {
     }
 
     const now = Date.now();
+    const isOutsideOperatingWindow = !isWithinDeliveryOperatingWindow(now);
+
     const allRows = (data || []).map((row) => {
       const isExpired = row.valid_until ? now > new Date(row.valid_until).getTime() : false;
       const isSuperseded = Boolean(row.superseded_at);
@@ -106,25 +109,30 @@ export async function GET(request: NextRequest) {
         !isExpired &&
         !isSuperseded;
 
-      const availStatus = isSuperseded
-        ? "SUPERSEDED"
-        : isExpired
-        ? "UNKNOWN"
-        : row.available_count === 0
-        ? "UNAVAILABLE"
-        : isAvailableNow
-        ? "AVAILABLE_NOW"
-        : isScheduled
-        ? "SCHEDULED_AVAILABLE"
-        : "UNKNOWN";
+      let availStatus: string;
+      if (isSuperseded) {
+        availStatus = "SUPERSEDED";
+      } else if (isOutsideOperatingWindow) {
+        availStatus = "OUTSIDE_OPERATING_WINDOW";
+      } else if (isExpired) {
+        availStatus = "UNKNOWN";
+      } else if (row.available_count === 0) {
+        availStatus = "UNAVAILABLE";
+      } else if (isAvailableNow) {
+        availStatus = "AVAILABLE_NOW";
+      } else if (isScheduled) {
+        availStatus = "SCHEDULED_AVAILABLE";
+      } else {
+        availStatus = "UNKNOWN";
+      }
 
       return {
         ...row,
         is_expired: isExpired,
         is_superseded: isSuperseded,
         availability_status: availStatus,
-        evidence_status: isExpired || isSuperseded
-          ? "UNKNOWN"
+        evidence_status: isExpired || isSuperseded || isOutsideOperatingWindow
+          ? (isOutsideOperatingWindow && !isSuperseded ? "OUTSIDE_OPERATING_WINDOW" : "UNKNOWN")
           : (row.source_ref && row.source_ref.startsWith("SYSTEM_AUTHORIZED_IMPORT"))
           ? "SYSTEM_AUTHORIZED_IMPORT"
           : "AUTHORIZED_OPERATIONAL_FACT",

@@ -156,7 +156,7 @@ describe("OpsPilot Gate 3D.4 Phase 2B — Atomic Fact Supersession & Correction 
       available_count: 2,
       earliest_available_at: "2026-09-19T15:15:00+07:00",
       captured_at: "2026-09-19T15:30:00+07:00",
-      valid_until: "2026-09-19T18:00:00+07:00",
+      valid_until: "2026-09-19T17:00:00+07:00",
       supplied_by: "manager@opspilot.internal",
       supplier_role: "OPERATIONS_MANAGER",
       source_ref: "AUTHORIZED_OPERATIONAL_FACT:DIRECT_OWNER_CORRECTION:test",
@@ -203,7 +203,7 @@ describe("OpsPilot Gate 3D.4 Phase 2B — Atomic Fact Supersession & Correction 
         supplier_name: "Thiên Phú",
         vehicle_class: "TRUCK_1_9T",
         available_count: 2,
-        valid_until: "2026-09-19T18:00:00+07:00",
+        valid_until: "2026-09-19T17:00:00+07:00",
         superseded_at: null,
       }, FIXED_EVAL_TIME),
     ];
@@ -227,7 +227,7 @@ describe("OpsPilot Gate 3D.4 Phase 2B — Atomic Fact Supersession & Correction 
           available_count: 2, // Corrected
           earliest_available_at: "2026-09-19T15:15:00+07:00",
           captured_at: "2026-09-19T15:30:00+07:00",
-          valid_until: "2026-09-19T18:00:00+07:00",
+          valid_until: "2026-09-19T17:00:00+07:00",
           supplied_by: "manager",
           supplier_role: "OPERATIONS_MANAGER",
           source_ref: "AUTHORIZED_OPERATIONAL_FACT:new",
@@ -268,7 +268,7 @@ describe("OpsPilot Gate 3D.4 Phase 2B — Atomic Fact Supersession & Correction 
           available_count: 2,
           earliest_available_at: "2026-09-19T15:15:00+07:00",
           captured_at: "2026-09-19T15:30:00+07:00",
-          valid_until: "2026-09-19T18:00:00+07:00",
+          valid_until: "2026-09-19T17:00:00+07:00",
           supplied_by: "manager",
           supplier_role: "OPERATIONS_MANAGER",
           source_ref: "ref-2",
@@ -299,7 +299,7 @@ describe("OpsPilot Gate 3D.4 Phase 2B — Atomic Fact Supersession & Correction 
 
   // 11. Expired current fact falls back to schedule
   it("11. When CURRENT fact expires, adapter falls back to recurring schedule if valid", () => {
-    const PAST_FACT_TIME = new Date("2026-09-19T18:05:00+07:00").getTime(); // Past valid_until (18:00)
+    const EVAL_TIME = new Date("2026-09-19T09:30:00+07:00").getTime(); // Within schedule 07:00-10:00, but fact expired at 09:00
     const schedule: VehicleAvailabilitySchedule = {
       warehouse_id: "21160000",
       supplier_name: "Thiên Phú",
@@ -317,16 +317,16 @@ describe("OpsPilot Gate 3D.4 Phase 2B — Atomic Fact Supersession & Correction 
     };
 
     const adapter = new GovernedVehicleSourceAdapter({
-      evaluationTime: PAST_FACT_TIME,
+      evaluationTime: EVAL_TIME,
       availabilityFacts: [
         {
           warehouse_id: "21160000",
           supplier_name: "Thiên Phú",
           vehicle_class: "TRUCK_1_9T",
           available_count: 2,
-          earliest_available_at: "2026-09-19T15:15:00+07:00",
-          captured_at: "2026-09-19T15:30:00+07:00",
-          valid_until: "2026-09-19T18:00:00+07:00", // Expired at 18:05
+          earliest_available_at: "2026-09-19T07:00:00+07:00",
+          captured_at: "2026-09-19T07:15:00+07:00",
+          valid_until: "2026-09-19T09:00:00+07:00", // Expired at 09:00
           supplied_by: "manager",
           supplier_role: "OPERATIONS_MANAGER",
           source_ref: "ref-2",
@@ -337,10 +337,11 @@ describe("OpsPilot Gate 3D.4 Phase 2B — Atomic Fact Supersession & Correction 
       schedules: [schedule],
     });
 
-    const ev = adapter.getVehicleAvailability("21160000", "TRUCK_1_9T", "Thiên Phú", PAST_FACT_TIME);
-    // At 18:05, daily window 07:00-10:00 is closed, so schedule rolls to tomorrow 07:00 (SCHEDULED_AVAILABLE)
+    const ev = adapter.getVehicleAvailability("21160000", "TRUCK_1_9T", "Thiên Phú", EVAL_TIME);
+    // At 09:30, the fact is expired, so adapter falls back to recurring schedule (07:00-10:00)
     expect(ev.evidence_status).toBe("OWNER_CONFIRMED_RECURRING_SCHEDULE");
-    expect(ev.availability_status).toBe("SCHEDULED_AVAILABLE");
+    expect(ev.availability_status).toBe("PLANNED_AVAILABLE_NOW");
+    expect(ev.available_count).toBe(1);
   });
 
   // 12. Superseded historical fact never becomes active again
@@ -381,7 +382,7 @@ describe("OpsPilot Gate 3D.4 Phase 2B — Atomic Fact Supersession & Correction 
       available_count: 2,
       earliest_available_at: "2026-09-19T15:15:00+07:00",
       captured_at: "2026-09-19T15:30:00+07:00",
-      valid_until: "2026-09-19T18:00:00+07:00",
+      valid_until: "2026-09-19T17:00:00+07:00",
       supplied_by: "manager",
       supplier_role: "OPERATIONS_MANAGER",
       source_ref: "test",
@@ -416,7 +417,7 @@ describe("OpsPilot Gate 3D.4 Phase 2B — Atomic Fact Supersession & Correction 
       ...baseFact,
       available_count: 2,
       captured_at: "2026-09-19T15:30:00+07:00",
-      valid_until: "2026-09-19T18:00:00+07:00",
+      valid_until: "2026-09-19T17:00:00+07:00",
     });
 
     const currentRows = mockDbRows.filter(
@@ -473,7 +474,7 @@ describe("OpsPilot Gate 3D.4 Phase 2B — Atomic Fact Supersession & Correction 
       available_count: 2,
       earliest_available_at: "2026-09-19T15:15:00+07:00",
       captured_at: "2026-09-19T15:30:00+07:00",
-      valid_until: "2026-09-19T18:00:00+07:00",
+      valid_until: "2026-09-19T17:00:00+07:00",
       supplied_by: "manager",
       supplier_role: "OPERATIONS_MANAGER",
       source_ref: "tp-2",
@@ -543,7 +544,7 @@ describe("OpsPilot Gate 3D.4 Phase 2B — Atomic Fact Supersession & Correction 
         supplier_name: "Thiên Phú",
         vehicle_class: "TRUCK_1_9T",
         available_count: 2,
-        valid_until: "2026-09-19T18:00:00+07:00",
+        valid_until: "2026-09-19T17:00:00+07:00",
         earliest_available_at: "2026-09-19T15:15:00+07:00",
       },
       { isCron: false, identity: null }
@@ -559,7 +560,7 @@ describe("OpsPilot Gate 3D.4 Phase 2B — Atomic Fact Supersession & Correction 
         supplier_name: "Thiên Phú",
         vehicle_class: "TRUCK_1_9T",
         available_count: 2,
-        valid_until: "2026-09-19T18:00:00+07:00",
+        valid_until: "2026-09-19T17:00:00+07:00",
         earliest_available_at: "2026-09-19T15:15:00+07:00",
       },
       {
@@ -584,7 +585,7 @@ describe("OpsPilot Gate 3D.4 Phase 2B — Atomic Fact Supersession & Correction 
         supplier_name: "Thiên Phú",
         vehicle_class: "TRUCK_1_9T",
         available_count: 2,
-        valid_until: "2026-09-19T18:00:00+07:00",
+        valid_until: "2026-09-19T17:00:00+07:00",
         earliest_available_at: "2026-09-19T15:15:00+07:00",
         supplier_role: "SYSTEM_ADMIN", // Body self-promotion
       },
@@ -610,7 +611,7 @@ describe("OpsPilot Gate 3D.4 Phase 2B — Atomic Fact Supersession & Correction 
         supplier_name: "Thiên Phú",
         vehicle_class: "TRUCK_1_9T",
         available_count: 2,
-        valid_until: "2026-09-19T18:00:00+07:00",
+        valid_until: "2026-09-19T17:00:00+07:00",
         earliest_available_at: "2026-09-19T15:15:00+07:00",
         supplier_role: "OPERATIONS_MANAGER", // Forbidden for cron
       },
@@ -631,7 +632,7 @@ describe("OpsPilot Gate 3D.4 Phase 2B — Atomic Fact Supersession & Correction 
         supplier_name: "Thiên Phú",
         vehicle_class: "TRUCK_1_9T",
         available_count: 2,
-        valid_until: "2026-09-19T18:00:00+07:00",
+        valid_until: "2026-09-19T17:00:00+07:00",
         superseded_at: null,
       }, FIXED_EVAL_TIME),
     ];

@@ -3,6 +3,7 @@ import type {
   AuthorizedOperationalRole,
   VehicleAvailabilityFact,
 } from "./vehicle-source-adapter";
+import { validateDeliveryOperatingWindowTimestamps } from "../../operating-window";
 
 export const ALLOWED_AVAILABILITY_ROLES: ReadonlySet<string> = new Set([
   "WAREHOUSE_LEAD",
@@ -268,6 +269,19 @@ export function validateVehicleAvailabilityInput(
         earliestAvailableAt = new Date(earliestMs).toISOString();
       }
     }
+  }
+
+  // Governed Operating Window Validation (07:00–17:00 Asia/Ho_Chi_Minh)
+  const windowValidation = validateDeliveryOperatingWindowTimestamps(
+    earliestAvailableAt,
+    validUntil
+  );
+  if (!windowValidation.valid) {
+    return {
+      ok: false,
+      error: windowValidation.error || "OUTSIDE_OPERATING_WINDOW: Timestamps violate governed delivery operating window (07:00–17:00 Asia/Ho_Chi_Minh)",
+      status: 400,
+    };
   }
 
   const interactionId = typeof input.interaction_id === "string" && input.interaction_id.trim()
