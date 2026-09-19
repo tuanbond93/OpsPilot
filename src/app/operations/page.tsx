@@ -1,6 +1,7 @@
 import { RillnetConnector } from "@/connectors/rillnet";
 import { aggregateIncidents, type Incident } from "@/engine/incident";
 import { createAdminClient } from "@/connectors/supabase";
+import Link from "next/link";
 
 export const dynamic = "force-dynamic";
 
@@ -61,9 +62,19 @@ export default async function OperationsPage() {
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 p-6 max-w-7xl mx-auto space-y-8">
-      <header className="border-b border-slate-800 pb-4">
-        <h1 className="text-2xl font-bold text-slate-100">OpsPilot Operations Room</h1>
-        <p className="text-xs text-slate-400">Server-side persisted operational memory & active incidents</p>
+      <header className="border-b border-slate-800 pb-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-bold text-slate-100">OpsPilot Operations Room</h1>
+          <p className="text-xs text-slate-400">Server-side persisted operational memory & active incidents</p>
+        </div>
+        <div>
+          <Link
+            href="/operations/vehicle-availability"
+            className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold shadow-sm transition-colors"
+          >
+            🚚 Xác nhận xe
+          </Link>
+        </div>
       </header>
 
       {/* 4 KPI Cards */}
