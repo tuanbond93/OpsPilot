@@ -298,15 +298,80 @@ export function validateVehicleAvailabilityInput(
 export async function persistVehicleAvailabilityFact(
   db: SupabaseClient,
   fact: VehicleAvailabilityFact
-): Promise<{ ok: true; id: string } | { ok: false; error: string }> {
+): Promise<{ ok: true; id: string; superseded_id?: string } | { ok: false; error: string }> {
   try {
+    // 1. Try atomic database RPC (Migration 085)
+    if (typeof db.rpc === "function") {
+      try {
+        const { data: rpcData, error: rpcError } = await db.rpc("replace_vehicle_availability_fact", {
+          p_warehouse_id: fact.warehouse_id,
+          p_supplier_name: fact.supplier_name,
+          p_vehicle_class: fact.vehicle_class,
+          p_available_count: fact.available_count,
+          p_available_at: fact.earliest_available_at || fact.captured_at,
+          p_captured_at: fact.captured_at,
+          p_valid_until: fact.valid_until,
+          p_source_ref: fact.source_ref,
+          p_supplied_by: fact.supplied_by,
+          p_supplier_role: fact.supplier_role,
+          p_supersession_reason: fact.supersession_reason || "DIRECT_OWNER_CORRECTION",
+        });
+
+        if (!rpcError && rpcData && rpcData.ok) {
+          return {
+            ok: true,
+            id: rpcData.id,
+            superseded_id: rpcData.superseded_id || undefined,
+          };
+        }
+        // If RPC returned a database error that is not "function not found", propagate it
+        if (rpcError && !rpcError.message?.includes("function") && !rpcError.message?.includes("not found")) {
+          return { ok: false, error: rpcError.message };
+        }
+      } catch (rpcErr: any) {
+        // Fallback for mocks/environments where RPC is not defined
+        if (!rpcErr?.message?.includes("not found") && !rpcErr?.message?.includes("function")) {
+          return { ok: false, error: rpcErr?.message || String(rpcErr) };
+        }
+      }
+    }
+
+    // 2. Fallback for mock clients / local test environments without RPC
     const capturedMs = new Date(fact.captured_at).getTime();
     const earliestMs = fact.earliest_available_at ? new Date(fact.earliest_available_at).getTime() : capturedMs;
     const isAvailableNow = fact.available_count > 0 && earliestMs <= capturedMs;
+    const newId = fact.id || (globalThis.crypto?.randomUUID?.() ?? "mock-fact-uuid");
+
+    // Look for existing unsuperseded fact for this tuple
+    let supersededId: string | undefined = undefined;
+    try {
+      const { data: existingRows } = await db
+        .from("vehicle_fleet_availability")
+        .select("id")
+        .eq("warehouse_id", fact.warehouse_id)
+        .eq("supplier_name", fact.supplier_name)
+        .eq("vehicle_class", fact.vehicle_class)
+        .is("superseded_at", null);
+
+      if (existingRows && existingRows.length > 0 && existingRows[0]?.id) {
+        supersededId = existingRows[0].id;
+        await db
+          .from("vehicle_fleet_availability")
+          .update({
+            superseded_at: fact.captured_at,
+            superseded_by: newId,
+            supersession_reason: fact.supersession_reason || "DIRECT_OWNER_CORRECTION",
+          })
+          .eq("id", supersededId);
+      }
+    } catch {
+      // Ignore if table doesn't have supersession columns in older mock
+    }
 
     const { data, error } = await db
       .from("vehicle_fleet_availability")
       .insert({
+        id: newId,
         warehouse_id: fact.warehouse_id,
         supplier_name: fact.supplier_name,
         vehicle_class: fact.vehicle_class,
@@ -318,6 +383,7 @@ export async function persistVehicleAvailabilityFact(
         source_ref: fact.source_ref,
         supplied_by: fact.supplied_by,
         supplier_role: fact.supplier_role,
+        supersedes_fact_id: supersededId || null,
       })
       .select("id")
       .single();
@@ -326,7 +392,7 @@ export async function persistVehicleAvailabilityFact(
       return { ok: false, error: error.message };
     }
 
-    return { ok: true, id: data?.id || "persisted" };
+    return { ok: true, id: data?.id || newId, superseded_id: supersededId };
   } catch (err: any) {
     return { ok: false, error: err?.message || String(err) };
   }

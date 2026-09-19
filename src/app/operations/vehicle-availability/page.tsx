@@ -26,6 +26,7 @@ import {
   isManagerAuthorized,
   PILOT_WAREHOUSES,
   validateVehicleAvailabilityForm,
+  findActiveFactForTuple,
   type FactRowDisplay,
   type SanitizedConfirmation,
   type VehicleAvailabilityFormInput,
@@ -93,6 +94,11 @@ export default function VehicleAvailabilityPage() {
   const capacityPreview = useMemo(() => {
     return calculateCapacityPreview(form.available_count, form.vehicle_class);
   }, [form.available_count, form.vehicle_class]);
+
+  // Existing active fact for the selected tuple (if any)
+  const existingActiveFact = useMemo(() => {
+    return findActiveFactForTuple(activeFacts, form.warehouse_id, form.supplier_name, form.vehicle_class);
+  }, [activeFacts, form.warehouse_id, form.supplier_name, form.vehicle_class]);
 
   // Fetch active facts from production
   const fetchActiveFacts = async () => {
@@ -428,6 +434,21 @@ export default function VehicleAvailabilityPage() {
                   <p className="text-xs text-rose-400 mt-1">{validationErrors.valid_until}</p>
                 )}
               </div>
+
+              {/* Replacement Warning Banner if Current Active Fact Exists for this Tuple */}
+              {existingActiveFact && (
+                <div className="p-3.5 bg-amber-950/40 border border-amber-500/50 rounded-lg text-xs text-amber-200 space-y-1.5">
+                  <div className="flex items-center gap-2 font-semibold text-amber-300">
+                    <AlertTriangle className="w-4 h-4 shrink-0 text-amber-400" />
+                    <span>Đang có xác nhận hiện hành cho Kho / NCC / Loại xe này. Xác nhận mới sẽ thay thế xác nhận hiện tại.</span>
+                  </div>
+                  <div className="text-slate-300 pl-6 space-y-0.5 text-[11px]">
+                    <p>• Số lượng hiện hành: <strong className="text-white">{existingActiveFact.countDisplay}</strong> ({existingActiveFact.capacityDisplay})</p>
+                    <p>• Bắt đầu khả dụng: <strong className="text-white">{existingActiveFact.earliestAvailableAt}</strong></p>
+                    <p>• Hiệu lực đến: <strong className="text-white">{existingActiveFact.validUntil}</strong></p>
+                  </div>
+                </div>
+              )}
 
               {/* Submit Error */}
               {submitError && (

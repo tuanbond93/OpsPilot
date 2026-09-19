@@ -103,12 +103,64 @@ Reporting `0` for unobserved availability conflates absence of data with a posit
 
 ---
 
-## 6. Safety Invariants Summary
+## 3.2 Phase 2B Atomic Fact Supersession Verification (17/17 Passed)
+
+File: `src/__tests__/manager-vehicle-supersession.test.ts`
+Migration: `src/database/migrations/085_vehicle_fleet_availability_supersession.sql`
+
+- **Criterion 1**: First fact becomes the single current assertion (`superseded_at IS NULL`).
+- **Criterion 2**: Second fact for same `(warehouse, supplier, vehicle_class)` atomically supersedes the first.
+- **Criterion 3**: Old fact retains its original `valid_until` unchanged (no TTL truncation/loss of audit history).
+- **Criterion 4**: Old fact has `superseded_at` stamped to new fact's `captured_at`.
+- **Criterion 5**: Old fact points forward to replacement via `superseded_by = new_id`.
+- **Criterion 6**: New fact points back to replaced fact via `supersedes_fact_id = old_id`.
+- **Criterion 7**: Active query returns exactly one row for the tuple.
+- **Criterion 8**: Near-term capacity evaluator selects the newer unexpired fact over the superseded one.
+- **Criterion 9**: Engine adapter enforces deterministic latest-wins: older unexpired facts never overwrite newer facts.
+- **Criterion 10**: Corrected fact replaces capacity rather than aggregating (2 vehicles = 3,200 kg, never 1 + 2 = 4,800 kg).
+- **Criterion 11**: When a current fact expires naturally, engine falls back to recurring schedule.
+- **Criterion 12**: Superseded historical fact is never reactivated even after replacement fact expires.
+- **Criterion 13**: Transaction failure rolls back cleanly without marking old fact superseded.
+- **Criterion 14**: Concurrent writes cannot produce multiple current facts (enforced by partial unique index `uq_fleet_avail_single_current`).
+- **Criterion 15**: Different suppliers at the same warehouse remain strictly isolated.
+- **Criterion 16**: Different warehouses for the same supplier remain strictly isolated.
+- **Criterion 17**: Semantic invariant `UNKNOWN != ZERO` preserved across supersession states.
+
+---
+
+## 4. Production Erroneous Fact & Post-Deployment Human Correction
+
+### 4.1 Erroneous Fact Submitted in Pilot (Pre-Correction State)
+During initial testing via the Manager UI, one real fact was submitted with erroneous values:
+- **Warehouse**: `21160000` (Phú Thọ)
+- **Supplier**: Thiên Phú
+- **Vehicle Class**: `TRUCK_1_9T`
+- **Available Count**: `1` (ERRONEOUS — should be 2)
+- **Capacity**: 1,600 kg (ERRONEOUS — should be 3,200 kg)
+- **Valid Until**: `2026-09-19T17:00:00+07:00`
+- **Status**: `AVAILABLE_NOW` (until 17:00 ICT)
+
+### 4.2 Authorized Target Values for Operations Manager Correction
+The Operations Manager has confirmed the corrected values to be submitted manually via UI:
+- **Warehouse**: `21160000` (Phú Thọ)
+- **Supplier**: Thiên Phú
+- **Vehicle Class**: `TRUCK_1_9T`
+- **Available Count**: `2`
+- **Earliest Available**: `2026-09-19T15:15:00+07:00`
+- **Valid Until**: `2026-09-19T18:00:00+07:00`
+- **Expected Capacity**: `3,200 kg`
+
+*Note: The erroneous 1-vehicle row was NOT mutated or corrected during this engineering task. The human Operations Manager will execute the correction via `/operations/vehicle-availability` post-deployment.*
+
+---
+
+## 5. Safety Invariants Summary
 
 - `PRODUCTION_DECISION_CHANGED`: **MUST_BE_NO** (Verified: NO)
 - `TELEGRAM_ACTION_SENT`: **MUST_BE_NO** (Verified: NO)
 - `WORK_ORDER_CREATED`: **MUST_BE_NO** (Verified: NO)
 - `AUTONOMOUS_DISPATCH`: **MUST_BE_NO** (Verified: NO)
 - `084_EXECUTED`: **MUST_BE_NO** (Verified: NO)
-- `LIVE_FACTS_WRITTEN_IN_PHASE_1`: **MUST_BE_0** (Verified: 0)
-- `GATE_3D4_STATUS`: **NOT_PROVEN_PENDING_REAL_AUTHENTICATED_WRITE**
+- `AUTOMATIC_PRODUCTION_MUTATION_DURING_TASK`: **MUST_BE_0** (Verified: 0)
+- `GATE_3D4_STATUS`: **NOT_PROVEN_PENDING_DIRECT_OWNER_CORRECTION_WRITE**
+

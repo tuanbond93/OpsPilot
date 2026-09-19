@@ -200,14 +200,21 @@ export interface FactRowDisplay {
   status: string;
   source: string;
   isExpired: boolean;
+  isSuperseded: boolean;
+  supersededAt?: string | null;
+  supersedesFactId?: string | null;
+  availableCountRaw?: number | null;
 }
 
 export function formatFactRow(fact: any, nowMs: number = Date.now()): FactRowDisplay {
   const wh = PILOT_WAREHOUSES.find((w) => w.id === fact.warehouse_id);
+  const isSuperseded = Boolean(fact.superseded_at);
   const isExpired = fact.valid_until ? nowMs > new Date(fact.valid_until).getTime() : false;
 
   let status = "UNKNOWN";
-  if (isExpired) {
+  if (isSuperseded) {
+    status = "SUPERSEDED";
+  } else if (isExpired) {
     status = "EXPIRED";
   } else if (fact.available_count === 0) {
     status = "UNAVAILABLE";
@@ -237,5 +244,27 @@ export function formatFactRow(fact: any, nowMs: number = Date.now()): FactRowDis
     status,
     source: fact.source_ref || "AUTHORIZED_OPERATIONAL_FACT",
     isExpired,
+    isSuperseded,
+    supersededAt: fact.superseded_at || null,
+    supersedesFactId: fact.supersedes_fact_id || null,
+    availableCountRaw: fact.available_count ?? null,
   };
+}
+
+export function findActiveFactForTuple(
+  activeFacts: FactRowDisplay[],
+  warehouseId: string,
+  supplierName: string,
+  vehicleClass: string = GOVERNED_VEHICLE_CLASS
+): FactRowDisplay | undefined {
+  return activeFacts.find(
+    (f) =>
+      f.warehouseId === warehouseId &&
+      f.supplierName.trim().toUpperCase() === supplierName.trim().toUpperCase() &&
+      f.vehicleClass.trim().toUpperCase() === vehicleClass.trim().toUpperCase() &&
+      !f.isExpired &&
+      !f.isSuperseded &&
+      f.status !== "SUPERSEDED" &&
+      f.status !== "EXPIRED"
+  );
 }

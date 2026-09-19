@@ -301,9 +301,15 @@ export interface VehicleAvailabilityEvidence {
   valid_until?: string | null;
   supplied_by?: string | null;
   supplier_role?: string | null;
+  superseded_at?: string | null;
+  superseded_by?: string | null;
+  supersedes_fact_id?: string | null;
+  supersession_reason?: string | null;
+  is_superseded?: boolean;
 }
 
 export interface VehicleAvailabilityFact {
+  id?: string;
   warehouse_id: string;
   supplier_name: string;
   vehicle_class: string;
@@ -315,6 +321,10 @@ export interface VehicleAvailabilityFact {
   supplier_role: AuthorizedOperationalRole;
   source_ref: string;
   evidence_status: "AUTHORIZED_OPERATIONAL_FACT" | "SYSTEM_AUTHORIZED_IMPORT";
+  superseded_at?: string | null;
+  superseded_by?: string | null;
+  supersedes_fact_id?: string | null;
+  supersession_reason?: string | null;
 }
 
 export interface VehicleEconomicsAndCapacityResult {
@@ -419,6 +429,10 @@ export interface GovernedAvailabilityRecord {
   supplied_by?: string | null;
   supplier_role?: string | null;
   evidence_status?: VehicleAvailabilityEvidenceStatus;
+  superseded_at?: string | null;
+  superseded_by?: string | null;
+  supersedes_fact_id?: string | null;
+  supersession_reason?: string | null;
 }
 
 export interface GovernedVehicleSourceConfig {
@@ -866,6 +880,11 @@ export class GovernedVehicleSourceAdapter implements VehicleSourceAdapter {
       const unassociatedLive: VehicleAvailabilityEvidence[] = [];
 
       for (const row of rows) {
+        // Skip superseded facts: only CURRENT unsuperseded facts participate in live evaluation
+        if (row.superseded_at) {
+          continue;
+        }
+
         const isOperationalFact =
           (typeof row.source_ref === "string" && row.source_ref.startsWith("AUTHORIZED_OPERATIONAL_FACT")) ||
           row.evidence_status === "AUTHORIZED_OPERATIONAL_FACT";
@@ -904,11 +923,18 @@ export class GovernedVehicleSourceAdapter implements VehicleSourceAdapter {
           valid_until: row.valid_until ?? null,
           supplied_by: row.supplied_by ?? null,
           supplier_role: row.supplier_role ?? null,
+          superseded_at: row.superseded_at ?? null,
+          superseded_by: row.superseded_by ?? null,
+          supersedes_fact_id: row.supersedes_fact_id ?? null,
+          supersession_reason: row.supersession_reason ?? null,
+          is_superseded: false,
         };
 
         const supKey = (row.supplier_name || "").toUpperCase();
         if (supKey) {
-          if (!liveBySupplier.has(supKey) || availStatus !== "UNKNOWN") {
+          // Deterministic latest-wins: rows are ordered captured_at DESC.
+          // Once the newest CURRENT unsuperseded fact is recorded, older rows for the same supplier never overwrite it.
+          if (!liveBySupplier.has(supKey)) {
             liveBySupplier.set(supKey, ev);
           }
         } else {
@@ -1006,8 +1032,12 @@ export class GovernedVehicleSourceAdapter implements VehicleSourceAdapter {
       ? new Date(this.config.evaluationTime).getTime()
       : Date.now();
 
-    // 1. Process point-in-time live facts
-    const facts = this.config.availabilityFacts || [];
+    // 1. Process point-in-time live facts (sort captured_at DESC to guarantee deterministic latest-wins)
+    const facts = [...(this.config.availabilityFacts || [])].sort((a, b) => {
+      const aMs = new Date(a.captured_at).getTime();
+      const bMs = new Date(b.captured_at).getTime();
+      return bMs - aMs;
+    });
     const liveEvidenceBySupplier = new Map<string, VehicleAvailabilityEvidence>();
     const unassociatedLive: VehicleAvailabilityEvidence[] = [];
 
@@ -1016,6 +1046,11 @@ export class GovernedVehicleSourceAdapter implements VehicleSourceAdapter {
         fact.warehouse_id === warehouseId &&
         (!vehicleClass || fact.vehicle_class.toUpperCase() === vehicleClass.toUpperCase())
       ) {
+        // Skip superseded facts: only CURRENT unsuperseded assertions participate in live evaluation
+        if (fact.superseded_at) {
+          continue;
+        }
+
         const { status: availStatus, available } = computeAvailabilityStatus(
           fact.available_count,
           fact.earliest_available_at,
@@ -1040,11 +1075,18 @@ export class GovernedVehicleSourceAdapter implements VehicleSourceAdapter {
           valid_until: fact.valid_until,
           supplied_by: fact.supplied_by,
           supplier_role: fact.supplier_role,
+          superseded_at: fact.superseded_at ?? null,
+          superseded_by: fact.superseded_by ?? null,
+          supersedes_fact_id: fact.supersedes_fact_id ?? null,
+          supersession_reason: fact.supersession_reason ?? null,
+          is_superseded: false,
         };
 
         if (fact.supplier_name) {
           const supKey = fact.supplier_name.toUpperCase();
-          if (!liveEvidenceBySupplier.has(supKey) || availStatus !== "UNKNOWN") {
+          // Deterministic latest-wins: rows sorted captured_at DESC.
+          // The first (newest) unsuperseded assertion is recorded; older rows never overwrite it.
+          if (!liveEvidenceBySupplier.has(supKey)) {
             liveEvidenceBySupplier.set(supKey, ev);
           }
         } else {

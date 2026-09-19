@@ -48,8 +48,11 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({
       ok: true,
       fact_id: persistResult.id,
+      superseded_fact_id: persistResult.superseded_id || null,
       fact: validation.fact,
-      message: "Authorized vehicle availability fact persisted successfully.",
+      message: persistResult.superseded_id
+        ? "Prior fact superseded and corrected vehicle availability fact persisted successfully."
+        : "Authorized vehicle availability fact persisted successfully.",
     });
   } catch (err: any) {
     return NextResponse.json(
@@ -73,10 +76,11 @@ export async function GET(request: NextRequest) {
     const db = createAdminClient();
     const searchParams = request.nextUrl.searchParams;
     const warehouseId = searchParams.get("warehouseId");
+    const includeSuperseded = searchParams.get("include_superseded") === "true";
 
     let query = db
       .from("vehicle_fleet_availability")
-      .select("id, warehouse_id, supplier_name, vehicle_class, available, available_count, available_at, captured_at, valid_until, source_ref, supplied_by, supplier_role")
+      .select("id, warehouse_id, supplier_name, vehicle_class, available, available_count, available_at, captured_at, valid_until, source_ref, supplied_by, supplier_role, superseded_at, superseded_by, supersedes_fact_id, supersession_reason")
       .order("captured_at", { ascending: false });
 
     if (warehouseId) {
@@ -89,17 +93,22 @@ export async function GET(request: NextRequest) {
     }
 
     const now = Date.now();
-    const activeFacts = (data || []).map((row) => {
+    const allRows = (data || []).map((row) => {
       const isExpired = row.valid_until ? now > new Date(row.valid_until).getTime() : false;
+      const isSuperseded = Boolean(row.superseded_at);
       const isAvailableNow = row.available_count > 0 &&
         (!row.available_at || new Date(row.available_at).getTime() <= now) &&
-        !isExpired;
+        !isExpired &&
+        !isSuperseded;
       const isScheduled = row.available_count > 0 &&
         row.available_at &&
         new Date(row.available_at).getTime() > now &&
-        !isExpired;
+        !isExpired &&
+        !isSuperseded;
 
-      const availStatus = isExpired
+      const availStatus = isSuperseded
+        ? "SUPERSEDED"
+        : isExpired
         ? "UNKNOWN"
         : row.available_count === 0
         ? "UNAVAILABLE"
@@ -112,8 +121,9 @@ export async function GET(request: NextRequest) {
       return {
         ...row,
         is_expired: isExpired,
+        is_superseded: isSuperseded,
         availability_status: availStatus,
-        evidence_status: isExpired
+        evidence_status: isExpired || isSuperseded
           ? "UNKNOWN"
           : (row.source_ref && row.source_ref.startsWith("SYSTEM_AUTHORIZED_IMPORT"))
           ? "SYSTEM_AUTHORIZED_IMPORT"
@@ -121,11 +131,21 @@ export async function GET(request: NextRequest) {
       };
     });
 
+    // Deduplicate current unsuperseded facts by (warehouse_id, vehicle_class, supplier_name)
+    const seenTuples = new Set<string>();
+    const currentFacts = allRows.filter((fact) => {
+      if (fact.is_superseded) return false;
+      const tupleKey = `${fact.warehouse_id}::${fact.vehicle_class}::${(fact.supplier_name || "").toUpperCase()}`;
+      if (seenTuples.has(tupleKey)) return false;
+      seenTuples.add(tupleKey);
+      return true;
+    });
+
     return NextResponse.json({
       ok: true,
-      total_count: activeFacts.length,
-      active_non_expired_count: activeFacts.filter((f) => !f.is_expired).length,
-      facts: activeFacts,
+      total_count: currentFacts.length,
+      active_non_expired_count: currentFacts.filter((f) => !f.is_expired).length,
+      facts: includeSuperseded ? allRows : currentFacts,
     });
   } catch (err: any) {
     return NextResponse.json(
