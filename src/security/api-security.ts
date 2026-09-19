@@ -79,8 +79,10 @@ export async function authorizeApiRequest(request: NextRequest, permission: OpsP
   const bucket = consumeRateLimit(`${permission}:${ip}`, rate.limit, rate.windowMs);
   if (!bucket.allowed) return { ok: false as const, response: NextResponse.json({ error: "RATE_LIMITED", retryAfterSeconds: Math.max(1, Math.ceil((bucket.resetAt - Date.now()) / 1000)) }, { status: 429, headers: { "retry-after": String(Math.max(1, Math.ceil((bucket.resetAt - Date.now()) / 1000))) } }) };
   try {
+    const authHeader = request.headers.get("authorization");
+    const bearerToken = authHeader?.startsWith("Bearer ") ? authHeader.slice(7).trim() : undefined;
     const supabase = await createClient();
-    const { data, error } = await supabase.auth.getUser();
+    const { data, error } = await supabase.auth.getUser(bearerToken);
     if (error || !data.user) return { ok: false as const, response: NextResponse.json({ error: "AUTHENTICATION_REQUIRED" }, { status: 401 }) };
     const role = roleFromMetadata(data.user.app_metadata, data.user.user_metadata);
     if (!roleCan(role, permission)) return { ok: false as const, response: NextResponse.json({ error: "PERMISSION_DENIED", requiredPermission: permission }, { status: 403 }) };

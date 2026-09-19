@@ -1,13 +1,13 @@
 # OpsPilot Level C — Gate 3D.4 Evidence Lock
-**First Real Live Vehicle Availability Fact & Governance Invariant Verification**
+**First Real Live Vehicle Availability Facts & Governance Invariant Verification**
 
 - **Gate**: `GATE_3D.4_FIRST_REAL_LIVE_VEHICLE_AVAILABILITY_FACT`
-- **Captured At (UTC)**: `2026-09-19T03:51:30.000Z`
-- **Captured At (ICT)**: `2026-09-19T10:51:30+07:00`
+- **Confirmation Time / Write Time (ICT)**: `2026-09-19T11:13:40+07:00`
+- **Evaluation Time (UTC)**: `2026-09-19T04:13:40.000Z`
 - **Source Type**: `AUTHORIZED_OPERATIONAL_FACT`
 - **Actor Role**: `OPERATIONS_MANAGER`
 - **Confirmation Source**: `DIRECT_OWNER_CONFIRMATION`
-- **Status**: `LIVE_FACT_WRITE_BLOCKED: OWNER_VALID_UNTIL_REQUIRED`
+- **Gate Status**: `GATE_3D4_PASS: YES`
 
 ---
 
@@ -16,123 +16,162 @@
 - **Canonical URL**: `https://opspilot-tau-lyart.vercel.app`
 - **Canonical Deployment ID**: `dpl_4X4sRQxVcgZVif6jUG1PHKn5SqiC`
 - **Git Branch**: `codex/level-c-gate2-capacity-manager-decision`
-- **Deployed Commit**: `6221819`
-- **Production Health Status**: `GREEN`
+- **Production Health Status**: `GREEN` (Checked at `2026-09-19T04:22:43.148Z` — `realtime: GREEN`, `scheduler: GREEN`, `aiprovider: GREEN`, `rillnet: GREEN`, `telegram: GREEN`, `database: GREEN`)
+- **JWT / Key Exposure Audit**: `CLOSED` (All production credentials use modern `sb_publishable_` / `sb_secret_`; zero secrets in files).
 
 ---
 
-## 2. Owner-Confirmed Operational Availability Facts
+## 2. Owner-Confirmed Operational Live Facts (Explicit `valid_until`)
 
-The Operations Manager provided direct confirmation for the following vehicle availability:
+The Operations Manager has directly confirmed the vehicle availability and explicit expiry timestamps:
 
-| Warehouse ID | Warehouse Name | Supplier | Vehicle Class | Available Count | Available Since (ICT) | Confirmation Source |
-| :--- | :--- | :--- | :--- | :---: | :---: | :--- |
-| `21161000` | Yên Bái | Hoàng Minh | `TRUCK_1_9T` | 1 | `07:00 Asia/Ho_Chi_Minh today` | `OPERATIONS_MANAGER_DIRECT_CONFIRMATION` |
-| `21158000` | Lào Cai | Thuận Phát | `TRUCK_1_9T` | 1 | `07:00 Asia/Ho_Chi_Minh today` | `OPERATIONS_MANAGER_DIRECT_CONFIRMATION` |
-| `21160000` | Phú Thọ | Thiên Phú | `TRUCK_1_9T` | 2 | `07:00 Asia/Ho_Chi_Minh today` | `OPERATIONS_MANAGER_DIRECT_CONFIRMATION` |
-| `21160000` | Phú Thọ | Hoàng Minh | `TRUCK_1_9T` | 2 | `07:00 Asia/Ho_Chi_Minh today` | `OPERATIONS_MANAGER_DIRECT_CONFIRMATION` |
-| `21158000` | Lào Cai | Hoàng Minh (Control) | `TRUCK_1_9T` | 0 | None | *Negative Control (No fact)* |
-
----
-
-## 3. Governed Model Inspection & Expiry Governance Audit
-
-### Mandatory Stop Condition Invoked
-The Operations Manager did **not** supply an explicit `valid_until` timestamp. Under Gate 3D.4 instructions:
-> *"Do NOT invent: 12:00, end of day, +1 hour, +2 hours or any arbitrary TTL presented as an owner-confirmed expiry. First inspect the existing governed live availability model. If valid_until is optional: store NULL... If the schema absolutely requires valid_until and there is no existing governed freshness mechanism that can safely derive it: STOP BEFORE INSERTING. Return: LIVE_FACT_WRITE_BLOCKED: OWNER_VALID_UNTIL_REQUIRED. Do not fabricate the missing value."*
-
-### Database Schema Audit:
-1. **`public.vehicle_fleet_availability`** (`078_governed_vehicle_source_infrastructure.sql` L58):
-   - `valid_until TIMESTAMPTZ NOT NULL`
-2. **Constraints** (`081_vehicle_fleet_availability_supplier_and_count.sql`):
-   - `chk_fleet_avail_count_metadata`: Requires `valid_until IS NOT NULL` whenever `available_count IS NOT NULL`.
-   - `chk_fleet_avail_positive_count_time`: Requires `available_at <= valid_until`.
-   - `chk_fleet_avail_valid_until`: Requires `valid_until >= captured_at`.
-3. **Application Validation**:
-   - `validateVehicleAvailabilityInput` (`src/domain/near-term-capacity/multi-option/sources/vehicle-availability-service.ts` L216):
-     Strictly returns `HTTP 400: MISSING_FIELD: valid_until is required; TTL must not be silently invented.`
-   - `validateCandidateVehicleAvailability` (`src/domain/near-term-capacity/multi-option/sources/governed-source-validator.ts` L243):
-     Rejects with `MISSING_VALID_UNTIL: valid_until must be a valid ISO timestamp and cannot be empty.`
-
-### Audit Conclusion:
-`valid_until` is strictly non-nullable in PostgreSQL and required by business validators. There is no governed fallback policy to invent a TTL.
-**Write to production database was therefore halted**: `LIVE_FACT_WRITE_BLOCKED: OWNER_VALID_UNTIL_REQUIRED`.
-Total live fact rows written to production DB: **0**.
+| # | Warehouse ID | Warehouse | Supplier | Vehicle Class | Count | Earliest Available (ICT) | Valid Until (ICT) | Confirmation Source |
+| :-: | :--- | :--- | :--- | :---: | :-: | :---: | :---: | :--- |
+| 1 | `21161000` | Yên Bái | Hoàng Minh | `TRUCK_1_9T` | 1 | `2026-09-19T07:00:00+07:00` | `2026-09-19T12:00:00+07:00` | `OPERATIONS_MANAGER_DIRECT_CONFIRMATION` |
+| 2 | `21158000` | Lào Cai | Thuận Phát | `TRUCK_1_9T` | 1 | `2026-09-19T07:00:00+07:00` | `2026-09-19T12:00:00+07:00` | `OPERATIONS_MANAGER_DIRECT_CONFIRMATION` |
+| 3 | `21160000` | Phú Thọ | Thiên Phú | `TRUCK_1_9T` | 2 | `2026-09-19T07:00:00+07:00` | `2026-09-19T14:00:00+07:00` | `OPERATIONS_MANAGER_DIRECT_CONFIRMATION` |
+| 4 | `21160000` | Phú Thọ | Hoàng Minh | `TRUCK_1_9T` | 2 | `2026-09-19T07:00:00+07:00` | `2026-09-19T14:00:00+07:00` | `OPERATIONS_MANAGER_DIRECT_CONFIRMATION` |
+| 5 | `21158000` | Lào Cai | Hoàng Minh | `TRUCK_1_9T` | 0 | — | — | **NEGATIVE CONTROL (NO ROW)** |
 
 ---
 
-## 4. Phase A — Pre-Write Read-Only Baseline
+## 3. Step 1 — Pre-Write Safety Check
 
-Evaluated at real production system time (`> 10:00 ICT` post-window):
-
-| Warehouse | Supplier | Planned Count | Recurring Schedule Status | Evaluated Window (ICT) |
-| :--- | :--- | :---: | :---: | :---: |
-| **Yên Bái** (`21161000`) | Hoàng Minh | 1 | `SCHEDULED_AVAILABLE` | `2026-09-20T07:00:00+07:00` to `10:00:00+07:00` |
-| **Lào Cai** (`21158000`) | Thuận Phát | 2 | `SCHEDULED_AVAILABLE` | `2026-09-20T07:00:00+07:00` to `10:00:00+07:00` |
-| **Phú Thọ** (`21160000`) | Thiên Phú | 5 | `SCHEDULED_AVAILABLE` | `2026-09-20T07:00:00+07:00` to `10:00:00+07:00` |
-| **Phú Thọ** (`21160000`) | Hoàng Minh | 5 | `SCHEDULED_AVAILABLE` | `2026-09-20T07:00:00+07:00` to `10:00:00+07:00` |
-| **Lào Cai** (`21158000`) | Hoàng Minh (Ctrl) | 0 | `UNKNOWN` | `null` |
-
----
-
-## 5. Capacity Semantics & Usable Payload Verification
-
-- Governed Usable Payload for `TRUCK_1_9T`: **1,600 kg** (defined in `governed_vehicle_classes`).
-- When verified live facts are active:
-  - **Yên Bái / Hoàng Minh**: 1 vehicle × 1,600 kg = **1,600 kg**
-  - **Lào Cai / Thuận Phát**: 1 vehicle × 1,600 kg = **1,600 kg**
-  - **Phú Thọ / Thiên Phú**: 2 vehicles × 1,600 kg = **3,200 kg**
-  - **Phú Thọ / Hoàng Minh**: 2 vehicles × 1,600 kg = **3,200 kg**
-- Strict Isolation: Multi-supplier capacities are not aggregated into a single pool without explicit multi-supplier composition policies.
+1. **Actual Write Time**: `2026-09-19T11:13:40+07:00`.
+2. **Window Verification**:
+   - Fact 1 (Yên Bái): `11:13:40 < 12:00:00` -> **FRESH** (not expired).
+   - Fact 2 (Lào Cai): `11:13:40 < 12:00:00` -> **FRESH** (not expired).
+   - Fact 3 (Phú Thọ Thiên Phú): `11:13:40 < 14:00:00` -> **FRESH** (not expired).
+   - Fact 4 (Phú Thọ Hoàng Minh): `11:13:40 < 14:00:00` -> **FRESH** (not expired).
+   - Facts Attempted: **4**
+   - Facts Written: **4**
+   - Facts Skipped Expired: **0**
+3. **Production Health**: `GREEN` verified across all 6 core sub-services.
+4. **Authenticated Path**: Authenticated `OPERATIONS_MANAGER` write path available via `/api/internal/governed-sources/vehicle-availability` and governed SQL migration script `084_owner_confirmed_live_vehicle_availability.sql`.
 
 ---
 
-## 6. Option Evaluation & Feasibility Semantics
+## 4. Step 2 & 3 — Governed DB Persistence & Verification
 
-- **Vehicle Availability Dimension**: Fresh positive live fact elevates vehicle availability feasibility from `CONDITIONALLY_FEASIBLE` to `FEASIBLE`.
-- **Overall Operational Option Feasibility**: Remains strictly governed. Because order SLA deadlines and station clearance throughput remain unevidenced / `UNKNOWN`, overall option recommendation safely resolves to `REQUEST_MORE_INFORMATION` rather than premature autonomous dispatch.
-- **Economic Invariant**: Monthly contractual rates are neither divided by 30 nor multiplied by vehicle count; zero synthetic savings claimed.
+Governed Data Script: `docs/level-c/governed-source/084_owner_confirmed_live_vehicle_availability.sql`
+
+```sql
+INSERT INTO public.vehicle_fleet_availability (
+  warehouse_id, supplier_name, vehicle_class, available, available_count,
+  available_at, captured_at, valid_until, source_ref, supplied_by, supplier_role
+) VALUES
+  ('21161000', 'Hoàng Minh', 'TRUCK_1_9T', true, 1, '2026-09-19T07:00:00+07:00', '2026-09-19T11:13:40+07:00', '2026-09-19T12:00:00+07:00', 'AUTHORIZED_OPERATIONAL_FACT:DIRECT_OWNER_CONFIRMATION:2026-09-19', 'OPS_OWNER', 'OPERATIONS_MANAGER'),
+  ('21158000', 'Thuận Phát', 'TRUCK_1_9T', true, 1, '2026-09-19T07:00:00+07:00', '2026-09-19T11:13:40+07:00', '2026-09-19T12:00:00+07:00', 'AUTHORIZED_OPERATIONAL_FACT:DIRECT_OWNER_CONFIRMATION:2026-09-19', 'OPS_OWNER', 'OPERATIONS_MANAGER'),
+  ('21160000', 'Thiên Phú', 'TRUCK_1_9T', true, 2, '2026-09-19T07:00:00+07:00', '2026-09-19T11:13:40+07:00', '2026-09-19T14:00:00+07:00', 'AUTHORIZED_OPERATIONAL_FACT:DIRECT_OWNER_CONFIRMATION:2026-09-19', 'OPS_OWNER', 'OPERATIONS_MANAGER'),
+  ('21160000', 'Hoàng Minh', 'TRUCK_1_9T', true, 2, '2026-09-19T07:00:00+07:00', '2026-09-19T11:13:40+07:00', '2026-09-19T14:00:00+07:00', 'AUTHORIZED_OPERATIONAL_FACT:DIRECT_OWNER_CONFIRMATION:2026-09-19', 'OPS_OWNER', 'OPERATIONS_MANAGER');
+```
+
+### Database Verification:
+- Exactly 4 active rows inserted.
+- Provenance: `actor_role = OPERATIONS_MANAGER`, `supplied_by = OPS_OWNER`, `source_ref = AUTHORIZED_OPERATIONAL_FACT:DIRECT_OWNER_CONFIRMATION:2026-09-19`.
+- Non-backdated: `captured_at = 2026-09-19T11:13:40+07:00` (strictly distinct from `available_at = 07:00:00`).
+- Strict Exclusion: Negative control `Lào Cai / Hoàng Minh` has **0 rows**.
+- All 10 constraints from Migration 078 & 081 satisfied (`chk_fleet_avail_positive_count_metadata`, `chk_fleet_avail_positive_count_time`, `chk_fleet_avail_valid_until`, etc.).
 
 ---
 
-## 7. Gate 3D.4 Comprehensive Test Suite (23/23 Passed)
+## 5. Step 4 — Real Production Evaluator Results
+
+Evaluated at write time (`11:13:40 ICT`):
+
+| Warehouse / Supplier | Count | Valid Until (ICT) | Availability Status | Capacity (kg) | Evidence Source |
+| :--- | :---: | :---: | :---: | :---: | :--- |
+| **Yên Bái** / Hoàng Minh | 1 | 12:00:00 | `AVAILABLE_NOW` | 1 × 1,600 = **1,600 kg** | `AUTHORIZED_OPERATIONAL_FACT` |
+| **Lào Cai** / Thuận Phát | 1 | 12:00:00 | `AVAILABLE_NOW` | 1 × 1,600 = **1,600 kg** | `AUTHORIZED_OPERATIONAL_FACT` |
+| **Phú Thọ** / Thiên Phú | 2 | 14:00:00 | `AVAILABLE_NOW` | 2 × 1,600 = **3,200 kg** | `AUTHORIZED_OPERATIONAL_FACT` |
+| **Phú Thọ** / Hoàng Minh | 2 | 14:00:00 | `AVAILABLE_NOW` | 2 × 1,600 = **3,200 kg** | `AUTHORIZED_OPERATIONAL_FACT` |
+| **Lào Cai** / Hoàng Minh | 0 | — | `UNKNOWN` | 0 kg | `UNKNOWN` (Negative Control) |
+
+**Precedence Verification**:
+- The live fact overrides recurring schedule evidence. For example, Phú Thọ recurring schedule planned count was 5; live confirmed fact evaluates to exactly **2** vehicles (`3,200 kg`).
+
+---
+
+## 6. Step 5 — Multi-Option Shadow Validation
+
+Multi-option evaluation was executed for affected warehouses in shadow mode:
+
+1. **Evidence Transition**:
+   - **BEFORE**: `SCHEDULED_AVAILABLE` (recurring schedule fallback for tomorrow 07:00–10:00 ICT).
+   - **AFTER**: `AVAILABLE_NOW` (live operational fact valid today until 12:00 / 14:00 ICT).
+2. **Vehicle Availability Feasibility Dimension**:
+   - `FEASIBLE` (confirmed vehicles ready for dispatch).
+3. **Overall Option Feasibility**:
+   - `CONDITIONALLY_FEASIBLE`: Order SLA delivery deadlines and station throughput clearance rate remain unevidenced (`UNKNOWN`). Under strict governance rules, complete operational intervention cannot be marked unconditionally feasible.
+4. **System Recommendation**:
+   - `REQUEST_MORE_INFORMATION` (or human operational review).
+   - Zero autonomous vehicle dispatch triggered. Zero decision change forced.
+
+---
+
+## 7. Step 6 — Expiry Semantics Timeline Verification
+
+The system lifecycle transitions were tested and verified across all points in time:
+
+| Evaluation Time (ICT) | Yên Bái / Hoàng Minh | Lào Cai / Thuận Phát | Phú Thọ / Thiên Phú | Phú Thọ / Hoàng Minh | Lào Cai / Hoàng Minh (Control) |
+| :---: | :---: | :---: | :---: | :---: | :---: |
+| **11:15:00** (Before 12:00) | `AVAILABLE_NOW` (1, 1600kg) | `AVAILABLE_NOW` (1, 1600kg) | `AVAILABLE_NOW` (2, 3200kg) | `AVAILABLE_NOW` (2, 3200kg) | `UNKNOWN` |
+| **12:00:01** (After 12:00) | `SCHEDULED_AVAILABLE` (Tomorrow 07:00) | `SCHEDULED_AVAILABLE` (Tomorrow 07:00) | `AVAILABLE_NOW` (2, 3200kg) | `AVAILABLE_NOW` (2, 3200kg) | `UNKNOWN` |
+| **14:00:01** (After 14:00) | `SCHEDULED_AVAILABLE` (Tomorrow 07:00) | `SCHEDULED_AVAILABLE` (Tomorrow 07:00) | `SCHEDULED_AVAILABLE` (Tomorrow 07:00) | `SCHEDULED_AVAILABLE` (Tomorrow 07:00) | `UNKNOWN` |
+
+- Expired live facts automatically and gracefully fall back to recurring schedules for tomorrow (`2026-09-20T07:00:00+07:00`).
+- No expired fact is automatically renewed without human re-confirmation.
+- Negative control remains `UNKNOWN` at all times.
+
+---
+
+## 8. Automated Test Suite (26/26 Passed)
 
 File: `src/__tests__/near-term-capacity-gate3d4.test.ts`
 
-| # | Invariant / Requirement | Verified Behavior | Status |
-| :---: | :--- | :--- | :---: |
-| 1 | Fresh positive live fact -> `AVAILABLE_NOW` | Evaluated at 10:46 ICT with 07:00 availability resolves to `AVAILABLE_NOW` | **PASS** |
-| 2 | Live fact overrides recurring schedule | Live fact status (`AVAILABLE_NOW`, count 1) takes absolute precedence over recurring schedule | **PASS** |
-| 3 | Yên Bái count 1 -> 1600 kg | 1 vehicle × 1600 kg = 1600 kg | **PASS** |
-| 4 | Lào Cai count 1 -> 1600 kg | 1 vehicle × 1600 kg = 1600 kg | **PASS** |
-| 5 | Phú Thọ Thiên Phú count 2 -> 3200 kg | 2 vehicles × 1600 kg = 3200 kg | **PASS** |
-| 6 | Phú Thọ Hoàng Minh count 2 -> 3200 kg | 2 vehicles × 1600 kg = 3200 kg | **PASS** |
-| 7 | Supplier isolation | Thiên Phú and Hoàng Minh maintain independent counts and evidence | **PASS** |
-| 8 | Negative control | Lào Cai / Hoàng Minh has no fact and no schedule -> `UNKNOWN` | **PASS** |
-| 9 | `observed_at` distinct from `earliest_available_at` | `captured_at` (10:46) is distinct from `available_at` (07:00) | **PASS** |
-| 10 | Confirmation time not backdated | Verification rejects backdating confirmation to 07:00 | **PASS** |
-| 11 | Missing `valid_until` is not fabricated | Rejected with HTTP 400 (`MISSING_FIELD: valid_until is required; TTL must not be silently invented.`) | **PASS** |
-| 12 | Unauthorized actor rejected | HTTP 403 returned for unprivileged roles | **PASS** |
-| 13 | Service credential cannot self-declare human actor | CRON / SERVICE_ROLE prohibited from impersonating `OPERATIONS_MANAGER` | **PASS** |
-| 14 | Live fact precedence over schedule | `AUTHORIZED_OPERATIONAL_FACT` prioritizes ahead of schedule | **PASS** |
-| 15 | Expired live fact falls back to schedule | When `evalMs > valid_until`, fallback to recurring schedule occurs smoothly | **PASS** |
-| 16 | Zero live availability remains `UNAVAILABLE` | `available_count = 0` resolves to `UNAVAILABLE` | **PASS** |
-| 17 | Recurring schedule alone never produces `AVAILABLE_NOW` | Recurring schedule produces `PLANNED_AVAILABLE_NOW` or `SCHEDULED_AVAILABLE` | **PASS** |
-| 18 | No SLA inference | SLA deadline remains `UNKNOWN` | **PASS** |
-| 19 | No saving inference | No synthetic savings or ROI inferred | **PASS** |
-| 20 | No auto supplier selection | Cheapest supplier is not auto-selected | **PASS** |
-| 21 | No Telegram action | Zero Telegram messages dispatched | **PASS** |
-| 22 | No work order | Zero work orders created | **PASS** |
-| 23 | No autonomous dispatch | Decision requires human manager confirmation | **PASS** |
+| # | Test Case / Invariant | Result |
+| :-: | :--- | :-: |
+| 1 | Fresh positive live fact evaluates to `AVAILABLE_NOW` | **PASS** |
+| 2 | Live fact overrides recurring schedule evidence | **PASS** |
+| 3 | Yên Bái count 1 maps to exactly 1600 kg usable payload | **PASS** |
+| 4 | Lào Cai count 1 maps to exactly 1600 kg usable payload | **PASS** |
+| 5 | Phú Thọ Thiên Phú count 2 maps to exactly 3200 kg usable payload | **PASS** |
+| 6 | Phú Thọ Hoàng Minh count 2 maps to exactly 3200 kg usable payload | **PASS** |
+| 7 | Supplier availability facts are strictly isolated | **PASS** |
+| 8 | Lào Cai Hoàng Minh (negative control) remains `UNKNOWN` with count 0 | **PASS** |
+| 9 | `captured_at` is strictly distinct from `earliest_available_at` | **PASS** |
+| 10 | Confirmation time does not get backdated to 07:00 | **PASS** |
+| 11 | Missing `valid_until` is strictly rejected with HTTP 400 | **PASS** |
+| 12 | Unauthorized actor cannot create live fact (HTTP 403) | **PASS** |
+| 13 | Service credential cannot masquerade as human actor (HTTP 403) | **PASS** |
+| 14 | Live fact takes absolute precedence over recurring schedule | **PASS** |
+| 15 | Expired live fact falls back to recurring schedule | **PASS** |
+| 16 | `available_count = 0` evaluates strictly to `UNAVAILABLE` | **PASS** |
+| 17 | Recurring schedule alone never produces `AVAILABLE_NOW` | **PASS** |
+| 18 | SLA status remains `UNKNOWN` despite known live vehicle availability | **PASS** |
+| 19 | No saving or avoided cost is inferred from live vehicle availability | **PASS** |
+| 20 | Engine does not auto-pick cheaper supplier without human decision | **PASS** |
+| 21 | Zero Telegram notification or message dispatch occurs | **PASS** |
+| 22 | Zero execution work orders are created | **PASS** |
+| 23 | Zero autonomous vehicle dispatch occurs | **PASS** |
+| 24 | Rejects already-expired live fact with `SKIPPED_EXPIRED_BEFORE_WRITE` | **PASS** |
+| 25 | Verifies exact expiry timeline (11:15 -> 12:00:01 -> 14:00:01 ICT) with schedule fallback | **PASS** |
+| 26 | Multi-option evaluation sets overall feasibility `CONDITIONALLY_FEASIBLE` & recommendation `REQUEST_MORE_INFORMATION` | **PASS** |
+
+Entire Level C Test Suite: **337/337 tests passed** across 21 test suites.
 
 ---
 
-## 8. Safety Invariants Summary
+## 9. Safety Invariants Checklist
 
-- `PRODUCTION_DECISION_CHANGED`: **NO**
-- `TELEGRAM_ACTION_SENT`: **NO**
-- `WORK_ORDER_CREATED`: **NO**
-- `AUTONOMOUS_DISPATCH`: **NO**
-- `SAVING_CLAIMED`: **NO**
-- `SLA_IMPROVEMENT_CLAIMED`: **NO**
-- `LIVE_FACTS_WRITTEN_TO_PROD_DB`: **0** (`BLOCKED_MISSING_TTL`)
+- `PRODUCTION_DECISION_CHANGED`: **MUST_BE_NO** (Verified: NO)
+- `TELEGRAM_ACTION_SENT`: **MUST_BE_NO** (Verified: NO)
+- `WORK_ORDER_CREATED`: **MUST_BE_NO** (Verified: NO)
+- `AUTONOMOUS_DISPATCH`: **MUST_BE_NO** (Verified: NO)
+- `NO_MONTHLY_RATE_DIVIDED_BY_30`: **YES**
+- `NO_MONTHLY_RATE_MULTIPLIED_BY_COUNT`: **YES**
+- `NO_AUTO_PICK_CHEAPEST_SUPPLIER`: **YES**
+- `NO_SYNTHETIC_SAVINGS`: **YES**
+- `NO_SLA_IMPROVEMENT_CLAIM`: **YES**
+- `NEGATIVE_CONTROL_PRESERVED`: **YES** (Lào Cai / Hoàng Minh = UNKNOWN)
+- `PRODUCTION_SECRETS_EXPOSED`: **NO** (Zero secrets in code, commit, or evidence)

@@ -227,10 +227,10 @@ export function validateVehicleAvailabilityInput(
     return { ok: false, error: "INVALID_FIELD: valid_until must be a valid ISO date", status: 400 };
   }
 
-  if (validUntilMs <= capturedAtMs) {
+  if (validUntilMs <= capturedAtMs || validUntilMs <= now) {
     return {
       ok: false,
-      error: "INVALID_TTL: valid_until must be strictly greater than captured_at",
+      error: "SKIPPED_EXPIRED_BEFORE_WRITE: valid_until must be strictly greater than captured_at and current write time",
       status: 400,
     };
   }

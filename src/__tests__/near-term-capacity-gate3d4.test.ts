@@ -210,6 +210,15 @@ const case003Facts: CurrentRisk = {
   hardSlaConstraint: "Risk",
 };
 
+const case003Lead: LeadFact = {
+  interactionId: "e48778a5-1ea1-48de-a596-6fe7f91fd73e",
+  suppliedBy: "telegram:lead-phutho",
+  capturedAt: "2026-09-19T08:05:00+07:00",
+  source: "HUMAN_OPERATIONAL_GROUND_TRUTH",
+  incoming: "NO_SIGNIFICANT_INCOMING",
+  confidence: "LOW",
+};
+
 function createMockRequest(body: any, headers: Record<string, string> = {}): NextRequest {
   return new NextRequest("http://localhost:3000/api/internal/governed-sources/vehicle-availability", {
     method: "POST",
@@ -874,5 +883,250 @@ describe("OpsPilot Level C Gate 3D.4 — Live Vehicle Availability Fact & Govern
   it("23. zero autonomous vehicle dispatch occurs", () => {
     // System evaluates options in shadow mode only; no autonomous dispatch executed
     expect(true).toBe(true);
+  });
+
+  // 24. SKIPPED_EXPIRED_BEFORE_WRITE when valid_until <= write time
+  it("24. rejects already-expired live fact before write with SKIPPED_EXPIRED_BEFORE_WRITE", async () => {
+    authorizeApiRequestMock.mockResolvedValue({
+      ok: true,
+      identity: {
+        userId: "user-mgr-1",
+        actor: "ops-manager@domain.com",
+        role: "OPERATIONS_MANAGER",
+        userMetadata: { opspilot_operational_role: "OPERATIONS_MANAGER" },
+      },
+    });
+
+    const pastValidUntil = "2026-09-19T10:00:00+07:00"; // Already in past relative to 11:13 ICT
+    const req = createMockRequest({
+      warehouse_id: "21161000",
+      supplier_name: "Hoàng Minh",
+      vehicle_class: "TRUCK_1_9T",
+      available_count: 1,
+      earliest_available_at: "2026-09-19T07:00:00+07:00",
+      valid_until: pastValidUntil,
+    });
+
+    const res = await POST(req);
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toContain("SKIPPED_EXPIRED_BEFORE_WRITE");
+    expect(mockInsertedRows).toHaveLength(0);
+  });
+
+  // 25. Gate 3D.4 Step 6 Expiry timeline: 11:15 ICT -> 12:00:01 ICT -> 14:00:01 ICT
+  it("25. verifies exact expiry timeline (11:15 ICT -> 12:00:01 ICT -> 14:00:01 ICT) with schedule fallback", () => {
+    const ownerLiveFacts: VehicleAvailabilityFact[] = [
+      // 1. Yên Bái
+      {
+        warehouse_id: "21161000",
+        supplier_name: "Hoàng Minh",
+        vehicle_class: "TRUCK_1_9T",
+        available_count: 1,
+        earliest_available_at: "2026-09-19T07:00:00+07:00",
+        captured_at: "2026-09-19T11:13:40+07:00",
+        valid_until: "2026-09-19T12:00:00+07:00",
+        supplied_by: "OPS_OWNER",
+        supplier_role: "OPERATIONS_MANAGER",
+        source_ref: "AUTHORIZED_OPERATIONAL_FACT:DIRECT_OWNER_CONFIRMATION:2026-09-19",
+        evidence_status: "AUTHORIZED_OPERATIONAL_FACT",
+      },
+      // 2. Lào Cai
+      {
+        warehouse_id: "21158000",
+        supplier_name: "Thuận Phát",
+        vehicle_class: "TRUCK_1_9T",
+        available_count: 1,
+        earliest_available_at: "2026-09-19T07:00:00+07:00",
+        captured_at: "2026-09-19T11:13:40+07:00",
+        valid_until: "2026-09-19T12:00:00+07:00",
+        supplied_by: "OPS_OWNER",
+        supplier_role: "OPERATIONS_MANAGER",
+        source_ref: "AUTHORIZED_OPERATIONAL_FACT:DIRECT_OWNER_CONFIRMATION:2026-09-19",
+        evidence_status: "AUTHORIZED_OPERATIONAL_FACT",
+      },
+      // 3. Phú Thọ Thiên Phú
+      {
+        warehouse_id: "21160000",
+        supplier_name: "Thiên Phú",
+        vehicle_class: "TRUCK_1_9T",
+        available_count: 2,
+        earliest_available_at: "2026-09-19T07:00:00+07:00",
+        captured_at: "2026-09-19T11:13:40+07:00",
+        valid_until: "2026-09-19T14:00:00+07:00",
+        supplied_by: "OPS_OWNER",
+        supplier_role: "OPERATIONS_MANAGER",
+        source_ref: "AUTHORIZED_OPERATIONAL_FACT:DIRECT_OWNER_CONFIRMATION:2026-09-19",
+        evidence_status: "AUTHORIZED_OPERATIONAL_FACT",
+      },
+      // 4. Phú Thọ Hoàng Minh
+      {
+        warehouse_id: "21160000",
+        supplier_name: "Hoàng Minh",
+        vehicle_class: "TRUCK_1_9T",
+        available_count: 2,
+        earliest_available_at: "2026-09-19T07:00:00+07:00",
+        captured_at: "2026-09-19T11:13:40+07:00",
+        valid_until: "2026-09-19T14:00:00+07:00",
+        supplied_by: "OPS_OWNER",
+        supplier_role: "OPERATIONS_MANAGER",
+        source_ref: "AUTHORIZED_OPERATIONAL_FACT:DIRECT_OWNER_CONFIRMATION:2026-09-19",
+        evidence_status: "AUTHORIZED_OPERATIONAL_FACT",
+      },
+    ];
+
+    // --- Timeline Point 1: 11:15 ICT (All 4 facts fresh) ---
+    const t1115 = "2026-09-19T11:15:00+07:00";
+    const adapter1 = new GovernedVehicleSourceAdapter({
+      rates: pilotRateRecords,
+      capacities: { TRUCK_1_9T: ownerClassRecord },
+      availabilityFacts: ownerLiveFacts,
+      schedules: ownerSchedules,
+      evaluationTime: t1115,
+    });
+
+    const yb1 = adapter1.getVehicleAvailability("21161000", "TRUCK_1_9T", "Hoàng Minh", t1115);
+    expect(yb1?.availability_status).toBe("AVAILABLE_NOW");
+    expect(yb1?.available_count).toBe(1);
+    expect(yb1?.evidence_status).toBe("AUTHORIZED_OPERATIONAL_FACT");
+
+    const lcTp1 = adapter1.getVehicleAvailability("21158000", "TRUCK_1_9T", "Thuận Phát", t1115);
+    expect(lcTp1?.availability_status).toBe("AVAILABLE_NOW");
+    expect(lcTp1?.available_count).toBe(1);
+    expect(lcTp1?.evidence_status).toBe("AUTHORIZED_OPERATIONAL_FACT");
+
+    const ptTp1 = adapter1.getVehicleAvailability("21160000", "TRUCK_1_9T", "Thiên Phú", t1115);
+    expect(ptTp1?.availability_status).toBe("AVAILABLE_NOW");
+    expect(ptTp1?.available_count).toBe(2);
+
+    const ptHm1 = adapter1.getVehicleAvailability("21160000", "TRUCK_1_9T", "Hoàng Minh", t1115);
+    expect(ptHm1?.availability_status).toBe("AVAILABLE_NOW");
+    expect(ptHm1?.available_count).toBe(2);
+
+    const lcHmControl1 = adapter1.getVehicleAvailability("21158000", "TRUCK_1_9T", "Hoàng Minh", t1115);
+    expect(lcHmControl1?.availability_status).toBe("UNKNOWN");
+    expect(lcHmControl1?.available_count).toBeUndefined();
+
+    // --- Timeline Point 2: 12:00:01 ICT (Yên Bái & Lào Cai expired; Phú Thọ still fresh) ---
+    const t1201 = "2026-09-19T12:00:01+07:00";
+    const adapter2 = new GovernedVehicleSourceAdapter({
+      rates: pilotRateRecords,
+      capacities: { TRUCK_1_9T: ownerClassRecord },
+      availabilityFacts: ownerLiveFacts,
+      schedules: ownerSchedules,
+      evaluationTime: t1201,
+    });
+
+    const yb2 = adapter2.getVehicleAvailability("21161000", "TRUCK_1_9T", "Hoàng Minh", t1201);
+    // Yên Bái expired -> falls back to tomorrow's schedule
+    expect(yb2?.availability_status).toBe("SCHEDULED_AVAILABLE");
+    expect(yb2?.evidence_status).toBe("OWNER_CONFIRMED_RECURRING_SCHEDULE");
+    expect(yb2?.earliest_available_at).toBe("2026-09-20T07:00:00+07:00");
+    expect(yb2?.available_count).toBe(1);
+
+    const lcTp2 = adapter2.getVehicleAvailability("21158000", "TRUCK_1_9T", "Thuận Phát", t1201);
+    // Lào Cai expired -> falls back to tomorrow's schedule
+    expect(lcTp2?.availability_status).toBe("SCHEDULED_AVAILABLE");
+    expect(lcTp2?.evidence_status).toBe("OWNER_CONFIRMED_RECURRING_SCHEDULE");
+    expect(lcTp2?.earliest_available_at).toBe("2026-09-20T07:00:00+07:00");
+    expect(lcTp2?.available_count).toBe(2);
+
+    // Phú Thọ still fresh (valid until 14:00)
+    const ptTp2 = adapter2.getVehicleAvailability("21160000", "TRUCK_1_9T", "Thiên Phú", t1201);
+    expect(ptTp2?.availability_status).toBe("AVAILABLE_NOW");
+    expect(ptTp2?.available_count).toBe(2);
+
+    const ptHm2 = adapter2.getVehicleAvailability("21160000", "TRUCK_1_9T", "Hoàng Minh", t1201);
+    expect(ptHm2?.availability_status).toBe("AVAILABLE_NOW");
+    expect(ptHm2?.available_count).toBe(2);
+
+    const lcHmControl2 = adapter2.getVehicleAvailability("21158000", "TRUCK_1_9T", "Hoàng Minh", t1201);
+    expect(lcHmControl2?.availability_status).toBe("UNKNOWN");
+
+    // --- Timeline Point 3: 14:00:01 ICT (All live facts expired -> all fall back to tomorrow's schedule) ---
+    const t1401 = "2026-09-19T14:00:01+07:00";
+    const adapter3 = new GovernedVehicleSourceAdapter({
+      rates: pilotRateRecords,
+      capacities: { TRUCK_1_9T: ownerClassRecord },
+      availabilityFacts: ownerLiveFacts,
+      schedules: ownerSchedules,
+      evaluationTime: t1401,
+    });
+
+    const ptTp3 = adapter3.getVehicleAvailability("21160000", "TRUCK_1_9T", "Thiên Phú", t1401);
+    expect(ptTp3?.availability_status).toBe("SCHEDULED_AVAILABLE");
+    expect(ptTp3?.evidence_status).toBe("OWNER_CONFIRMED_RECURRING_SCHEDULE");
+    expect(ptTp3?.earliest_available_at).toBe("2026-09-20T07:00:00+07:00");
+    expect(ptTp3?.available_count).toBe(5); // Schedule count
+
+    const ptHm3 = adapter3.getVehicleAvailability("21160000", "TRUCK_1_9T", "Hoàng Minh", t1401);
+    expect(ptHm3?.availability_status).toBe("SCHEDULED_AVAILABLE");
+    expect(ptHm3?.evidence_status).toBe("OWNER_CONFIRMED_RECURRING_SCHEDULE");
+    expect(ptHm3?.earliest_available_at).toBe("2026-09-20T07:00:00+07:00");
+    expect(ptHm3?.available_count).toBe(5); // Schedule count
+
+    const lcHmControl3 = adapter3.getVehicleAvailability("21158000", "TRUCK_1_9T", "Hoàng Minh", t1401);
+    expect(lcHmControl3?.availability_status).toBe("UNKNOWN");
+  });
+
+  // 26. Multi-Option shadow evaluation preserves safety invariants
+  it("26. multi-option evaluation sets OVERALL_OPTION_FEASIBILITY to CONDITIONALLY_FEASIBLE and preserves recommendation REQUEST_MORE_INFORMATION", async () => {
+    const evalTime = "2026-09-19T11:15:00+07:00";
+    const ownerLiveFacts: VehicleAvailabilityFact[] = [
+      {
+        warehouse_id: "21160000",
+        supplier_name: "Thiên Phú",
+        vehicle_class: "TRUCK_1_9T",
+        available_count: 2,
+        earliest_available_at: "2026-09-19T07:00:00+07:00",
+        captured_at: "2026-09-19T11:13:40+07:00",
+        valid_until: "2026-09-19T14:00:00+07:00",
+        supplied_by: "OPS_OWNER",
+        supplier_role: "OPERATIONS_MANAGER",
+        source_ref: "AUTHORIZED_OPERATIONAL_FACT:DIRECT_OWNER_CONFIRMATION:2026-09-19",
+        evidence_status: "AUTHORIZED_OPERATIONAL_FACT",
+      },
+      {
+        warehouse_id: "21160000",
+        supplier_name: "Hoàng Minh",
+        vehicle_class: "TRUCK_1_9T",
+        available_count: 2,
+        earliest_available_at: "2026-09-19T07:00:00+07:00",
+        captured_at: "2026-09-19T11:13:40+07:00",
+        valid_until: "2026-09-19T14:00:00+07:00",
+        supplied_by: "OPS_OWNER",
+        supplier_role: "OPERATIONS_MANAGER",
+        source_ref: "AUTHORIZED_OPERATIONAL_FACT:DIRECT_OWNER_CONFIRMATION:2026-09-19",
+        evidence_status: "AUTHORIZED_OPERATIONAL_FACT",
+      },
+    ];
+
+    const adapter = new GovernedVehicleSourceAdapter({
+      rates: pilotRateRecords,
+      capacities: { TRUCK_1_9T: ownerClassRecord },
+      availabilityFacts: ownerLiveFacts,
+      schedules: ownerSchedules,
+      evaluationTime: evalTime,
+    });
+
+    const res = await runMultiOptionEvaluation(case003Facts, case003Lead, {
+      vehicleSourceAdapter: adapter,
+      evaluationTime: evalTime,
+    });
+
+    const addVehicleOpts = res.candidate_options.filter((o) => o.option_type === "ADD_VEHICLE");
+    expect(addVehicleOpts.length).toBe(2);
+
+    for (const opt of addVehicleOpts) {
+      // Vehicle availability status evaluates to AVAILABLE_NOW
+      expect(opt.availability).toBe("AVAILABLE_NOW");
+      expect(opt.feasibility_status).toBe("FEASIBLE");
+      // But SLA remains UNKNOWN
+      expect(opt.sla.status).toBe("UNKNOWN");
+    }
+
+    // System recommendation remains REQUEST_MORE_INFORMATION; NEVER autonomous dispatch
+    expect(res.recommended_option).toBe("REQUEST_MORE_INFORMATION");
+    expect(res.recommended_option).not.toBe("AUTONOMOUS_DISPATCH");
   });
 });
