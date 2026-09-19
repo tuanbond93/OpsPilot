@@ -1,22 +1,23 @@
-# OpsPilot Level C — Gate 3D.4 Evidence Lock & Remediation Phase 1
-**Secure Deployment & Negative Authentication Verification**
+# OpsPilot Level C — Gate 3D.4 Evidence Lock & Remediation
+**Phase 2A — Manager Vehicle Availability Confirmation UI Deployment**
 
 - **Gate**: `GATE_3D.4_FIRST_REAL_LIVE_VEHICLE_AVAILABILITY_FACT`
-- **Phase**: `PHASE_1_SECURE_DEPLOYMENT_AND_EVIDENCE_CORRECTION`
-- **Timestamp (ICT)**: `2026-09-19T11:42:00+07:00`
-- **Gate Evidence Status**: `NOT_PROVEN_PENDING_REAL_AUTHENTICATED_WRITE`
-- **084 SQL Script Executed**: `NO` (Remains strictly unexecuted reference artifact)
-- **Live Facts Written in Phase 1**: `0`
+- **Phase**: `PHASE_2A_MANAGER_VEHICLE_AVAILABILITY_CONFIRMATION_UI`
+- **Timestamp (ICT)**: `2026-09-19T15:32:00+07:00`
+- **Gate Evidence Status**: `NOT_PROVEN_PENDING_REAL_AUTHENTICATED_MANAGER_WRITE`
+- **084 SQL Script Executed**: `NO` (Strictly unexecuted reference artifact)
+- **Live Facts Written in Phase 2A**: `0`
 
 ---
 
 ## 1. Canonical Production Deployment State
 
 - **Canonical URL**: `https://opspilot-tau-lyart.vercel.app`
-- **Production Deployment ID**: `dpl_7zonurB8GUDD96JYbRq9YmSgWzjW`
-- **Deployed Commit**: `cd387db` (`fix(level-c): correct gate 3d.4 ground truth, negative control semantics, and add bearer security tests`)
-- **Git Head**: `cd387db`
-- **Production Health Status**: `GREEN` (Checked at `2026-09-19T04:41:49.394Z` — `realtime: GREEN`, `scheduler: GREEN`, `aiprovider: GREEN`, `rillnet: GREEN`, `database: GREEN`, `telegram: GREEN`)
+- **Manager Confirmation UI Route**: `https://opspilot-tau-lyart.vercel.app/operations/vehicle-availability`
+- **Production Deployment ID**: `dpl_GWBDa9Dpr1VUzFZkoxgDFtq3ecsp`
+- **Deployed Commit**: `3c49df2` (`feat(level-c): add manager vehicle availability confirmation UI and tests`)
+- **Git Head**: `3c49df2`
+- **Production Health Status**: `GREEN` (Checked at `2026-09-19T08:31:42.836Z` — `realtime: GREEN`, `scheduler: GREEN`, `aiprovider: GREEN`, `rillnet: GREEN`, `database: GREEN`, `telegram: GREEN`)
 
 ---
 
@@ -49,17 +50,46 @@ File: `src/__tests__/api-bearer-security-negative.test.ts`
 
 ---
 
-## 4. Owner-Confirmed Operational Parameters & Validity Status
+## 3.1 Phase 2A Manager Confirmation UI Verification (20/20 Passed)
 
-Evaluation at current time (`11:42 ICT`):
+File: `src/__tests__/manager-vehicle-availability-ui.test.ts`
 
-| # | Warehouse ID | Warehouse | Supplier | Vehicle Class | Count | Earliest Available (ICT) | Valid Until (ICT) | Still Within Validity |
+- **Criterion 1**: Denies access when session is unauthenticated or missing roles.
+- **Criterion 2**: Denies access to insufficient roles (VIEWER, OPERATOR, MEMBER).
+- **Criterion 3**: Grants access to authorized managers (OPERATIONS_MANAGER, MANAGER, ADMIN, DISPATCH_MANAGER).
+- **Criterion 4**: Enforces positive integer count (rejects 0, -1, floats, non-numeric).
+- **Criterion 5**: Blocks valid_until in the past or equal to current evaluation time.
+- **Criterion 6**: Blocks valid_until earlier than earliest_available_at.
+- **Criterion 7**: Accepts valid future inputs with authorized pilot warehouse and supplier.
+- **Criterion 8**: Authentication token is never accepted or returned in UI logic or formatters.
+- **Criterion 9**: Actor role is not controlled by form input or submission payload.
+- **Criterion 10**: Actor identity is not controlled by form input or submission payload.
+- **Criterion 11**: Submission target route is internal and same-origin relative (`/api/internal/governed-sources/vehicle-availability`).
+- **Criterion 12**: Capacity preview calculates 1 vehicle = 1,600 kg usable payload.
+- **Criterion 13**: Capacity preview calculates 2 vehicles = 3,200 kg usable payload.
+- **Criterion 14**: Enforces UNKNOWN != ZERO semantics: missing available_count renders as UNKNOWN / NULL, not 0 xe or 0 kg.
+- **Criterion 15**: Displays expired facts as EXPIRED and never as AVAILABLE_NOW.
+- **Criterion 16**: Formats sanitized confirmation upon successful persistence.
+- **Criterion 17**: No commercial rates or prices displayed in preview or confirmations.
+- **Criterion 18**: Disclaimer explicitly clarifies no SLA commitment.
+- **Criterion 19**: Disclaimer explicitly clarifies no cost saving estimation.
+- **Criterion 20**: Automated test creates ZERO production database records or API writes.
+
+---
+
+## 4. Historical Owner-Confirmed Parameters & Expiry Status
+
+Evaluation at current time (`15:32 ICT`):
+
+| # | Warehouse ID | Warehouse | Supplier | Vehicle Class | Count | Earliest Available (ICT) | Valid Until (ICT) | Current Status |
 | :-: | :--- | :--- | :--- | :---: | :-: | :---: | :---: | :---: |
-| 1 | `21161000` | Yên Bái | Hoàng Minh | `TRUCK_1_9T` | 1 | `2026-09-19T07:00:00+07:00` | `2026-09-19T12:00:00+07:00` | **YES** (`11:42 < 12:00`) |
-| 2 | `21158000` | Lào Cai | Thuận Phát | `TRUCK_1_9T` | 1 | `2026-09-19T07:00:00+07:00` | `2026-09-19T12:00:00+07:00` | **YES** (`11:42 < 12:00`) |
-| 3 | `21160000` | Phú Thọ | Thiên Phú | `TRUCK_1_9T` | 2 | `2026-09-19T07:00:00+07:00` | `2026-09-19T14:00:00+07:00` | **YES** (`11:42 < 14:00`) |
-| 4 | `21160000` | Phú Thọ | Hoàng Minh | `TRUCK_1_9T` | 2 | `2026-09-19T07:00:00+07:00` | `2026-09-19T14:00:00+07:00` | **YES** (`11:42 < 14:00`) |
-| 5 | `21158000` | Lào Cai | Hoàng Minh | `TRUCK_1_9T` | **NULL** | — | — | **NEGATIVE CONTROL** |
+| 1 | `21161000` | Yên Bái | Hoàng Minh | `TRUCK_1_9T` | 1 | `2026-09-19T07:00:00+07:00` | `2026-09-19T12:00:00+07:00` | **EXPIRED** (`15:32 > 12:00`) |
+| 2 | `21158000` | Lào Cai | Thuận Phát | `TRUCK_1_9T` | 1 | `2026-09-19T07:00:00+07:00` | `2026-09-19T12:00:00+07:00` | **EXPIRED** (`15:32 > 12:00`) |
+| 3 | `21160000` | Phú Thọ | Thiên Phú | `TRUCK_1_9T` | 2 | `2026-09-19T07:00:00+07:00` | `2026-09-19T14:00:00+07:00` | **EXPIRED** (`15:32 > 14:00`) |
+| 4 | `21160000` | Phú Thọ | Hoàng Minh | `TRUCK_1_9T` | 2 | `2026-09-19T07:00:00+07:00` | `2026-09-19T14:00:00+07:00` | **EXPIRED** (`15:32 > 14:00`) |
+| 5 | `21158000` | Lào Cai | Hoàng Minh | `TRUCK_1_9T` | **NULL** | — | — | **NEGATIVE CONTROL** (`UNKNOWN != ZERO`) |
+
+*All morning facts have naturally expired. No expired facts may be submitted or backdated. New facts must specify future valid_until.*
 
 ---
 
