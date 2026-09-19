@@ -271,6 +271,10 @@ describe("Evidence-Based Inbound Detection Engine (Criteria 11–24)", () => {
       warehouseId: TARGET_WH,
       warehouseName: "Kho Giao Hàng Nặng - TP Yên Bái",
       capturedAt: "2026-09-19T10:00:00+07:00",
+      checkpoint_at_utc: "2026-09-19T03:00:00.000Z",
+      checkpoint_at_local: "2026-09-19T10:00:00+07:00",
+      timezone: "Asia/Ho_Chi_Minh" as const,
+      observation_type: "NATURAL" as const,
       operatingWindow: {
         timezone: "Asia/Ho_Chi_Minh",
         dailyStart: "07:00",
@@ -290,6 +294,18 @@ describe("Evidence-Based Inbound Detection Engine (Criteria 11–24)", () => {
         orderCodes: ["ORD-1", "ORD-2"],
       },
       inbound: {
+        pipeline_orders: 8,
+        pipeline_known_kg: 235.0,
+        pipeline_unknown_weight_orders: 1,
+        picked_not_transferred_orders: 5,
+        in_transfer_orders: 3,
+        arrival_within_horizon_orders: null,
+        arrival_within_horizon_status: "UNKNOWN" as const,
+        eta_known_orders: 0,
+        eta_unknown_orders: 8,
+        earliestEta: null,
+        latestEta: null,
+
         totalInboundOrders: 8,
         pickedNotTransferred: {
           orderCount: 5,
@@ -314,11 +330,11 @@ describe("Evidence-Based Inbound Detection Engine (Criteria 11–24)", () => {
         },
         etaKnownOrders: 0,
         etaUnknownOrders: 8,
-        earliestEta: null,
-        latestEta: null,
         allInboundOrderCodes: ["P-1", "T-1"],
       },
       riskAssessment: {
+        pipeline_pressure: "LOW" as const,
+        near_term_arrival_risk: "UNKNOWN" as const,
         preliminaryRiskLevel: "MEDIUM" as const,
         summaryVi: "Có 8 đơn dự kiến về trong khung giờ vận hành.",
       },
@@ -330,9 +346,13 @@ describe("Evidence-Based Inbound Detection Engine (Criteria 11–24)", () => {
     expect(text).toContain("15 đơn");
     expect(text).toContain("420.5 kg (12 đơn)");
     expect(text).toContain("Đơn chưa có khối lượng: 3 đơn");
-    expect(text).toContain("Đã gom / Chờ chuyển: 5 đơn (150 kg; 1 đơn chưa có kg)");
-    expect(text).toContain("Đang trên đường: 3 đơn (85 kg)");
-    expect(text).toContain("Chưa có ETA xác định");
+    expect(text).toContain("🚚 HÀNG ĐANG TRONG PIPELINE VỀ KHO");
+    expect(text).toContain("Đã lấy / đang chờ luân chuyển: 5 đơn / 150 kg; 1 đơn chưa có kg");
+    expect(text).toContain("Đang luân chuyển về kho: 3 đơn / 85 kg");
+    expect(text).toContain("ETA xác định: 0/8 đơn");
+    expect(text).toContain("Thời điểm hàng về: CHƯA XÁC ĐỊNH");
+    expect(text).not.toContain("sắp về");
+    expect(text).not.toContain("HÀNG DỰ KIẾN VỀ");
 
     // Check 3 quick-action buttons
     expect(inboundEvidenceActionButtons.map(([label]) => label)).toEqual([

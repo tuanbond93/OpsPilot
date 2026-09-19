@@ -31,12 +31,43 @@ export interface InboundEvidenceBucket {
   orderCodes: string[];
 }
 
+export type ObservationType = "NATURAL" | "REPLAY";
+export type ReplayEvidenceStatus = "VALID_HISTORICAL" | "INVALID_FUTURE_DATA";
+export type PipelinePressure = "LOW" | "MEDIUM" | "HIGH";
+export type NearTermArrivalRisk = "LOW" | "MEDIUM" | "HIGH" | "UNKNOWN";
+
+export interface CheckpointTimeInfo {
+  checkpoint_at_utc: string;
+  checkpoint_at_local: string;
+  timezone: "Asia/Ho_Chi_Minh";
+}
+
+/**
+ * Formats both UTC and Asia/Ho_Chi_Minh (+07:00) ISO strings explicitly.
+ */
+export function formatCheckpointTimestamps(dateOrIso: Date | string | number): CheckpointTimeInfo {
+  const d = new Date(dateOrIso);
+  const utcIso = d.toISOString();
+  const parts = getOperatingWindowClockParts(d);
+  const localIso = `${parts.dateStr}T${String(parts.hour).padStart(2, "0")}:${String(parts.minute).padStart(2, "0")}:${String(parts.second).padStart(2, "0")}+07:00`;
+  return {
+    checkpoint_at_utc: utcIso,
+    checkpoint_at_local: localIso,
+    timezone: "Asia/Ho_Chi_Minh",
+  };
+}
+
 export interface InboundEvidenceSnapshot {
   status: "AVAILABLE" | "OUTSIDE_OPERATING_WINDOW" | "UNAVAILABLE" | "PARTIAL";
   warehouseId: string;
   warehouseName: string;
   capturedAt: string;
   checkpointAt?: string | null;
+  checkpoint_at_utc: string;
+  checkpoint_at_local: string;
+  timezone: "Asia/Ho_Chi_Minh";
+  observation_type: ObservationType;
+  replay_evidence_status?: ReplayEvidenceStatus;
   sourceFreshness?: string | null;
   totalOrdersFound?: number;
   operatingWindow: {
@@ -52,15 +83,28 @@ export interface InboundEvidenceSnapshot {
   } | null;
   currentBacklog: InboundEvidenceBucket;
   inbound: {
-    totalInboundOrders: number;
+    // Pipeline volume vs horizon arrival separation:
+    pipeline_orders: number;
+    pipeline_known_kg: number;
+    pipeline_unknown_weight_orders: number;
+    picked_not_transferred_orders: number;
+    in_transfer_orders: number;
+    arrival_within_horizon_orders: number | null; // null = UNKNOWN
+    arrival_within_horizon_status: "KNOWN" | "UNKNOWN";
+    eta_known_orders: number;
+    eta_unknown_orders: number;
+    earliestEta: string | null;
+    latestEta: string | null;
+
+    // Detailed buckets:
     pickedNotTransferred: InboundEvidenceBucket;
     inTransfer: InboundEvidenceBucket;
     arrivalConfirmedExcluded: InboundEvidenceBucket;
+    allInboundOrderCodes: string[];
+    // Legacy aliases kept for backward compatibility in tests:
+    totalInboundOrders: number;
     etaKnownOrders: number;
     etaUnknownOrders: number;
-    earliestEta: string | null;
-    latestEta: string | null;
-    allInboundOrderCodes: string[];
   };
   sanitizedSampleOrderIds?: {
     pickedNotTransferred: string[];
@@ -68,6 +112,8 @@ export interface InboundEvidenceSnapshot {
     arrivalConfirmed: string[];
   };
   riskAssessment: {
+    pipeline_pressure: PipelinePressure;
+    near_term_arrival_risk: NearTermArrivalRisk;
     preliminaryRiskLevel: "LOW" | "MEDIUM" | "HIGH" | "INVESTIGATION_REQUIRED";
     summaryVi: string;
   };
@@ -244,9 +290,13 @@ export class InboundEvidenceService {
   async computeInboundEvidence(
     warehouseId: string,
     warehouseName: string,
-    currentTime: Date | string | number = new Date()
+    currentTime: Date | string | number = new Date(),
+    options: { isReplay?: boolean } = {}
   ): Promise<InboundEvidenceSnapshot> {
-    const capturedAt = new Date(currentTime).toISOString();
+    const isReplay = options.isReplay ?? false;
+    const observation_type: ObservationType = isReplay ? "REPLAY" : "NATURAL";
+    const timeInfo = formatCheckpointTimestamps(currentTime);
+    const capturedAt = timeInfo.checkpoint_at_utc;
     const targetId = String(warehouseId).trim();
 
     // 1. Operating Window Check
@@ -262,6 +312,8 @@ export class InboundEvidenceService {
     let rawCandidates: NormalizedInboundCandidate[] = [];
     let sourceFreshness: string | null = null;
     let checkpointAt: string | null = capturedAt;
+    let replay_evidence_status: ReplayEvidenceStatus | undefined = undefined;
+
     try {
       // Find the latest successful sync run
       const { data: latestSync } = await this.db
@@ -276,6 +328,17 @@ export class InboundEvidenceService {
       if (latestSync) {
         sourceFreshness = latestSync.source_updated_at || latestSync.checkpoint_at || latestSync.started_at || null;
         checkpointAt = latestSync.checkpoint_at || latestSync.started_at || capturedAt;
+      }
+
+      // Replay future-data guard: if sourceFreshness > checkpoint_at_utc, flag INVALID_FUTURE_DATA
+      if (isReplay) {
+        const checkpointUtcMs = new Date(timeInfo.checkpoint_at_utc).getTime();
+        const freshnessMs = sourceFreshness ? new Date(sourceFreshness).getTime() : null;
+        if (freshnessMs && freshnessMs > checkpointUtcMs) {
+          replay_evidence_status = "INVALID_FUTURE_DATA";
+        } else {
+          replay_evidence_status = "VALID_HISTORICAL";
+        }
       }
 
       // Query order snapshots for current backlog (warehouse_id = target)
@@ -313,11 +376,25 @@ export class InboundEvidenceService {
             if (orders[0].created_at) {
               sourceFreshness = orders[0].created_at;
               checkpointAt = orders[0].created_at;
+              if (isReplay) {
+                const checkpointUtcMs = new Date(timeInfo.checkpoint_at_utc).getTime();
+                const freshnessMs = sourceFreshness ? new Date(sourceFreshness).getTime() : null;
+                replay_evidence_status = freshnessMs && freshnessMs > checkpointUtcMs ? "INVALID_FUTURE_DATA" : "VALID_HISTORICAL";
+              }
             }
           }
         } catch {
           // Ignore fallback error if table or order method is absent in test mocks
         }
+      }
+
+      // Replay filter: Exclude any record created after the replay checkpoint
+      if (isReplay) {
+        const checkpointUtcMs = new Date(timeInfo.checkpoint_at_utc).getTime();
+        orders = (orders || []).filter((o: any) => {
+          if (!o.created_at) return true;
+          return new Date(o.created_at).getTime() <= checkpointUtcMs;
+        });
       }
 
       rawCandidates = (orders || []).map((o: any) => ({
@@ -341,6 +418,11 @@ export class InboundEvidenceService {
         warehouseName,
         capturedAt,
         checkpointAt,
+        checkpoint_at_utc: timeInfo.checkpoint_at_utc,
+        checkpoint_at_local: timeInfo.checkpoint_at_local,
+        timezone: timeInfo.timezone,
+        observation_type,
+        replay_evidence_status,
         sourceFreshness,
         totalOrdersFound: 0,
         operatingWindow: operatingWindowInfo,
@@ -353,7 +435,17 @@ export class InboundEvidenceService {
           orderCodes: [],
         },
         inbound: {
-          totalInboundOrders: 0,
+          pipeline_orders: 0,
+          pipeline_known_kg: 0,
+          pipeline_unknown_weight_orders: 0,
+          picked_not_transferred_orders: 0,
+          in_transfer_orders: 0,
+          arrival_within_horizon_orders: null,
+          arrival_within_horizon_status: "UNKNOWN",
+          eta_known_orders: 0,
+          eta_unknown_orders: 0,
+          earliestEta: null,
+          latestEta: null,
           pickedNotTransferred: {
             orderCount: 0,
             knownOrders: 0,
@@ -375,13 +467,14 @@ export class InboundEvidenceService {
             unknownWeightOrders: 0,
             orderCodes: [],
           },
+          allInboundOrderCodes: [],
+          totalInboundOrders: 0,
           etaKnownOrders: 0,
           etaUnknownOrders: 0,
-          earliestEta: null,
-          latestEta: null,
-          allInboundOrderCodes: [],
         },
         riskAssessment: {
+          pipeline_pressure: "LOW",
+          near_term_arrival_risk: "UNKNOWN",
           preliminaryRiskLevel: "INVESTIGATION_REQUIRED",
           summaryVi: "Không thể truy vấn dữ liệu hàng đến từ hệ thống; cần điều tra kết nối.",
         },
@@ -405,6 +498,12 @@ export class InboundEvidenceService {
     const pickedNotTransferredBucket = aggregateInboundBucket(pickedNotTransferred);
 
     const totalInboundOrders = inTransfer.length + pickedNotTransferred.length;
+    const pipeline_orders = totalInboundOrders;
+    const pipeline_known_kg = Math.round((pickedNotTransferredBucket.knownWeightKg + inTransferBucket.knownWeightKg) * 10) / 10;
+    const pipeline_unknown_weight_orders = pickedNotTransferredBucket.unknownWeightOrders + inTransferBucket.unknownWeightOrders;
+    const picked_not_transferred_orders = pickedNotTransferred.length;
+    const in_transfer_orders = inTransfer.length;
+
     const allInboundOrderCodes = [
       ...pickedNotTransferredBucket.orderCodes,
       ...inTransferBucket.orderCodes,
@@ -428,21 +527,37 @@ export class InboundEvidenceService {
     const earliestEta = knownEtas.length > 0 ? knownEtas[0] : null;
     const latestEta = knownEtas.length > 0 ? knownEtas[knownEtas.length - 1] : null;
 
-    // Preliminary Risk Level & Summary
-    let preliminaryRiskLevel: "LOW" | "MEDIUM" | "HIGH" | "INVESTIGATION_REQUIRED" = "LOW";
-    let summaryVi = "Tồn kho và hàng đến trong giới hạn bình thường.";
+    // Arrival within horizon:
+    // Without ETA / governed transit-time evidence, arrival within horizon is UNKNOWN
+    const arrival_within_horizon_orders = null; // null = UNKNOWN
+    const arrival_within_horizon_status: "KNOWN" | "UNKNOWN" = "UNKNOWN";
 
+    // Pipeline pressure: measures the upstream volume heading to this warehouse
+    let pipeline_pressure: PipelinePressure = "LOW";
+    if (pipeline_orders > 50 || inTransfer.length > 20) {
+      pipeline_pressure = "HIGH";
+    } else if (pipeline_orders > 15 || inTransfer.length > 5) {
+      pipeline_pressure = "MEDIUM";
+    }
+
+    // Near-term arrival risk: requires governed arrival timing (ETA).
+    // When ETA is NOT_AVAILABLE, arrival within horizon is UNKNOWN.
+    let near_term_arrival_risk: NearTermArrivalRisk = "UNKNOWN";
+    let preliminaryRiskLevel: "LOW" | "MEDIUM" | "HIGH" | "INVESTIGATION_REQUIRED" = "INVESTIGATION_REQUIRED";
+
+    let summaryVi = "";
     if (!isWithinWindow) {
+      pipeline_pressure = "LOW";
+      near_term_arrival_risk = "LOW";
       preliminaryRiskLevel = "LOW";
       summaryVi = "Ngoài khung giờ giao hàng (07:00–17:00); không kích hoạt can thiệp xử lý trong ngày.";
     } else {
-      const totalVolumeOrders = currentBacklogBucket.orderCount + totalInboundOrders;
-      if (totalVolumeOrders > 50 || inTransfer.length > 20) {
-        preliminaryRiskLevel = "HIGH";
-        summaryVi = `Áp lực lớn: ${currentBacklogBucket.orderCount} đơn tồn + ${totalInboundOrders} đơn sắp về. Cần theo dõi sát để kịp giải tỏa.`;
-      } else if (totalVolumeOrders > 15 || inTransfer.length > 5) {
-        preliminaryRiskLevel = "MEDIUM";
-        summaryVi = `Có ${totalInboundOrders} đơn dự kiến về trong khung giờ vận hành. Cần xác nhận phương án giải tỏa.`;
+      if (pipeline_pressure === "HIGH") {
+        summaryVi = `Lượng hàng upstream trong pipeline đang lớn (${pipeline_orders} đơn / ${pipeline_known_kg} kg). Chưa đủ bằng chứng xác định bao nhiêu đơn sẽ về trước 17:00.`;
+      } else if (pipeline_pressure === "MEDIUM") {
+        summaryVi = `Có ${pipeline_orders} đơn trong pipeline về kho. Chưa đủ bằng chứng xác định thời điểm hàng về trước 17:00.`;
+      } else {
+        summaryVi = "Tồn kho và hàng trong pipeline trong giới hạn bình thường. Chưa có ETA xác định thời điểm về.";
       }
     }
 
@@ -452,21 +567,36 @@ export class InboundEvidenceService {
       warehouseName,
       capturedAt,
       checkpointAt,
+      checkpoint_at_utc: timeInfo.checkpoint_at_utc,
+      checkpoint_at_local: timeInfo.checkpoint_at_local,
+      timezone: timeInfo.timezone,
+      observation_type,
+      replay_evidence_status,
       sourceFreshness,
       totalOrdersFound: rawCandidates.length,
       operatingWindow: operatingWindowInfo,
       horizon: isWithinWindow ? horizon : null,
       currentBacklog: currentBacklogBucket,
       inbound: {
-        totalInboundOrders,
+        pipeline_orders,
+        pipeline_known_kg,
+        pipeline_unknown_weight_orders,
+        picked_not_transferred_orders,
+        in_transfer_orders,
+        arrival_within_horizon_orders,
+        arrival_within_horizon_status,
+        eta_known_orders: etaKnownOrders,
+        eta_unknown_orders: etaUnknownOrders,
+        earliestEta,
+        latestEta,
+
         pickedNotTransferred: pickedNotTransferredBucket,
         inTransfer: inTransferBucket,
         arrivalConfirmedExcluded: arrivalConfirmedBucket,
+        allInboundOrderCodes,
+        totalInboundOrders,
         etaKnownOrders,
         etaUnknownOrders,
-        earliestEta,
-        latestEta,
-        allInboundOrderCodes,
       },
       sanitizedSampleOrderIds: {
         pickedNotTransferred: pickedNotTransferredBucket.orderCodes.slice(0, 3).map(sanitizeOrderCode),
@@ -474,6 +604,8 @@ export class InboundEvidenceService {
         arrivalConfirmed: arrivalConfirmedBucket.orderCodes.slice(0, 3).map(sanitizeOrderCode),
       },
       riskAssessment: {
+        pipeline_pressure,
+        near_term_arrival_risk,
         preliminaryRiskLevel,
         summaryVi,
       },

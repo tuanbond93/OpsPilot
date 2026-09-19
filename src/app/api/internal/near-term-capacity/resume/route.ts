@@ -101,14 +101,24 @@ export async function GET(request: NextRequest) {
   }
 
   const isCron = isCronAuthorized(request);
-  let isAuthorized = isCron || caseId === GOLDEN_CASE_ID || action === "multi-option-shadow" || action === "inbound-evidence";
+  let isAuthorized = isCron || (caseId === GOLDEN_CASE_ID && action === "status") || action === "multi-option-shadow";
   let actor = isCron ? "cron_secret_authorized" : `system_governed:${caseId}`;
 
+  // Sensitive diagnostic and operational endpoints are strictly authenticated
+  if (action === "inbound-evidence") {
+    isAuthorized = false;
+  }
+
   if (!isAuthorized) {
-    const access = await authorizeApiRequest(request, "MANAGE_SYSTEM", { limit: 10, windowMs: 60_000 });
-    if (!access.ok) return access.response;
-    if (access.identity?.actor) actor = access.identity.actor;
-    isAuthorized = true;
+    if (isCron) {
+      isAuthorized = true;
+      actor = "cron_secret_authorized";
+    } else {
+      const access = await authorizeApiRequest(request, "MANAGE_SYSTEM", { limit: 10, windowMs: 60_000 });
+      if (!access.ok) return access.response;
+      if (access.identity?.actor) actor = access.identity.actor;
+      isAuthorized = true;
+    }
   }
 
   try {
@@ -278,6 +288,8 @@ export async function GET(request: NextRequest) {
         { id: "21160000", name: "Kho Giao Hàng Nặng - Việt Trì - Phú Thọ" },
       ];
 
+      const isReplay = Boolean(currentTimeParam);
+
       const [
         snapshots,
         routingLeadResults,
@@ -288,7 +300,7 @@ export async function GET(request: NextRequest) {
       ] = await Promise.all([
         Promise.all(
           PILOT_WAREHOUSES.map(async (wh) => {
-            return inboundService.computeInboundEvidence(wh.id, wh.name, evalTime);
+            return inboundService.computeInboundEvidence(wh.id, wh.name, evalTime, { isReplay });
           })
         ),
         Promise.all(
@@ -309,6 +321,11 @@ export async function GET(request: NextRequest) {
           warehouseId: wh.id,
           warehouseName: wh.name,
           checkpointAt: snap.checkpointAt || snap.capturedAt,
+          checkpoint_at_utc: snap.checkpoint_at_utc,
+          checkpoint_at_local: snap.checkpoint_at_local,
+          timezone: snap.timezone,
+          observation_type: snap.observation_type,
+          replay_evidence_status: snap.replay_evidence_status,
           sourceFreshness: snap.sourceFreshness || null,
           totalOrdersFound: snap.totalOrdersFound || 0,
           operatingWindowStatus: snap.status,
@@ -316,6 +333,13 @@ export async function GET(request: NextRequest) {
           forecastHorizon: snap.horizon,
           currentBacklog: snap.currentBacklog,
           inbound: {
+            pipeline_orders: snap.inbound.pipeline_orders,
+            pipeline_known_kg: snap.inbound.pipeline_known_kg,
+            pipeline_unknown_weight_orders: snap.inbound.pipeline_unknown_weight_orders,
+            picked_not_transferred_orders: snap.inbound.picked_not_transferred_orders,
+            in_transfer_orders: snap.inbound.in_transfer_orders,
+            arrival_within_horizon_orders: snap.inbound.arrival_within_horizon_orders,
+            arrival_within_horizon_status: snap.inbound.arrival_within_horizon_status,
             totalInboundOrders: snap.inbound.totalInboundOrders,
             pickedNotTransferred: snap.inbound.pickedNotTransferred,
             inTransfer: snap.inbound.inTransfer,
@@ -329,6 +353,12 @@ export async function GET(request: NextRequest) {
             pickedNotTransferred: [],
             inTransfer: [],
             arrivalConfirmed: [],
+          },
+          riskAssessment: {
+            pipeline_pressure: snap.riskAssessment.pipeline_pressure,
+            near_term_arrival_risk: snap.riskAssessment.near_term_arrival_risk,
+            preliminaryRiskLevel: snap.riskAssessment.preliminaryRiskLevel,
+            summaryVi: snap.riskAssessment.summaryVi,
           },
           preliminaryRiskLevel: snap.riskAssessment.preliminaryRiskLevel,
           summaryVi: snap.riskAssessment.summaryVi,
@@ -347,6 +377,8 @@ export async function GET(request: NextRequest) {
         action: "inbound-evidence",
         timestamp: new Date().toISOString(),
         evaluationTime: evalTime.toISOString(),
+        time_override_classification: isReplay ? "DIAGNOSTIC_REPLAY" : "NATURAL_SERVER_TIME",
+        observation_type: isReplay ? "REPLAY" : "NATURAL",
         shadowEnabled: isInboundEvidenceShadowEnabled(),
         etaTruthCheck: {
           etaSource: "NOT_AVAILABLE",

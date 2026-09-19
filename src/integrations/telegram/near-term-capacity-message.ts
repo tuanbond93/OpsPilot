@@ -109,11 +109,31 @@ export function formatInboundEvidenceLeadPrompt(snapshot: InboundEvidenceSnapsho
   const transferWeight = transfer.knownOrders > 0 ? `${transfer.knownWeightKg} kg` : "Chưa có kg";
   const transferUnknown = transfer.unknownWeightOrders > 0 ? `; ${transfer.unknownWeightOrders} đơn chưa có kg` : "";
 
-  let etaText = "Chưa có ETA xác định";
-  if (inbound.earliestEta) {
-    etaText = inbound.earliestEta === inbound.latestEta || !inbound.latestEta
+  const totalPipeline = inbound.pipeline_orders ?? (picked.orderCount + transfer.orderCount);
+  const etaKnown = inbound.eta_known_orders ?? inbound.etaKnownOrders ?? 0;
+
+  let etaLine = `• ETA xác định: ${etaKnown}/${totalPipeline} đơn\n• Thời điểm hàng về: CHƯA XÁC ĐỊNH`;
+  if (etaKnown > 0 && inbound.earliestEta) {
+    const timing = inbound.earliestEta === inbound.latestEta || !inbound.latestEta
       ? `Khoảng ${formatVietnamTime(inbound.earliestEta)}`
       : `Từ ${formatVietnamTime(inbound.earliestEta)} đến ${formatVietnamTime(inbound.latestEta)}`;
+    etaLine = `• ETA xác định: ${etaKnown}/${totalPipeline} đơn (${timing})`;
+  }
+
+  let assessmentBlock = [
+    "⚠️ OpsPilot đánh giá:",
+    totalPipeline > 50
+      ? "• Lượng hàng upstream đang lớn."
+      : "• Lượng hàng upstream trong giới hạn bình thường.",
+    "• Chưa đủ bằng chứng xác định bao nhiêu đơn sẽ về trước 17:00.",
+  ].join("\n");
+
+  if (snapshot.status === "OUTSIDE_OPERATING_WINDOW") {
+    assessmentBlock = [
+      "⚠️ OpsPilot đánh giá:",
+      "• Ngoài khung giờ giao hàng (07:00–17:00).",
+      "• Không kích hoạt can thiệp xử lý trong ngày.",
+    ].join("\n");
   }
 
   return [
@@ -126,13 +146,12 @@ export function formatInboundEvidenceLeadPrompt(snapshot: InboundEvidenceSnapsho
     `• Số đơn tồn: ${backlog.orderCount} đơn`,
     `• Khối lượng đã biết: ${backlogKnownWeight}${backlogUnknownWeight}`,
     "",
-    "🚚 HÀNG DỰ KIẾN VỀ (HỆ THỐNG GHI NHẬN)",
-    `• Đã gom / Chờ chuyển: ${picked.orderCount} đơn (${pickedWeight}${pickedUnknown})`,
-    `• Đang trên đường: ${transfer.orderCount} đơn (${transferWeight}${transferUnknown})`,
-    `• Giờ hàng về (ETA): ${etaText}`,
+    "🚚 HÀNG ĐANG TRONG PIPELINE VỀ KHO",
+    `• Đã lấy / đang chờ luân chuyển: ${picked.orderCount} đơn / ${pickedWeight}${pickedUnknown}`,
+    `• Đang luân chuyển về kho: ${transfer.orderCount} đơn / ${transferWeight}${transferUnknown}`,
+    etaLine,
     "",
-    "⚠️ ĐÁNH GIÁ SƠ BỘ",
-    `• ${escape(snapshot.riskAssessment.summaryVi)}`,
+    assessmentBlock,
     "",
     "👉 Xác nhận tình trạng xử lý của kho:",
   ].join("\n");
