@@ -6,6 +6,7 @@ import {
 } from "@/domain/near-term-capacity/inbound-evidence-service";
 import { normalizeProvinceName } from "@/integrations/telegram/topic-router";
 import { resolveProvince } from "@/notifications/gateway/scope-resolver";
+import { logger } from "@/observability/logger";
 
 export const NATURAL_SHADOW_TRIGGER_SOURCE = "opspilot-followup-cycle" as const;
 
@@ -53,6 +54,69 @@ export type NaturalShadowObserverResult =
   | { status: "SUCCESS_INSERTED" | "SUCCESS_ALREADY_OBSERVED"; checkpointId: string | null; warehousesEvaluated: 3 }
   | { status: "FAILED"; reason: string; warehousesEvaluated: 0 | 3 };
 
+type NaturalShadowStage =
+  | "OBSERVER_ENTER"
+  | "SYNC_RUN_VALIDATION"
+  | "MANIFEST_VALIDATION"
+  | "OBSERVATION_READ"
+  | "OBSERVATION_RECONCILIATION"
+  | "ROUTING_TOPIC_RESOLUTION"
+  | "ROUTING_GROUP_RESOLUTION"
+  | "WAREHOUSE_EVIDENCE_BUILD"
+  | "RPC_ATTEMPT"
+  | "RPC_RESULT"
+  | "OBSERVER_COMPLETE";
+
+type ObserverTelemetry = {
+  syncRunId: string;
+  checkpointAt: string;
+  currentStage: NaturalShadowStage;
+  startedAt: number;
+};
+
+function telemetry(telemetryState: ObserverTelemetry, stage: NaturalShadowStage, status: "START" | "PASS" | "FAIL", fields: Record<string, number | string> = {}) {
+  telemetryState.currentStage = stage;
+  try {
+    logger.info({
+      event: "INBOUND_NATURAL_SHADOW_STAGE",
+      sync_run_id: telemetryState.syncRunId,
+      checkpoint_at: telemetryState.checkpointAt,
+      stage,
+      status,
+      ...fields,
+    });
+  } catch {
+    // Telemetry is strictly best-effort and cannot change observer behavior.
+  }
+}
+
+function errorCode(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  // Only governed codes are loggable. Database/provider error text may contain
+  // identifiers and is deliberately reduced to an opaque safe classification.
+  const governed = message.match(/NATURAL_SHADOW_[A-Z0-9_]+/i);
+  return governed ? governed[0].toUpperCase() : "UNCLASSIFIED_ERROR";
+}
+
+function stagedError(stage: NaturalShadowStage, error: unknown): Error {
+  const wrapped = error instanceof Error ? error : new Error(String(error));
+  Object.assign(wrapped, { naturalShadowStage: stage, naturalShadowErrorCode: errorCode(error) });
+  return wrapped;
+}
+
+async function observeStage<T>(telemetryState: ObserverTelemetry, stage: NaturalShadowStage, operation: () => Promise<T>, fields: Record<string, number | string> = {}): Promise<T> {
+  const startedAt = Date.now();
+  telemetry(telemetryState, stage, "START", fields);
+  try {
+    const value = await operation();
+    telemetry(telemetryState, stage, "PASS", { ...fields, duration_ms: Date.now() - startedAt });
+    return value;
+  } catch (error) {
+    telemetry(telemetryState, stage, "FAIL", { ...fields, duration_ms: Date.now() - startedAt, error_code: errorCode(error), error_class: error instanceof Error ? error.name : "NonError" });
+    throw stagedError(stage, error);
+  }
+}
+
 function safeReason(error: unknown): string {
   return (error instanceof Error ? error.message : String(error)).slice(0, 500);
 }
@@ -72,73 +136,43 @@ function toCandidate(row: SourceRow): NormalizedInboundCandidate {
   };
 }
 
-async function readCompletePopulation(client: SupabaseClient, syncRunId: string, checkpointAt: string) {
-  const { data: syncRun, error: syncError } = await client
-    .from("sync_runs")
-    .select("id, checkpoint_at")
-    .eq("id", syncRunId)
-    .maybeSingle();
-  if (
-    syncError ||
-    !syncRun ||
-    !syncRun.checkpoint_at ||
-    Number.isNaN(Date.parse(syncRun.checkpoint_at)) ||
-    Date.parse(syncRun.checkpoint_at) !== Date.parse(checkpointAt)
-  ) {
-    throw new Error("NATURAL_SHADOW_SYNC_RUN_IDENTITY_INVALID");
-  }
-
-  const { data: manifest, error: manifestError } = await client
-    .from("inbound_population_manifests")
-    .select("sync_run_id, source_system, population_status, expected_observation_count, persisted_observation_count, duplicate_conflict_count, population_completed_at, source_freshness")
-    .eq("sync_run_id", syncRunId)
-    .eq("source_system", "RILLNET")
-    .maybeSingle();
-  if (
-    manifestError ||
-    !manifest ||
-    manifest.population_status !== "COMPLETE" ||
-    !manifest.population_completed_at ||
-    !manifest.source_freshness ||
-    manifest.expected_observation_count !== manifest.persisted_observation_count ||
-    manifest.duplicate_conflict_count !== 0
-  ) {
-    throw new Error("NATURAL_SHADOW_INBOUND_MANIFEST_NOT_COMPLETE");
-  }
-
-  const sourceFreshness = manifest.source_freshness;
-  if (new Date(sourceFreshness).getTime() > new Date(checkpointAt).getTime()) {
-    throw new Error("NATURAL_SHADOW_FUTURE_SOURCE_DATA");
-  }
-
-  const rows: SourceRow[] = [];
-  const pageSize = 1000;
-  for (let offset = 0; ; offset += pageSize) {
-    const { data, error } = await client
-      .from("inbound_order_observations")
-      .select("order_code, current_warehouse_id, deliver_warehouse_id, source_status, end_pick_at, weight_kg, is_b2b, source_observed_at")
-      .eq("sync_run_id", syncRunId)
-      .eq("source_system", "RILLNET")
-      .range(offset, offset + pageSize - 1);
-    if (error) throw new Error(`NATURAL_SHADOW_SOURCE_READ_FAILED: ${error.message}`);
-    rows.push(...((data || []) as SourceRow[]));
-    if (!data || data.length < pageSize) break;
-  }
-  if (rows.length !== manifest.persisted_observation_count) {
-    throw new Error("NATURAL_SHADOW_SOURCE_COUNT_MISMATCH");
-  }
-  return { sourceFreshness, manifest, rows };
+async function readCompletePopulation(client: SupabaseClient, syncRunId: string, checkpointAt: string, telemetryState: ObserverTelemetry) {
+  await observeStage(telemetryState, "SYNC_RUN_VALIDATION", async () => {
+    const { data: syncRun, error: syncError } = await client.from("sync_runs").select("id, checkpoint_at").eq("id", syncRunId).maybeSingle();
+    if (syncError || !syncRun || !syncRun.checkpoint_at || Number.isNaN(Date.parse(syncRun.checkpoint_at)) || Date.parse(syncRun.checkpoint_at) !== Date.parse(checkpointAt)) throw new Error("NATURAL_SHADOW_SYNC_RUN_IDENTITY_INVALID");
+  });
+  const manifest = await observeStage(telemetryState, "MANIFEST_VALIDATION", async () => {
+    const { data, error } = await client.from("inbound_population_manifests").select("sync_run_id, source_system, population_status, expected_observation_count, persisted_observation_count, duplicate_conflict_count, population_completed_at, source_freshness").eq("sync_run_id", syncRunId).eq("source_system", "RILLNET").maybeSingle();
+    if (error || !data || data.population_status !== "COMPLETE" || !data.population_completed_at || !data.source_freshness || data.expected_observation_count !== data.persisted_observation_count || data.duplicate_conflict_count !== 0) throw new Error("NATURAL_SHADOW_INBOUND_MANIFEST_NOT_COMPLETE");
+    if (new Date(data.source_freshness).getTime() > new Date(checkpointAt).getTime()) throw new Error("NATURAL_SHADOW_FUTURE_SOURCE_DATA");
+    return data;
+  });
+  const rows = await observeStage(telemetryState, "OBSERVATION_READ", async () => {
+    const result: SourceRow[] = [];
+    const pageSize = 1000;
+    for (let offset = 0; ; offset += pageSize) {
+      const { data, error } = await client.from("inbound_order_observations").select("order_code, current_warehouse_id, deliver_warehouse_id, source_status, end_pick_at, weight_kg, is_b2b, source_observed_at").eq("sync_run_id", syncRunId).eq("source_system", "RILLNET").range(offset, offset + pageSize - 1);
+      if (error) throw new Error(`NATURAL_SHADOW_SOURCE_READ_FAILED: ${error.message}`);
+      result.push(...((data || []) as SourceRow[]));
+      if (!data || data.length < pageSize) break;
+    }
+    return result;
+  }, { expected_count: manifest.persisted_observation_count });
+  await observeStage(telemetryState, "OBSERVATION_RECONCILIATION", async () => {
+    if (rows.length !== manifest.persisted_observation_count) throw new Error("NATURAL_SHADOW_SOURCE_COUNT_MISMATCH");
+  }, { expected_count: manifest.persisted_observation_count, actual_count: rows.length });
+  return { sourceFreshness: manifest.source_freshness, manifest, rows };
 }
 
-async function resolveUniqueLeadTopics(client: SupabaseClient) {
-  const { data: topics, error: topicError } = await client
+async function resolveUniqueLeadTopics(client: SupabaseClient, telemetryState: ObserverTelemetry) {
+  const selected = await observeStage(telemetryState, "ROUTING_TOPIC_RESOLUTION", async () => {
+    const { data: topics, error: topicError } = await client
     .from("telegram_pilot_topics")
     .select("id, group_id, message_thread_id, topic_title, province_name, status, is_manager_decision")
     .eq("status", "ACTIVE")
     .eq("is_manager_decision", false);
-  if (topicError || !topics) throw new Error("NATURAL_SHADOW_ROUTING_TOPICS_UNAVAILABLE");
-
-  const selected = NATURAL_SHADOW_PILOT_WAREHOUSES.map((warehouse) => {
+    if (topicError || !topics) throw new Error("NATURAL_SHADOW_ROUTING_TOPICS_UNAVAILABLE");
+    return NATURAL_SHADOW_PILOT_WAREHOUSES.map((warehouse) => {
     const resolvedProvince = resolveProvince({ warehouseId: warehouse.id, warehouse: warehouse.name });
     const matching = topics.filter((topic) => normalizeProvinceName(topic.province_name) === normalizeProvinceName(resolvedProvince));
     if (!resolvedProvince || matching.length !== 1) {
@@ -150,23 +184,25 @@ async function resolveUniqueLeadTopics(client: SupabaseClient) {
       throw new Error(`NATURAL_SHADOW_ROUTING_INVALID:${warehouse.id}`);
     }
     return { warehouseId: warehouse.id, topicId: String(topic.id), groupId: String(topic.group_id), threadId: String(threadId) };
-  });
-
-  const groupIds = selected.map((item) => item.groupId);
-  const { data: groups, error: groupError } = await client
+    });
+  }, { warehouse_count: NATURAL_SHADOW_PILOT_WAREHOUSES.length });
+  return observeStage(telemetryState, "ROUTING_GROUP_RESOLUTION", async () => {
+    const groupIds = selected.map((item) => item.groupId);
+    const { data: groups, error: groupError } = await client
     .from("telegram_pilot_groups")
     .select("id, telegram_chat_id, status")
     .in("id", groupIds)
     .eq("status", "ACTIVE");
-  if (groupError || !groups) throw new Error("NATURAL_SHADOW_ROUTING_GROUPS_UNAVAILABLE");
-  const groupById = new Map(groups.map((group) => [String(group.id), group]));
-  return selected.map((item) => {
+    if (groupError || !groups) throw new Error("NATURAL_SHADOW_ROUTING_GROUPS_UNAVAILABLE");
+    const groupById = new Map(groups.map((group) => [String(group.id), group]));
+    return selected.map((item) => {
     const group = groupById.get(item.groupId);
     if (!group || group.telegram_chat_id === null || group.telegram_chat_id === undefined) {
       throw new Error(`NATURAL_SHADOW_ROUTING_GROUP_MISSING:${item.warehouseId}`);
     }
     return { ...item, chatId: String(group.telegram_chat_id) };
-  });
+    });
+  }, { warehouse_count: NATURAL_SHADOW_PILOT_WAREHOUSES.length });
 }
 
 function buildWarehouseEvidence(
@@ -223,17 +259,25 @@ function buildWarehouseEvidence(
 export async function runNaturalShadowObserver(
   client: SupabaseClient,
   input: { checkpointAt: string; syncRunId: string; trustedScheduler: true },
+  telemetryState = { syncRunId: input.syncRunId, checkpointAt: input.checkpointAt, currentStage: "OBSERVER_ENTER" as NaturalShadowStage, startedAt: Date.now() },
 ): Promise<NaturalShadowObserverResult> {
-  if (input.trustedScheduler !== true) throw new Error("NATURAL_SHADOW_NOT_TRUSTED_SCHEDULER_PATH");
-  const { sourceFreshness, manifest, rows } = await readCompletePopulation(client, input.syncRunId, input.checkpointAt);
-  const routes = await resolveUniqueLeadTopics(client);
+  await observeStage(telemetryState, "OBSERVER_ENTER", async () => {
+    if (input.trustedScheduler !== true) throw new Error("NATURAL_SHADOW_NOT_TRUSTED_SCHEDULER_PATH");
+  });
+  const { sourceFreshness, manifest, rows } = await readCompletePopulation(client, input.syncRunId, input.checkpointAt, telemetryState);
+  const routes = await resolveUniqueLeadTopics(client, telemetryState);
   const candidates = rows.map(toCandidate);
-  const warehouses = NATURAL_SHADOW_PILOT_WAREHOUSES.map((warehouse) => {
+  const warehouses = await observeStage(telemetryState, "WAREHOUSE_EVIDENCE_BUILD", async () => NATURAL_SHADOW_PILOT_WAREHOUSES.map((warehouse) => {
     const route = routes.find((item) => item.warehouseId === warehouse.id)!;
     return buildWarehouseEvidence(warehouse, candidates, { chatId: route.chatId, threadId: route.threadId }, sourceFreshness);
-  });
+  }), { warehouse_count: NATURAL_SHADOW_PILOT_WAREHOUSES.length });
 
-  const { data, error } = await client.rpc("persist_inbound_evidence_v2_natural_shadow_bundle", {
+  telemetry(telemetryState, "RPC_ATTEMPT", "START", { warehouse_count: warehouses.length });
+  const rpcStartedAt = Date.now();
+  let data: any;
+  let error: any;
+  try {
+    ({ data, error } = await client.rpc("persist_inbound_evidence_v2_natural_shadow_bundle", {
     p_bundle: {
       evidence_type: "INBOUND_EVIDENCE_V2_NATURAL_SHADOW",
       observation_type: "NATURAL",
@@ -253,10 +297,23 @@ export async function runNaturalShadowObserver(
       production_flow_changed: false,
       warehouses,
     },
-  });
-  if (error) return { status: "FAILED", reason: safeReason(error), warehousesEvaluated: 3 };
-  if (data?.status === "ALREADY_OBSERVED") return { status: "SUCCESS_ALREADY_OBSERVED", checkpointId: data.checkpoint_id || null, warehousesEvaluated: 3 };
-  if (data?.status === "OBSERVED") return { status: "SUCCESS_INSERTED", checkpointId: data.checkpoint_id || null, warehousesEvaluated: 3 };
+    }));
+  } catch (caught) {
+    telemetry(telemetryState, "RPC_RESULT", "FAIL", { duration_ms: Date.now() - rpcStartedAt, error_code: errorCode(caught), error_class: caught instanceof Error ? caught.name : "NonError" });
+    throw stagedError("RPC_RESULT", caught);
+  }
+  if (error) {
+    telemetry(telemetryState, "RPC_RESULT", "FAIL", { duration_ms: Date.now() - rpcStartedAt, error_code: errorCode(error), error_class: "SupabaseError" });
+    return { status: "FAILED", reason: safeReason(error), warehousesEvaluated: 3 };
+  }
+  const rpcResult = data?.status === "ALREADY_OBSERVED" ? "ALREADY_OBSERVED" : data?.status === "OBSERVED" ? "INSERTED" : null;
+  if (rpcResult) {
+    telemetry(telemetryState, "RPC_RESULT", "PASS", { duration_ms: Date.now() - rpcStartedAt, result: rpcResult });
+    telemetry(telemetryState, "OBSERVER_COMPLETE", "PASS", { warehouse_count: warehouses.length, rpc_result: rpcResult, duration_ms: Date.now() - telemetryState.startedAt });
+    try { logger.info({ event: "INBOUND_NATURAL_SHADOW_COMPLETE", sync_run_id: input.syncRunId, checkpoint_at: input.checkpointAt, warehouse_count: warehouses.length, rpc_result: rpcResult, duration_ms: Date.now() - telemetryState.startedAt }); } catch { /* best-effort */ }
+    return rpcResult === "ALREADY_OBSERVED" ? { status: "SUCCESS_ALREADY_OBSERVED", checkpointId: data.checkpoint_id || null, warehousesEvaluated: 3 } : { status: "SUCCESS_INSERTED", checkpointId: data.checkpoint_id || null, warehousesEvaluated: 3 };
+  }
+  telemetry(telemetryState, "RPC_RESULT", "FAIL", { duration_ms: Date.now() - rpcStartedAt, error_code: "NATURAL_SHADOW_RPC_UNEXPECTED_RESULT", error_class: "UnexpectedResult" });
   return { status: "FAILED", reason: "NATURAL_SHADOW_RPC_UNEXPECTED_RESULT", warehousesEvaluated: 3 };
 }
 
@@ -265,9 +322,11 @@ export async function runNaturalShadowObserverSafely(
   input: { checkpointAt: string; syncRunId: string; trustedScheduler: boolean },
 ): Promise<NaturalShadowObserverResult> {
   if (input.trustedScheduler !== true) return { status: "FAILED", reason: "NATURAL_SHADOW_NOT_TRUSTED_SCHEDULER_PATH", warehousesEvaluated: 0 };
+  const telemetryState: ObserverTelemetry = { syncRunId: input.syncRunId, checkpointAt: input.checkpointAt, currentStage: "OBSERVER_ENTER", startedAt: Date.now() };
   try {
-    return await runNaturalShadowObserver(client, { ...input, trustedScheduler: true });
+    return await runNaturalShadowObserver(client, { ...input, trustedScheduler: true }, telemetryState);
   } catch (error) {
+    try { logger.info({ event: "INBOUND_NATURAL_SHADOW_FAILURE", sync_run_id: input.syncRunId, checkpoint_at: input.checkpointAt, failed_stage: telemetryState.currentStage, error_class: error instanceof Error ? error.name : "NonError", sanitized_error_code: errorCode(error) }); } catch { /* best-effort */ }
     return { status: "FAILED", reason: safeReason(error), warehousesEvaluated: 0 };
   }
 }
