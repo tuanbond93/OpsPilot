@@ -276,7 +276,8 @@ describe("UNKNOWN ≠ ZERO Semantic Safety Contract", () => {
       expect(factRequest).toContain("• Đang tồn: 6 đơn");
       expect(factRequest).toContain("• Tổng khối lượng: Chưa có dữ liệu kg");
       expect(factRequest).not.toMatch(/• Tổng khối lượng: 0 kg/);
-      expect(factRequest).toContain("Thiếu dữ liệu khối lượng; cần Lead xác nhận thêm");
+      expect(factRequest).toContain("Dữ liệu khối lượng hiện có chưa đầy đủ.");
+      expect(factRequest).toContain("không yêu cầu nhập tay KG/ETA/TYPE");
     });
   });
 

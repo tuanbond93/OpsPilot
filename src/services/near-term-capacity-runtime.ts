@@ -3,7 +3,7 @@ import { generate } from "@/ai/provider";
 import { logger } from "@/observability/logger";
 import { buildContext, critique, detectCandidate, formatOperationalRiskPromptSummary, type AiRecommendation, type CurrentRisk, type DecisionContext, type IncomingAnswer, type LeadFact, InboundEvidenceService } from "@/domain/near-term-capacity";
 import { TelegramClient } from "@/integrations/telegram/telegram-client";
-import { buildNearTermFactCallbackData, formatNearTermDetailRequest, formatNearTermFactConfirmation, formatNearTermFactRequest, formatOperationalExceptionPrompt, nearTermFactButtons, type NearTermFactAnswer } from "@/integrations/telegram/near-term-capacity-message";
+import { buildNearTermFactCallbackData, formatNearTermFactConfirmation, formatNearTermFactRequest, formatOperationalExceptionPrompt, nearTermFactButtons, type NearTermFactAnswer } from "@/integrations/telegram/near-term-capacity-message";
 import { NearTermCapacityDecisionBridge } from "@/services/near-term-capacity-decision-bridge";
 import { NearTermCapacityShadowService } from "@/services/near-term-capacity-shadow";
 import { NearTermCapacityMultiOptionShadowService, isMultiOptionShadowEnabled } from "@/services/near-term-capacity-multi-option-shadow";
@@ -122,15 +122,8 @@ export function selectScopedIncidentBatch<T>(incidents: T[], isInGovernedScope: 
   return incidents.filter(isInGovernedScope).slice(0, limit);
 }
 
-export function parseLeadDetail(value: string): Pick<LeadFact, "expectedIncomingKg" | "expectedIncomingAt" | "incomingType"> | null {
-  const matches = Object.fromEntries([...value.matchAll(/\b(KG|ETA|TYPE)\s*=\s*([^;\n]+)/gi)].map((m) => [m[1].toUpperCase(), m[2].trim()]));
-  const kg = Number(matches.KG); const type = String(matches.TYPE || "").toUpperCase();
-  if (!Number.isFinite(kg) || kg < 0 || !Number.isFinite(Date.parse(String(matches.ETA || ""))) || !["B2B", "ECOM", "MIXED"].includes(type)) return null;
-  return { expectedIncomingKg: kg, expectedIncomingAt: String(matches.ETA), incomingType: type as "B2B" | "ECOM" | "MIXED" };
-}
-
-function factFrom(answer: IncomingAnswer, actor: string, interactionId: string, detail?: Pick<LeadFact, "expectedIncomingKg" | "expectedIncomingAt" | "incomingType">): LeadFact {
-  return { interactionId, suppliedBy: actor, capturedAt: new Date().toISOString(), source: "HUMAN_OPERATIONAL_GROUND_TRUTH", incoming: answer, confidence: answer === "CONFIRMED_ETA" ? "HIGH" : answer === "UNCERTAIN_ETA" ? "MEDIUM" : "LOW", ...detail };
+function factFrom(answer: IncomingAnswer, actor: string, interactionId: string): LeadFact {
+  return { interactionId, suppliedBy: actor, capturedAt: new Date().toISOString(), source: "HUMAN_OPERATIONAL_GROUND_TRUTH", incoming: answer, confidence: "LOW" };
 }
 
 /** Adapter is deliberately fail-soft: callers never let Phase 2 affect the Phase 1 checkpoint. */
@@ -555,7 +548,6 @@ export class NearTermCapacityRuntimeService {
     if (!row || row.status !== "FACT_REQUESTED") return { status: "ALREADY_RESPONDED" as const };
     const { data: event } = await this.db.from("near_term_capacity_events").select("id,payload").eq("case_id", caseId).eq("event_type", "FACT_REQUEST_SENT").maybeSingle();
     if (!event || String(event.payload?.telegramMessageId) !== String(messageId) || String(event.payload?.memberId) !== memberId) return { status: "INVALID_TARGET" as const };
-    const incoming = answer as IncomingAnswer;
     await this.event(caseId, "FACT_INITIAL_RESPONSE_RECEIVED", `telegram:${memberId}`, { interactionId: caseId, answer, chatId, messageId, updateId });
 
     try {
@@ -576,46 +568,24 @@ export class NearTermCapacityRuntimeService {
       });
     }
 
-    if (answer === "CONFIRMED_ETA" || answer === "UNCERTAIN_ETA" || answer === "EXCEPTION_REPORTED") {
+    if (answer === "EXCEPTION_REPORTED") {
       const { error } = await this.db.from("near_term_capacity_cases").update({ status: "FACT_CAPTURED", updated_at: new Date().toISOString() }).eq("id", caseId).eq("status", "FACT_REQUESTED");
       if (error) throw error;
       const threadId = event?.payload?.messageThreadId ? Number(event.payload.messageThreadId) : null;
-      const promptText = answer === "EXCEPTION_REPORTED" ? formatOperationalExceptionPrompt() : formatNearTermDetailRequest();
-      const sent = await this.telegram.sendToChat(chatId, promptText, { messageThreadId: threadId, requireTopic: true });
-      await this.event(caseId, "FACT_DETAIL_REQUEST_SENT", "near_term_capacity", { telegramMessageId: sent.messageId, interactionId: `${caseId}:detail`, answer });
-      return { status: "DETAIL_REQUESTED" as const };
+      const sent = await this.telegram.sendToChat(chatId, formatOperationalExceptionPrompt(), { messageThreadId: threadId, requireTopic: true });
+      await this.event(caseId, "OPERATIONAL_CONTEXT_REQUEST_SENT", "near_term_capacity", { telegramMessageId: sent.messageId, interactionId: `${caseId}:context`, answer });
+      return { status: "CONTEXT_REQUESTED" as const };
     }
-    const mappedIncoming: IncomingAnswer =
-      answer === "ACTION_PLANNED"
-        ? "NO_SIGNIFICANT_INCOMING"
-        : answer === "ASSISTANCE_REQUESTED"
-        ? "UNCERTAIN_ETA"
-        : (incoming as IncomingAnswer);
-    return this.persistAndDecide(row, factFrom(mappedIncoming, `telegram:${memberId}`, caseId));
+    return this.persistAndDecide(row, factFrom("UNKNOWN", `telegram:${memberId}`, caseId));
   }
   async consumeDetailReply(caseId: string, memberId: string, text: string) {
     const row = await this.activeCaseById(caseId);
     if (!row || row.status !== "FACT_CAPTURED") return { status: "NOT_AWAITING_DETAILS" as const };
-    const initial = await this.db.from("near_term_capacity_events").select("payload").eq("case_id", caseId).eq("event_type", "FACT_INITIAL_RESPONSE_RECEIVED").maybeSingle();
-    const answer = initial.data?.payload?.answer as NearTermFactAnswer | undefined;
-    if (answer === "EXCEPTION_REPORTED") {
-      const fact: LeadFact = {
-        interactionId: `${caseId}:detail`,
-        suppliedBy: `telegram:${memberId}`,
-        capturedAt: new Date().toISOString(),
-        source: "HUMAN_OPERATIONAL_GROUND_TRUTH",
-        incoming: "UNCERTAIN_ETA",
-        confidence: "MEDIUM",
-        supportingNote: text.slice(0, 300),
-      };
-      return this.persistAndDecide(row, fact);
-    }
-    const detail = parseLeadDetail(text);
-    if (!answer || !detail) return { status: "INVALID_DETAIL" as const };
-    return this.persistAndDecide(row, factFrom(answer as IncomingAnswer, `telegram:${memberId}`, `${caseId}:detail`, detail));
+    const fact: LeadFact = { ...factFrom("UNKNOWN", `telegram:${memberId}`, `${caseId}:context`), supportingNote: text.slice(0, 300) };
+    return this.persistAndDecide(row, fact);
   }
   async consumeDetailFromTelegramReply(memberId: string, replyToMessageId: number, text: string) {
-    const { data: detailEvents } = await this.db.from("near_term_capacity_events").select("case_id,payload").eq("event_type", "FACT_DETAIL_REQUEST_SENT");
+    const { data: detailEvents } = await this.db.from("near_term_capacity_events").select("case_id,payload").eq("event_type", "OPERATIONAL_CONTEXT_REQUEST_SENT");
     const matching = (detailEvents || []).find((e) => Number(e.payload?.telegramMessageId) === replyToMessageId);
     let targetCaseId = matching?.case_id;
     if (!targetCaseId) {

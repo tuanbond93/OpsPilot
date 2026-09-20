@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { CAPACITY_ACTIONS, acceptLeadFact, allowedActions, buildContext, critique, detectCandidate, executionInstruction, factRequestNeeded, precheck, verifyCapacityOutcome, type AiRecommendation, type CurrentRisk, type LeadFact } from "@/domain/near-term-capacity";
 import { buildNearTermFactCallbackData, formatNearTermFactRequest, formatNearTermManagerCard, nearTermFactButtons, parseNearTermFactCallbackData } from "@/integrations/telegram/near-term-capacity-message";
 import { buildCapacityDecisionCallbackData, parseCapacityDecisionCallbackData } from "@/integrations/telegram/capacity-decision-actions";
-import { isRecoverableUnsentFactRequest, parseLeadDetail } from "@/services/near-term-capacity-runtime";
+import { isRecoverableUnsentFactRequest } from "@/services/near-term-capacity-runtime";
 import fs from "node:fs";
 
 const now = new Date();
@@ -27,36 +27,34 @@ describe("near-term capacity decision loop", () => {
   it("does not expose reallocation without an actually available resource", () => { expect(allowedActions(facts, { ...lead, availableVehicles: 0, availableManpower: 0 }, policy)).not.toContain("REALLOCATE_AVAILABLE_CAPACITY"); });
   it("creates only executable Phase 1 instructions", () => { expect(executionInstruction("ADD_MANPOWER", "Prepare two confirmed sorters")).toMatch(/two/); expect(() => executionInstruction("NO_ACTION_MONITOR", "x")).toThrow("NON_EXECUTABLE_ACTION"); });
   it("verifies success, failure, and inconclusive without inventing money", () => { expect(verifyCapacityOutcome({ actionExecuted: "YES", slaOutcome: "PRESERVED", riskAfterAction: "REDUCED" })).toBe("SUCCESS"); expect(verifyCapacityOutcome({ actionExecuted: "NO", slaOutcome: "UNKNOWN", riskAfterAction: "UNKNOWN" })).toBe("FAILURE"); expect(verifyCapacityOutcome({ actionExecuted: "UNKNOWN", slaOutcome: "UNKNOWN", riskAfterAction: "UNKNOWN" })).toBe("INCONCLUSIVE"); });
-  it("keeps Telegram Lead interaction factual and the Manager card evidence-based with guarded finance", () => { const factText = formatNearTermFactRequest(facts, 240); expect(factText).toContain("CẦN XÁC NHẬN"); expect(factText).not.toMatch(/nên làm gì/i); const context = buildContext("case-1", facts, lead, policy); const card = formatNearTermManagerCard(facts.warehouseName, facts, lead, context, recommendation()); expect(card).toContain("ADD_VEHICLE"); expect(card).toContain("Chưa đủ dữ liệu xác minh chi phí"); expect(card).toContain("Facts từ Lead"); expect(card).not.toContain("HOLD_LOW_PRIORITY_ECOM"); });
+  it("keeps Telegram Lead interaction as bounded operational context and the Manager card evidence-based with guarded finance", () => { const factText = formatNearTermFactRequest(facts, 240); expect(factText).toContain("TÌNH TRẠNG NĂNG LỰC XỬ LÝ"); expect(factText).toContain("không yêu cầu nhập tay KG/ETA/TYPE"); expect(factText).not.toMatch(/KG=<|ETA=<|TYPE=</i); const context = buildContext("case-1", facts, lead, policy); const card = formatNearTermManagerCard(facts.warehouseName, facts, lead, context, recommendation()); expect(card).toContain("ADD_VEHICLE"); expect(card).toContain("Chưa đủ dữ liệu xác minh chi phí"); expect(card).toContain("Facts từ Lead"); expect(card).not.toContain("HOLD_LOW_PRIORITY_ECOM"); });
   it("renders bounded order and weight evidence in Vietnamese without technical labels", () => {
     const message = formatNearTermFactRequest({ ...facts, orderCodes: ["A1", "A2", "A3", "A4", "A5", "A6"], currentKg: 12.7, supportingChange: "Tồn tăng từ 2 → 6 đơn" }, 240);
     expect(message).toContain("Đang tồn: 12 đơn"); expect(message).toContain("Tổng khối lượng: 12.7 kg");
     expect(message).toContain("+ 1 đơn khác"); expect(message).toContain("Tồn tăng từ 2 → 6 đơn");
     expect(message).not.toMatch(/COT\/SLA|Persisted warehouse backlog risk|currentKg|riskSignals/);
   });
-  it("states missing weight honestly and preserves the four semantic answers", () => {
+  it("states missing weight honestly and offers only bounded operational context actions", () => {
     const message = formatNearTermFactRequest({ ...facts, currentKg: null, orderCodes: ["A1"] }, 240);
     expect(message).toContain("Tổng khối lượng: Chưa có dữ liệu kg");
-    expect(nearTermFactButtons.map(([, answer]) => answer)).toEqual(["CONFIRMED_ETA", "UNCERTAIN_ETA", "NO_SIGNIFICANT_INCOMING", "UNKNOWN"]);
+    expect(nearTermFactButtons.map(([, answer]) => answer)).toEqual(["ACTION_PLANNED", "EXCEPTION_REPORTED", "ASSISTANCE_REQUESTED"]);
   });
-  it("keeps every Lead fact callback compact, round-trippable, and legacy-compatible", () => {
+  it("keeps every operational-context callback compact and rejects retired manual-fact callbacks", () => {
     const id = "e2524b83-4462-4238-8914-cd371ab51106";
     for (const [, answer] of nearTermFactButtons) {
       const callback = buildNearTermFactCallbackData(id, answer);
       expect(Buffer.byteLength(callback)).toBeLessThanOrEqual(64);
       expect(parseNearTermFactCallbackData(callback)).toEqual({ caseId: id, answer });
     }
-    expect(parseNearTermFactCallbackData(`opspcap:${id}:CONFIRMED_ETA`)).toEqual({ caseId: id, answer: "CONFIRMED_ETA" });
-    expect(parseNearTermFactCallbackData(`opspcap:${id}:UNKNOWN`)).toEqual({ caseId: id, answer: "UNKNOWN" });
+    expect(parseNearTermFactCallbackData(`opspcap:${id}:CONFIRMED_ETA`)).toBeNull();
+    expect(parseNearTermFactCallbackData(`opspcap:${id}:UNKNOWN`)).toBeNull();
     expect(parseNearTermFactCallbackData(`opspcap:${id}:Z`)).toBeNull();
     expect(parseNearTermFactCallbackData("opsscap:123e4567-e89b-42d3-a456-426614174000:C")).toBeNull();
     expect(parseNearTermFactCallbackData("opspcap:not-a-uuid:C")).toBeNull();
     expect(parseNearTermFactCallbackData(`opspcap:${id}`)).toBeNull();
     expect(parseNearTermFactCallbackData(`opspcap:${id}:NO_SIGNIFICANT_INCOMING`)).toBeNull();
     expect(parseNearTermFactCallbackData(`opspcap:${id}:ADD_VEHICLE`)).toBeNull();
-    expect(nearTermFactButtons.map(([label]) => label)).toEqual(["Có — biết khá chắc giờ hàng về", "Có — nhưng chưa chắc giờ hàng về", "Không có thêm đáng kể", "Chưa xác định"]);
-    expect(parseLeadDetail("KG=125.5; ETA=2026-09-10T10:00:00.000Z; TYPE=MIXED")).toMatchObject({ expectedIncomingKg: 125.5, incomingType: "MIXED" });
-    expect(parseLeadDetail("KG=125; TYPE=ECOM")).toBeNull();
+    expect(nearTermFactButtons.map(([label]) => label)).toEqual(["✅ Đã có phương án", "⚠️ Có ngoại lệ", "🆘 Cần hỗ trợ"]);
   });
   it("uses an isolated bounded callback for a capacity manager response", () => { const id = "123e4567-e89b-42d3-a456-426614174000"; expect(parseCapacityDecisionCallbackData(buildCapacityDecisionCallbackData(id, "APPROVE"))).toEqual({ requestId: id, action: "APPROVE" }); expect(parseCapacityDecisionCallbackData(`opspcapdc:${id}:CONFIRM_SEND`)).toBeNull(); });
   it("defines a one-to-one durable bridge and atomic first-response-wins response contract", () => { const sql = fs.readFileSync("src/database/migrations/070_near_term_capacity_manager_decision_bridge.sql", "utf8"); expect(sql).toContain("capacity_case_id"); expect(sql).toContain("one_manager_request_per_near_term_capacity_case"); expect(sql).toContain("record_near_term_capacity_decision_response"); expect(sql).toContain("decision_status=CASE WHEN action='APPROVE' THEN 'APPROVED' ELSE 'REJECTED' END"); expect(sql).not.toContain("EXECUTED"); });

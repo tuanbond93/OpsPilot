@@ -19,46 +19,37 @@ export const inboundEvidenceActionButtons = [
 
 export type InboundEvidenceAction = typeof inboundEvidenceActionButtons[number][1];
 
-/** Legacy fact buttons kept for backward compatibility */
-export const nearTermFactButtons = [
-  ["Có — biết khá chắc giờ hàng về", "CONFIRMED_ETA"],
-  ["Có — nhưng chưa chắc giờ hàng về", "UNCERTAIN_ETA"],
-  ["Không có thêm đáng kể", "NO_SIGNIFICANT_INCOMING"],
-  ["Chưa xác định", "UNKNOWN"],
-] as const;
+// Retain the exported name while making every live callback an operational
+// context action. No live Telegram prompt may collect inbound KG, ETA, or type.
+export const nearTermFactButtons = inboundEvidenceActionButtons;
+// Retired values remain renderable for historical records, but have no callback
+// code and cannot enter through Telegram.
+type RetiredNearTermFactAnswer = "CONFIRMED_ETA" | "UNCERTAIN_ETA" | "NO_SIGNIFICANT_INCOMING" | "UNKNOWN";
+export type NearTermFactAnswer = InboundEvidenceAction | RetiredNearTermFactAnswer;
 
-export type LegacyNearTermFactAnswer = typeof nearTermFactButtons[number][1];
-export type NearTermFactAnswer = LegacyNearTermFactAnswer | InboundEvidenceAction;
-
-const compactAnswerCodes: Record<NearTermFactAnswer, string> = {
-  CONFIRMED_ETA: "C",
-  UNCERTAIN_ETA: "U",
-  NO_SIGNIFICANT_INCOMING: "N",
-  UNKNOWN: "X",
+const compactAnswerCodes: Partial<Record<NearTermFactAnswer, string>> = {
   ACTION_PLANNED: "P",
   EXCEPTION_REPORTED: "E",
   ASSISTANCE_REQUESTED: "S",
 };
-const answerByCompactCode = Object.fromEntries(Object.entries(compactAnswerCodes).map(([answer, code]) => [code, answer])) as Record<string, NearTermFactAnswer | undefined>;
-const legacyAnswerPattern = "CONFIRMED_ETA|UNCERTAIN_ETA|NO_SIGNIFICANT_INCOMING|UNKNOWN|ACTION_PLANNED|EXCEPTION_REPORTED|ASSISTANCE_REQUESTED";
+const answerByCompactCode = Object.fromEntries(Object.entries(compactAnswerCodes).flatMap(([answer, code]) => code ? [[code, answer]] : [])) as Record<string, NearTermFactAnswer | undefined>;
 
 export function buildNearTermFactCallbackData(caseId: string, answer: NearTermFactAnswer) {
   const code = compactAnswerCodes[answer];
   if (!code) throw new Error("INVALID_NEAR_TERM_FACT_CALLBACK");
   const value = `opspcap:${caseId}:${code}`;
-  if (!/^opspcap:[0-9a-f-]{36}:[CUNXPES]$/i.test(value) || Buffer.byteLength(value) > 64) throw new Error("INVALID_NEAR_TERM_FACT_CALLBACK");
+  if (!/^opspcap:[0-9a-f-]{36}:[PES]$/i.test(value) || Buffer.byteLength(value) > 64) throw new Error("INVALID_NEAR_TERM_FACT_CALLBACK");
   return value;
 }
 
 export function parseNearTermFactCallbackData(value: unknown): { caseId: string; answer: NearTermFactAnswer } | null {
   if (typeof value !== "string" || Buffer.byteLength(value) > 64) return null;
-  const compact = /^opspcap:([0-9a-f-]{36}):([CUNXPES])$/i.exec(value);
+  const compact = /^opspcap:([0-9a-f-]{36}):([PES])$/i.exec(value);
   if (compact) {
     const answer = answerByCompactCode[compact[2].toUpperCase()];
     return answer ? { caseId: compact[1].toLowerCase(), answer } : null;
   }
-  const legacy = new RegExp(`^opspcap:([0-9a-f-]{36}):(${legacyAnswerPattern})$`, "i").exec(value);
-  return legacy ? { caseId: legacy[1].toLowerCase(), answer: legacy[2].toUpperCase() as NearTermFactAnswer } : null;
+  return null;
 }
 
 /** Formats operational exception reply prompt */
@@ -66,15 +57,10 @@ export function formatOperationalExceptionPrompt(): string {
   return "Vui lòng reply tin nhắn này để nêu rõ ngoại lệ vận hành tại kho (ví dụ: xe hỏng, thiếu người bốc xếp, kho gặp sự cố...).";
 }
 
-/** Deprecated legacy prompt kept for backward compatibility */
-export function formatNearTermDetailRequest() {
-  return "Vui lòng reply đúng 1 dòng: KG=<số>; ETA=<ISO-8601>; TYPE=B2B|ECOM|MIXED. Chỉ cung cấp facts, không chọn phương án xử lý.";
-}
-
 export const nearTermFactAnswerLabels: Record<NearTermFactAnswer, string> = {
-  CONFIRMED_ETA: "Có — biết khá chắc giờ hàng về",
-  UNCERTAIN_ETA: "Có — nhưng chưa chắc giờ hàng về",
-  NO_SIGNIFICANT_INCOMING: "Không có thêm hàng đáng kể",
+  CONFIRMED_ETA: "Đã lưu từ luồng lịch sử",
+  UNCERTAIN_ETA: "Đã lưu từ luồng lịch sử",
+  NO_SIGNIFICANT_INCOMING: "Đã lưu từ luồng lịch sử",
   UNKNOWN: "Chưa xác định",
   ACTION_PLANNED: "Đã có phương án",
   EXCEPTION_REPORTED: "Có ngoại lệ vận hành",
@@ -157,7 +143,7 @@ export function formatInboundEvidenceLeadPrompt(snapshot: InboundEvidenceSnapsho
   ].join("\n");
 }
 
-/** Fact-only prompt: Lead is never asked to choose an operational action. */
+/** System-derived inbound evidence is authoritative; people provide context only. */
 export function formatNearTermFactRequest(facts: CurrentRisk, windowMinutes: number) {
   const codes = Array.isArray(facts.orderCodes) ? facts.orderCodes.filter((code): code is string => typeof code === "string" && Boolean(code.trim())) : [];
   const shownCodes = codes.slice(0, 5);
@@ -165,14 +151,16 @@ export function formatNearTermFactRequest(facts: CurrentRisk, windowMinutes: num
   const orderLines = shownCodes.length ? shownCodes.map((code) => `  - ${escape(code)}`) : ["  - Chưa có dữ liệu mã đơn"];
   if (remaining > 0) orderLines.push(`  - + ${remaining} đơn khác`);
   const riskReason = facts.currentKg == null
-    ? "Thiếu dữ liệu khối lượng; cần Lead xác nhận thêm để đánh giá năng lực xử lý"
-    : "Tồn kho đang có đơn cần xử lý; OpsPilot cần kiểm tra nguy cơ không xử lý hết hàng trong 4 giờ tới";
+    ? "Dữ liệu khối lượng hiện có chưa đầy đủ."
+    : "Tồn kho đang có đơn cần xử lý.";
   return [
-    "🟠 OPSPILOT — CẦN XÁC NHẬN NĂNG LỰC XỬ LÝ", "", `Kho: ${escape(facts.warehouseName)}`, "",
+    "🟠 OPSPILOT — TÌNH TRẠNG NĂNG LỰC XỬ LÝ", "", `Kho: ${escape(facts.warehouseName)}`, "",
     "📦 TÌNH HÌNH HIỆN TẠI", `• Đang tồn: ${formatSemanticOrders(facts.currentOrders)}`, `• Tổng khối lượng: ${formatSemanticWeight(facts.currentKg)}`, "• Đơn liên quan:", ...orderLines, "",
     "⚠️ RỦI RO OPSPILOT PHÁT HIỆN", `• ${riskReason}`, ...(facts.supportingChange ? [`• ${escape(facts.supportingChange)}`] : []), "",
-    "💡 OPSPILOT CẦN LEAD XÁC NHẬN", `Trong ${Math.round(windowMinutes / 60)} giờ tới, kho có dự kiến nhận thêm lượng hàng đáng kể không?`,
-    "Thông tin này được dùng để đánh giá kho có nguy cơ không xử lý hết hàng trong thời gian tới hay không.",
+    "🚚 OpsPilot đã tự đọc dữ liệu hàng đang trong pipeline về kho.",
+    "Hệ thống sử dụng dữ liệu pickup / luân chuyển / khối lượng hiện có.",
+    "ETA hiện chưa có nguồn xác thực nên không yêu cầu nhập tay KG/ETA/TYPE.",
+    "Vui lòng chọn: ✅ Đã có phương án · ⚠️ Có ngoại lệ · 🆘 Cần hỗ trợ.",
   ].join("\n");
 }
 

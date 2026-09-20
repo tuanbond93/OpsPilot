@@ -557,7 +557,7 @@ export async function POST(request: NextRequest) {
         if (!threadId && chat.type !== "private") {
           return NextResponse.json({ error: "TOPIC_MAPPING_MISSING", message: "Operational warehouse replies require a valid message_thread_id" }, { status: 400 });
         }
-        const reply = result.status === "INVALID_DETAIL" ? "Facts chưa đúng định dạng. Reply lại: KG=<số>; ETA=<ISO-8601>; TYPE=B2B|ECOM|MIXED." : result.status === "HUMAN_INVESTIGATION_REQUIRED" ? "Đã ghi nhận ngoại lệ/facts; OpsPilot đang phân tích xử lý." : result.status === "DECISION_READY" ? "Đã ghi nhận facts và tạo shadow decision để Owner review." : "Facts đã được ghi nhận trước đó.";
+        const reply = result.status === "HUMAN_INVESTIGATION_REQUIRED" ? "Đã ghi nhận bối cảnh vận hành. ETA vẫn chưa có nguồn xác thực; OpsPilot không tự thực thi hành động." : result.status === "DECISION_READY" ? "Đã ghi nhận bối cảnh vận hành để Owner review; OpsPilot chưa tự thực thi hành động." : "Bối cảnh vận hành đã được ghi nhận trước đó.";
         return NextResponse.json({ method: "sendMessage", chat_id: chat.id, reply_to_message_id: message.message_id, ...(threadId ? { message_thread_id: threadId } : {}), text: reply });
       }
     } catch (error) { return NextResponse.json({ error: "NEAR_TERM_CAPACITY_FACT_RESUME_FAILED", message: error instanceof Error ? error.message : String(error) }, { status: 503 }); }

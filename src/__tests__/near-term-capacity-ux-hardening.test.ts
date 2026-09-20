@@ -187,10 +187,9 @@ describe("OpsPilot Level C — Decision UX Hardening", () => {
 
     it("2. Edited message displays chosen response in clear Vietnamese text for all answers", () => {
       const answers: NearTermFactAnswer[] = [
-        "CONFIRMED_ETA",
-        "UNCERTAIN_ETA",
-        "NO_SIGNIFICANT_INCOMING",
-        "UNKNOWN",
+        "ACTION_PLANNED",
+        "EXCEPTION_REPORTED",
+        "ASSISTANCE_REQUESTED",
       ];
 
       for (const ans of answers) {

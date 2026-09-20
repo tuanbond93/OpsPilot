@@ -818,7 +818,7 @@ export default function ExecutiveDashboardPage() {
                 <th className="py-3 px-2">Tín hiệu quan sát được</th>
                 <th className="py-3 px-2">Mức ưu tiên</th>
                 <th className="py-3 px-2">Xu Hướng</th>
-                <th className="py-3 px-2">Số đơn</th>
+                <th className="py-3 px-2">Đơn trong case</th>
                 <th className="py-3 px-2">Tuổi đơn lớn nhất</th>
                 <th className="py-3 px-2">Theo dõi sau phát hiện</th>
                 <th className="py-3 px-2">Khuyến nghị</th>
@@ -839,7 +839,7 @@ export default function ExecutiveDashboardPage() {
                     </span>
                     {inc.previousAffectedOrderCount !== null && inc.previousAffectedOrderCount !== undefined ? <span className="mt-1 block text-[10px] leading-4 text-slate-500">{inc.previousAffectedOrderCount} → {inc.affectedOrderCount} đơn<br/>{inc.previousSnapshotAt ? new Date(inc.previousSnapshotAt).toLocaleString("vi-VN") : "snapshot trước"} → {inc.latestSnapshotAt ? new Date(inc.latestSnapshotAt).toLocaleString("vi-VN") : "hiện tại"}</span> : <span className="mt-1 block max-w-28 text-[10px] leading-4 text-slate-500">Cần ít nhất 2 snapshot để so sánh</span>}
                   </td>
-                  <td className="py-3 px-2 font-mono font-bold">{inc.affectedOrderCount > 0 ? `${inc.affectedOrderCount} đơn` : "Chưa có dữ liệu"}</td>
+                  <td className="py-3 px-2 font-mono font-bold" title="Số đơn bị ảnh hưởng bởi case này; không phải tổng tồn hiện tại của kho.">{inc.affectedOrderCount > 0 ? `${inc.affectedOrderCount} đơn` : "Chưa có dữ liệu"}</td>
                   <td className="py-3 px-2 font-mono">{inc.maximumAgeHours !== null && inc.maximumAgeHours !== undefined ? `${inc.maximumAgeHours} giờ` : "Chưa có dữ liệu"}</td>
                   <td className="py-3 px-2 font-mono text-purple-400">
                     <span title={`${statusGuidance(inc.followupState).owner}: ${statusGuidance(inc.followupState).next}`}>{translateStatus(inc.followupState)}</span>
