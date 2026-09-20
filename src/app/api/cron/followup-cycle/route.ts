@@ -12,6 +12,7 @@ import { logger } from "@/observability/logger";
 import { claimCheckpointRecovery, finishCheckpointRecovery, queueCheckpointRecovery } from "@/services/checkpoint-recovery";
 import { queuePhase2CheckpointWork } from "@/services/phase2-checkpoint-work";
 import { isTransientInfrastructureError, retryTransientInfrastructure } from "@/services/transient-infrastructure";
+import { runNaturalShadowObserverSafely } from "@/services/inbound-natural-shadow-observer";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
@@ -66,7 +67,8 @@ function attention(checkpointAt: string, failureStage: string, failureClass: str
  * source snapshot that did not change never advances the reminder ladder.
  */
 async function runFollowupCycle(request: NextRequest) {
-  if (!isCronAuthorized(request)) {
+  const trustedNaturalScheduler = isCronAuthorized(request);
+  if (!trustedNaturalScheduler) {
     const access = await authorizeApiRequest(request, "MANAGE_SYSTEM", { limit: 3, windowMs: 60_000 });
     if (!access.ok) return access.response;
   }
@@ -115,12 +117,16 @@ async function runFollowupCycle(request: NextRequest) {
     return NextResponse.json({ ok: false, stage: "SYNC", sync }, { status });
   }
 
+  const naturalShadow = !recovery && trustedNaturalScheduler && sync.syncRunId
+    ? await runNaturalShadowObserverSafely(client, { checkpointAt, syncRunId: sync.syncRunId, trustedScheduler: true })
+    : { status: "FAILED" as const, reason: "NATURAL_SHADOW_NOT_NATURAL_SCHEDULER_PATH", warehousesEvaluated: 0 as const };
+
   if (sync.skipped && sync.skipReason === "CHECKPOINT_ALREADY_COMPLETED") {
     const auditPersisted = await writeCheckpointAudit({ checkpointAt, startedAt: sync.startedAt, completedAt: sync.completedAt, syncRunId: sync.syncRunId, executionStatus: "SUCCESS", httpStatus: 200, exclusionCounts: { CHECKPOINT_ALREADY_COMPLETED: 1 } });
     if (!auditPersisted) return failPrimaryAudit(client, checkpointAt, recovery, sync.syncRunId);
     await queuePhase2CheckpointWork(client, { checkpointAt, syncRunId: sync.syncRunId });
     if (recovery) await finishCheckpointRecovery(client, checkpointAt, recovery.recoveryToken, { status: "CONFIRMED", syncRunId: sync.syncRunId });
-    return NextResponse.json({ ok: true, stage: "RECOVERY_ALREADY_COMPLETED", sync: { syncRunId: sync.syncRunId } });
+    return NextResponse.json({ ok: true, stage: "RECOVERY_ALREADY_COMPLETED", sync: { syncRunId: sync.syncRunId }, naturalShadow });
   }
 
   // No new source evidence means the engine must not evaluate or remind again.
@@ -162,6 +168,7 @@ async function runFollowupCycle(request: NextRequest) {
       rillnetReviews,
       statusUpdates,
       errors: { rillnetReviewError, statusUpdateError },
+      naturalShadow,
     });
   }
 
@@ -217,6 +224,7 @@ async function runFollowupCycle(request: NextRequest) {
     telegram,
     statusUpdates,
     phase2: { status: "PENDING", syncRunId: sync.syncRunId },
+    naturalShadow,
   });
 }
 
