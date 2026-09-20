@@ -10,6 +10,7 @@ export class SupabaseInboundOrderObservationRepository implements IInboundOrderO
       population_status: "STARTED",
       persisted_observation_count: 0,
       population_completed_at: null,
+      source_freshness: input.source_freshness,
       failure_reason: null,
       updated_at: new Date().toISOString(),
     }, { onConflict: "sync_run_id,source_system" });

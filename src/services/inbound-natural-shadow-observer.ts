@@ -75,15 +75,22 @@ function toCandidate(row: SourceRow): NormalizedInboundCandidate {
 async function readCompletePopulation(client: SupabaseClient, syncRunId: string, checkpointAt: string) {
   const { data: syncRun, error: syncError } = await client
     .from("sync_runs")
-    .select("id, status, source_updated_at, checkpoint_at, started_at")
+    .select("id, checkpoint_at")
     .eq("id", syncRunId)
-    .eq("status", "success")
     .maybeSingle();
-  if (syncError || !syncRun) throw new Error("NATURAL_SHADOW_SYNC_RUN_NOT_SUCCESS");
+  if (
+    syncError ||
+    !syncRun ||
+    !syncRun.checkpoint_at ||
+    Number.isNaN(Date.parse(syncRun.checkpoint_at)) ||
+    Date.parse(syncRun.checkpoint_at) !== Date.parse(checkpointAt)
+  ) {
+    throw new Error("NATURAL_SHADOW_SYNC_RUN_IDENTITY_INVALID");
+  }
 
   const { data: manifest, error: manifestError } = await client
     .from("inbound_population_manifests")
-    .select("sync_run_id, source_system, population_status, expected_observation_count, persisted_observation_count, duplicate_conflict_count")
+    .select("sync_run_id, source_system, population_status, expected_observation_count, persisted_observation_count, duplicate_conflict_count, population_completed_at, source_freshness")
     .eq("sync_run_id", syncRunId)
     .eq("source_system", "RILLNET")
     .maybeSingle();
@@ -91,14 +98,16 @@ async function readCompletePopulation(client: SupabaseClient, syncRunId: string,
     manifestError ||
     !manifest ||
     manifest.population_status !== "COMPLETE" ||
+    !manifest.population_completed_at ||
+    !manifest.source_freshness ||
     manifest.expected_observation_count !== manifest.persisted_observation_count ||
     manifest.duplicate_conflict_count !== 0
   ) {
     throw new Error("NATURAL_SHADOW_INBOUND_MANIFEST_NOT_COMPLETE");
   }
 
-  const sourceFreshness = syncRun.source_updated_at || syncRun.checkpoint_at || syncRun.started_at;
-  if (!sourceFreshness || new Date(sourceFreshness).getTime() > new Date(checkpointAt).getTime()) {
+  const sourceFreshness = manifest.source_freshness;
+  if (new Date(sourceFreshness).getTime() > new Date(checkpointAt).getTime()) {
     throw new Error("NATURAL_SHADOW_FUTURE_SOURCE_DATA");
   }
 

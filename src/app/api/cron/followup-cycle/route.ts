@@ -84,7 +84,17 @@ async function runFollowupCycle(request: NextRequest) {
     const claimed = await claimCheckpointRecovery(client, checkpointAt, recovery.recoveryToken);
     if (!claimed) return NextResponse.json({ ok: true, stage: "RECOVERY_ALREADY_CLAIMED" }, { status: 200 });
   }
-  const sync = await syncRillnet({ checkpointAt });
+  let naturalShadow: Awaited<ReturnType<typeof runNaturalShadowObserverSafely>> = {
+    status: "FAILED", reason: "NATURAL_SHADOW_NOT_NATURAL_SCHEDULER_PATH", warehousesEvaluated: 0,
+  };
+  const sync = await syncRillnet({
+    checkpointAt,
+    onSourceCoreComplete: !recovery && trustedNaturalScheduler
+      ? async ({ syncRunId }) => {
+          naturalShadow = await runNaturalShadowObserverSafely(client, { checkpointAt, syncRunId, trustedScheduler: true });
+        }
+      : undefined,
+  });
   if (!sync.ok) {
     const status = sync.error?.code === "SYNC_ALREADY_RUNNING" ? 409 : 500;
     const auditPersisted = await writeCheckpointAudit({ checkpointAt, startedAt: sync.startedAt, completedAt: sync.completedAt, syncRunId: sync.syncRunId, executionStatus: "FAILED", httpStatus: status, errorCode: sync.error?.code, errorMessageSafe: sync.error?.message });
@@ -116,10 +126,6 @@ async function runFollowupCycle(request: NextRequest) {
     }
     return NextResponse.json({ ok: false, stage: "SYNC", sync }, { status });
   }
-
-  const naturalShadow = !recovery && trustedNaturalScheduler && sync.syncRunId
-    ? await runNaturalShadowObserverSafely(client, { checkpointAt, syncRunId: sync.syncRunId, trustedScheduler: true })
-    : { status: "FAILED" as const, reason: "NATURAL_SHADOW_NOT_NATURAL_SCHEDULER_PATH", warehousesEvaluated: 0 as const };
 
   if (sync.skipped && sync.skipReason === "CHECKPOINT_ALREADY_COMPLETED") {
     const auditPersisted = await writeCheckpointAudit({ checkpointAt, startedAt: sync.startedAt, completedAt: sync.completedAt, syncRunId: sync.syncRunId, executionStatus: "SUCCESS", httpStatus: 200, exclusionCounts: { CHECKPOINT_ALREADY_COMPLETED: 1 } });

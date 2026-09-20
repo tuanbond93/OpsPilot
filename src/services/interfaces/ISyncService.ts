@@ -7,6 +7,13 @@ export interface SyncOptions {
   forceReprocessSource?: boolean;
   /** Present only for a governed natural checkpoint or its single recovery. */
   checkpointAt?: string;
+  /** Invoked after the exact run's source population is COMPLETE and reconciled. */
+  onSourceCoreComplete?: (context: {
+    syncRunId: string;
+    checkpointAt?: string;
+    sourceFreshness: string;
+    populationCompletedAt: string;
+  }) => Promise<void>;
 }
 
 export interface ISyncService {

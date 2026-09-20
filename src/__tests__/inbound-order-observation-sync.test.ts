@@ -43,16 +43,31 @@ describe("complete inbound observation population", () => {
       ],
     } as any);
 
+    const syncRuns = new MockSyncRunRepository();
+    const sourceCore: any[] = [];
     const service = new SyncService(
-      new MockSyncRunRepository(), null, new MockIncidentRepository(), null, null, null, null, null, null, null, null, null, fullPopulationRepo,
+      syncRuns, null, new MockIncidentRepository(), null, null, null, null, null, null, null, null, null, fullPopulationRepo,
     );
-    const result = await service.runSync({ forceReprocessSource: true });
+    const result = await service.runSync({
+      forceReprocessSource: true,
+      checkpointAt: "2026-09-19T04:00:00.000Z",
+      onSourceCoreComplete: async (context) => {
+        sourceCore.push({ context, status: (await syncRuns.getLatestSyncRun())?.status });
+      },
+    });
 
     expect(result.ok).toBe(true);
     expect(fullPopulationRepo.insertBatch).toHaveBeenCalledOnce();
     expect(rows.map((row) => row.order_code)).toEqual(["NON_INCIDENT", "NON_INCIDENT_PICKED", "INCIDENT_CANDIDATE"]);
     expect(rows.every((row) => row.source_system === "RILLNET")).toBe(true);
     expect(manifests).toEqual(["STARTED", "COMPLETE"]);
+    expect(sourceCore).toEqual([expect.objectContaining({
+      status: "running",
+      context: expect.objectContaining({ sourceFreshness: "2026-09-19T03:00:00.000Z" }),
+    })]);
+    expect(fullPopulationRepo.completePopulation).toHaveBeenCalledWith(expect.objectContaining({
+      source_freshness: "2026-09-19T03:00:00.000Z",
+    }));
     expect(rows.every((row) => "customer_name" in row === false)).toBe(true);
   });
 

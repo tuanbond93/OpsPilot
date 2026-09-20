@@ -18,6 +18,8 @@ export interface InboundPopulationManifestInput {
   expected_observation_count: number;
   duplicate_identical_count: number;
   duplicate_conflict_count: number;
+  /** The Rillnet snapshot updatedAt value; never a local completion timestamp. */
+  source_freshness: string | null;
 }
 
 export interface IInboundOrderObservationRepository {

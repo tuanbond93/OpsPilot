@@ -46,6 +46,12 @@ function safeErrorMessage(error: unknown): string {
   return message.replace(/https?:\/\/[^\s]+/g, "[URL REDACTED]").slice(0, 500);
 }
 
+/** Rillnet's snapshot metadata timestamp, never a local wall-clock substitute. */
+function governedSourceFreshness(value: unknown): string | null {
+  if (typeof value !== "string" || !value.trim() || Number.isNaN(Date.parse(value))) return null;
+  return value;
+}
+
 /**
  * Establishes the governed per-run observation identity before any incident
  * selection happens. Rillnet supplies only a snapshot-level timestamp, not a
@@ -532,6 +538,21 @@ export class SyncService implements ISyncService {
         }
       };
 
+      const notifySourceCoreComplete = async (populationCompletedAt: string, sourceFreshness: string | null) => {
+        if (!_options?.onSourceCoreComplete || !sourceFreshness) return;
+        try {
+          await _options.onSourceCoreComplete({
+            syncRunId,
+            checkpointAt: _options.checkpointAt,
+            sourceFreshness,
+            populationCompletedAt,
+          });
+        } catch (error) {
+          // Shadow observation is intentionally isolated from the legacy sync.
+          logger.info({ component: "SyncService", operation: "sourceCoreObserver", status: "error", message: "Source-core observer failed without blocking sync.", metadata: { error: safeErrorMessage(error) } });
+        }
+      };
+
       try {
         // Phase 2: FETCHING_SNAPSHOT
         const pFetch = "FETCHING_SNAPSHOT" as SyncPhase;
@@ -663,6 +684,7 @@ export class SyncService implements ISyncService {
 
         // Even a zero-order snapshot needs an explicit COMPLETE manifest so
         // the reader can distinguish a governed zero from an absent source.
+        const manifestSourceFreshness = governedSourceFreshness(sourceUpdatedAt);
         if (!snapshotResult.orders || snapshotResult.orders.length === 0) {
           if (!this.inboundOrderObservationRepo) {
             // In-memory legacy runs retain their existing behavior but cannot
@@ -676,16 +698,19 @@ export class SyncService implements ISyncService {
             expected_observation_count: 0,
             duplicate_identical_count: 0,
             duplicate_conflict_count: 0,
+            source_freshness: manifestSourceFreshness,
           };
             try {
               await this.inboundOrderObservationRepo.startPopulation(emptyManifest);
               const persistedCount = await this.inboundOrderObservationRepo.countPersisted(syncRunId, INBOUND_OBSERVATION_SOURCE);
               if (persistedCount !== 0) throw new Error(`INBOUND_POPULATION_COUNT_MISMATCH: expected 0, found ${persistedCount}`);
+              const populationCompletedAt = new Date().toISOString();
               await this.inboundOrderObservationRepo.completePopulation({
                 ...emptyManifest,
                 persisted_observation_count: 0,
-                population_completed_at: new Date().toISOString(),
+                population_completed_at: populationCompletedAt,
               });
+              await notifySourceCoreComplete(populationCompletedAt, manifestSourceFreshness);
             } catch (error) {
               const reason = safeErrorMessage(error);
               await this.inboundOrderObservationRepo.failPopulation({ sync_run_id: syncRunId, source_system: INBOUND_OBSERVATION_SOURCE, failure_reason: reason });
@@ -719,6 +744,7 @@ export class SyncService implements ISyncService {
               expected_observation_count: population.rows.length,
               duplicate_identical_count: population.duplicateIdenticalCount,
               duplicate_conflict_count: population.duplicateConflictCount,
+              source_freshness: manifestSourceFreshness,
             };
             await this.inboundOrderObservationRepo.startPopulation(manifestInput);
             if (population.duplicateConflictCount > 0) {
@@ -729,11 +755,13 @@ export class SyncService implements ISyncService {
             if (persistedCount !== manifestInput.expected_observation_count) {
               throw new Error(`INBOUND_POPULATION_COUNT_MISMATCH: expected ${manifestInput.expected_observation_count}, found ${persistedCount}`);
             }
+              const populationCompletedAt = new Date().toISOString();
               await this.inboundOrderObservationRepo.completePopulation({
                 ...manifestInput,
                 persisted_observation_count: persistedCount,
-                population_completed_at: new Date().toISOString(),
+                population_completed_at: populationCompletedAt,
               });
+              await notifySourceCoreComplete(populationCompletedAt, manifestSourceFreshness);
             } catch (error) {
               const reason = safeErrorMessage(error);
               try {
