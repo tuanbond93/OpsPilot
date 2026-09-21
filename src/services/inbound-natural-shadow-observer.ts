@@ -13,6 +13,11 @@ import {
   unexpectedNaturalShadowRpcResultDiagnosis,
   type NaturalShadowRpcDiagnosis,
 } from "@/services/inbound-natural-shadow-rpc-diagnostics";
+import {
+  buildNaturalShadowConstraintSnapshot,
+  evaluateNaturalShadowChecks,
+  type LocalCheckPreflight,
+} from "@/services/inbound-natural-shadow-constraint-diagnostics";
 
 export const NATURAL_SHADOW_TRIGGER_SOURCE = "opspilot-followup-cycle" as const;
 
@@ -58,7 +63,7 @@ type ShadowWarehouseEvidence = {
 
 export type NaturalShadowObserverResult =
   | { status: "SUCCESS_INSERTED" | "SUCCESS_ALREADY_OBSERVED"; checkpointId: string | null; warehousesEvaluated: 3 }
-  | { status: "FAILED"; reason: string; warehousesEvaluated: 0 | 3; diagnosis?: NaturalShadowRpcDiagnosis };
+  | { status: "FAILED"; reason: string; warehousesEvaluated: 0 | 3; diagnosis?: NaturalShadowRpcDiagnosis; preflight?: LocalCheckPreflight };
 
 type NaturalShadowStage =
   | "OBSERVER_ENTER"
@@ -108,11 +113,12 @@ type StagedNaturalShadowError = Error & {
   naturalShadowStage?: NaturalShadowStage;
   naturalShadowErrorCode?: string;
   naturalShadowDiagnosis?: NaturalShadowRpcDiagnosis;
+  naturalShadowPreflight?: LocalCheckPreflight;
 };
 
-function stagedError(stage: NaturalShadowStage, error: unknown, diagnosis?: NaturalShadowRpcDiagnosis): StagedNaturalShadowError {
+function stagedError(stage: NaturalShadowStage, error: unknown, diagnosis?: NaturalShadowRpcDiagnosis, preflight?: LocalCheckPreflight): StagedNaturalShadowError {
   const wrapped = error instanceof Error ? error : new Error(String(error));
-  Object.assign(wrapped, { naturalShadowStage: stage, naturalShadowErrorCode: errorCode(error), ...(diagnosis ? { naturalShadowDiagnosis: diagnosis } : {}) });
+  Object.assign(wrapped, { naturalShadowStage: stage, naturalShadowErrorCode: errorCode(error), ...(diagnosis ? { naturalShadowDiagnosis: diagnosis } : {}), ...(preflight ? { naturalShadowPreflight: preflight } : {}) });
   return wrapped;
 }
 
@@ -284,41 +290,45 @@ export async function runNaturalShadowObserver(
     return buildWarehouseEvidence(warehouse, candidates, { chatId: route.chatId, threadId: route.threadId }, sourceFreshness);
   }), { warehouse_count: NATURAL_SHADOW_PILOT_WAREHOUSES.length });
 
+  const bundle = {
+    evidence_type: "INBOUND_EVIDENCE_V2_NATURAL_SHADOW",
+    observation_type: "NATURAL",
+    checkpoint_at_utc: input.checkpointAt,
+    checkpoint_at_local: new Date(input.checkpointAt).toLocaleString("sv-SE", { timeZone: "Asia/Ho_Chi_Minh", hour12: false }).replace(" ", "T") + "+07:00",
+    timezone: "Asia/Ho_Chi_Minh",
+    trigger_source: NATURAL_SHADOW_TRIGGER_SOURCE,
+    authoritative_sync_run_id: input.syncRunId,
+    expected_population_count: manifest.expected_observation_count,
+    persisted_population_count: manifest.persisted_observation_count,
+    conflict_count: manifest.duplicate_conflict_count,
+    source_freshness: sourceFreshness,
+    shadow_status: "COMPLETE",
+    expected_warehouse_count: 3,
+    persisted_warehouse_count: 3,
+    v2_telegram_sent: false,
+    production_flow_changed: false,
+    warehouses,
+  };
+  const snapshot = buildNaturalShadowConstraintSnapshot({ ...bundle, manifest_status: "COMPLETE" });
+  const preflight = evaluateNaturalShadowChecks(snapshot);
+  try {
+    logger.info({ event: "INBOUND_NATURAL_SHADOW_CONSTRAINT_SNAPSHOT", sync_run_id: input.syncRunId, checkpoint_at: input.checkpointAt, ...snapshot, ...preflight });
+  } catch { /* Diagnostic telemetry cannot change observer behavior. */ }
   telemetry(telemetryState, "RPC_ATTEMPT", "START", { warehouse_count: warehouses.length });
   const rpcStartedAt = Date.now();
   let data: any;
   let error: any;
   try {
-    ({ data, error } = await client.rpc("persist_inbound_evidence_v2_natural_shadow_bundle", {
-    p_bundle: {
-      evidence_type: "INBOUND_EVIDENCE_V2_NATURAL_SHADOW",
-      observation_type: "NATURAL",
-      checkpoint_at_utc: input.checkpointAt,
-      checkpoint_at_local: new Date(input.checkpointAt).toLocaleString("sv-SE", { timeZone: "Asia/Ho_Chi_Minh", hour12: false }).replace(" ", "T") + "+07:00",
-      timezone: "Asia/Ho_Chi_Minh",
-      trigger_source: NATURAL_SHADOW_TRIGGER_SOURCE,
-      authoritative_sync_run_id: input.syncRunId,
-      expected_population_count: manifest.expected_observation_count,
-      persisted_population_count: manifest.persisted_observation_count,
-      conflict_count: manifest.duplicate_conflict_count,
-      source_freshness: sourceFreshness,
-      shadow_status: "COMPLETE",
-      expected_warehouse_count: 3,
-      persisted_warehouse_count: 3,
-      v2_telegram_sent: false,
-      production_flow_changed: false,
-      warehouses,
-    },
-    }));
+    ({ data, error } = await client.rpc("persist_inbound_evidence_v2_natural_shadow_bundle", { p_bundle: bundle }));
   } catch (caught) {
     const diagnosis = diagnoseNaturalShadowRpcError(caught);
-    telemetry(telemetryState, "RPC_RESULT", "FAIL", { duration_ms: Date.now() - rpcStartedAt, ...diagnosis });
-    throw stagedError("RPC_RESULT", caught, diagnosis);
+    telemetry(telemetryState, "RPC_RESULT", "FAIL", { duration_ms: Date.now() - rpcStartedAt, ...diagnosis, ...preflight });
+    throw stagedError("RPC_RESULT", caught, diagnosis, preflight);
   }
   if (error) {
     const diagnosis = diagnoseNaturalShadowRpcError(error);
-    telemetry(telemetryState, "RPC_RESULT", "FAIL", { duration_ms: Date.now() - rpcStartedAt, ...diagnosis });
-    return { status: "FAILED", reason: naturalShadowSafeFailureReason(diagnosis), warehousesEvaluated: 3, diagnosis };
+    telemetry(telemetryState, "RPC_RESULT", "FAIL", { duration_ms: Date.now() - rpcStartedAt, ...diagnosis, ...preflight });
+    return { status: "FAILED", reason: naturalShadowSafeFailureReason(diagnosis), warehousesEvaluated: 3, diagnosis, preflight };
   }
   const rpcResult = data?.status === "ALREADY_OBSERVED" ? "ALREADY_OBSERVED" : data?.status === "OBSERVED" ? "INSERTED" : null;
   if (rpcResult) {
@@ -328,8 +338,8 @@ export async function runNaturalShadowObserver(
     return rpcResult === "ALREADY_OBSERVED" ? { status: "SUCCESS_ALREADY_OBSERVED", checkpointId: data.checkpoint_id || null, warehousesEvaluated: 3 } : { status: "SUCCESS_INSERTED", checkpointId: data.checkpoint_id || null, warehousesEvaluated: 3 };
   }
   const diagnosis = unexpectedNaturalShadowRpcResultDiagnosis();
-  telemetry(telemetryState, "RPC_RESULT", "FAIL", { duration_ms: Date.now() - rpcStartedAt, ...diagnosis });
-  return { status: "FAILED", reason: "NATURAL_SHADOW_RPC_UNEXPECTED_RESULT", warehousesEvaluated: 3, diagnosis };
+  telemetry(telemetryState, "RPC_RESULT", "FAIL", { duration_ms: Date.now() - rpcStartedAt, ...diagnosis, ...preflight });
+  return { status: "FAILED", reason: "NATURAL_SHADOW_RPC_UNEXPECTED_RESULT", warehousesEvaluated: 3, diagnosis, preflight };
 }
 
 export async function runNaturalShadowObserverSafely(
@@ -341,12 +351,13 @@ export async function runNaturalShadowObserverSafely(
   try {
     const result = await runNaturalShadowObserver(client, { ...input, trustedScheduler: true }, telemetryState);
     if (result.status === "FAILED" && result.diagnosis) {
-      try { logger.info({ event: "INBOUND_NATURAL_SHADOW_FAILURE", sync_run_id: input.syncRunId, checkpoint_at: input.checkpointAt, failed_stage: "RPC_RESULT", ...result.diagnosis }); } catch { /* best-effort */ }
+      try { logger.info({ event: "INBOUND_NATURAL_SHADOW_FAILURE", sync_run_id: input.syncRunId, checkpoint_at: input.checkpointAt, failed_stage: "RPC_RESULT", ...result.diagnosis, ...(result.preflight || {}) }); } catch { /* best-effort */ }
     }
     return result;
   } catch (error) {
     const staged = error as StagedNaturalShadowError;
     const diagnosis = staged.naturalShadowDiagnosis;
+    const preflight = staged.naturalShadowPreflight;
     try {
       logger.info({
         event: "INBOUND_NATURAL_SHADOW_FAILURE",
@@ -354,6 +365,7 @@ export async function runNaturalShadowObserverSafely(
         checkpoint_at: input.checkpointAt,
         failed_stage: telemetryState.currentStage,
         ...(diagnosis || { error_class: error instanceof Error ? error.name : "NonError", sanitized_error_code: errorCode(error) }),
+        ...(preflight || {}),
       });
     } catch { /* best-effort */ }
     return diagnosis

@@ -2,10 +2,18 @@ import { describe, expect, it } from "vitest";
 import { diagnoseNaturalShadowRpcError, naturalShadowSafeFailureReason } from "@/services/inbound-natural-shadow-rpc-diagnostics";
 
 describe("Natural Shadow RPC diagnostics", () => {
-  it("preserves PostgreSQL integrity code and a safe constraint identifier", () => {
-    const diagnosis = diagnoseNaturalShadowRpcError({ name: "SupabaseError", code: "23503", constraint: "inbound_evidence_sync_run_fkey", message: "sensitive order ORD-123" });
-    expect(diagnosis).toMatchObject({ error_code: "23503", error_class: "SupabaseError", constraint_identifier: "inbound_evidence_sync_run_fkey", error_category: "POSTGRES_INTEGRITY_CONSTRAINT", message_category: "MESSAGE_REDACTED" });
+  it("extracts an allowlisted CHECK identifier from provider text without retaining it", () => {
+    const constraint = "inbound_evidence_v2_natural_shadow_warehouses_pipeline_orders_check";
+    const diagnosis = diagnoseNaturalShadowRpcError({ name: "SupabaseError", code: "23514", message: `new row violates check constraint \"${constraint}\" for order ORD-123`, details: "relation \"inbound_evidence_v2_natural_shadow_warehouses\"" });
+    expect(diagnosis).toMatchObject({ error_code: "23514", error_class: "SupabaseError", constraint_identifier: constraint, constraint_relation: "inbound_evidence_v2_natural_shadow_warehouses", error_category: "POSTGRES_INTEGRITY_CONSTRAINT", message_category: "MESSAGE_REDACTED" });
     expect(JSON.stringify(diagnosis)).not.toContain("ORD-123");
+  });
+
+  it("rejects unknown and malicious provider identifiers", () => {
+    const diagnosis = diagnoseNaturalShadowRpcError({ code: "23514", message: "violates check constraint \"drop_all_tables\"", details: "relation \"customers\"" });
+    expect(diagnosis).toMatchObject({ constraint_identifier: "NOT_AVAILABLE", constraint_relation: "NOT_AVAILABLE" });
+    expect(JSON.stringify(diagnosis)).not.toContain("drop_all_tables");
+    expect(JSON.stringify(diagnosis)).not.toContain("customers");
   });
 
   it("preserves P0001 and a governed RPC exception identifier", () => {

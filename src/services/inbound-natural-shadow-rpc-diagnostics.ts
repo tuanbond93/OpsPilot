@@ -8,14 +8,16 @@ const GOVERNED_RPC_EXCEPTION_IDENTIFIERS = new Set([
   "INBOUND_EVIDENCE_V2_NATURAL_SHADOW_COUNT_MISMATCH",
 ]);
 
+import { extractNaturalShadowConstraintError } from "@/services/inbound-natural-shadow-constraint-diagnostics";
+
 type ErrorFields = Record<string, unknown>;
 
 export type NaturalShadowRpcDiagnosis = {
   provider: "supabase";
   error_class: string;
   error_code?: string;
-  constraint_identifier?: string;
-  function_identifier?: string;
+  constraint_identifier: string;
+  constraint_relation: string;
   error_category: "RPC_VALIDATION_EXCEPTION" | "POSTGRES_INTEGRITY_CONSTRAINT" | "POSTGRES_INSUFFICIENT_PRIVILEGE" | "POSTGREST_ERROR" | "RPC_ERROR";
   message_category: "GOVERNED_RPC_EXCEPTION" | "MESSAGE_REDACTED" | "MESSAGE_UNAVAILABLE";
   detail_category: "GOVERNED_RPC_EXCEPTION" | "DETAIL_REDACTED" | "DETAIL_UNAVAILABLE";
@@ -74,15 +76,13 @@ export function diagnoseNaturalShadowRpcError(error: unknown): NaturalShadowRpcD
   const exceptionIdentifier = governedIdentifier(message) || governedIdentifier(detail) || governedIdentifier(hint);
   const errorCode = safeCode(fields.code);
   const errorClass = safeIdentifier(fields.name) || (error instanceof Error && safeIdentifier(error.constructor?.name)) || "SupabaseError";
-  const constraintIdentifier = safeIdentifier(fields.constraint ?? fields.constraint_name);
-  const functionIdentifier = safeIdentifier(fields.function ?? fields.function_name);
+  const constraintDiagnosis = extractNaturalShadowConstraintError(fields);
 
   return {
     provider: "supabase",
     error_class: errorClass,
     ...(errorCode ? { error_code: errorCode } : {}),
-    ...(constraintIdentifier ? { constraint_identifier: constraintIdentifier } : {}),
-    ...(functionIdentifier ? { function_identifier: functionIdentifier } : {}),
+    ...constraintDiagnosis,
     error_category: classifyCode(errorCode, exceptionIdentifier),
     message_category: messageCategory(message, exceptionIdentifier),
     detail_category: detailCategory(detail, exceptionIdentifier),
@@ -99,6 +99,8 @@ export function unexpectedNaturalShadowRpcResultDiagnosis(): NaturalShadowRpcDia
   return {
     provider: "supabase",
     error_class: "SupabaseRpcResult",
+    constraint_identifier: "NOT_AVAILABLE",
+    constraint_relation: "NOT_AVAILABLE",
     error_category: "RPC_ERROR",
     message_category: "MESSAGE_UNAVAILABLE",
     detail_category: "DETAIL_UNAVAILABLE",

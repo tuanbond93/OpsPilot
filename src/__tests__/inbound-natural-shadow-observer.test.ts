@@ -63,11 +63,13 @@ describe("Natural Shadow observer contract", () => {
     expect(events).toEqual(expect.arrayContaining([
       expect.objectContaining({ event: "INBOUND_NATURAL_SHADOW_STAGE", stage: "OBSERVER_ENTER", status: "PASS" }),
       expect.objectContaining({ event: "INBOUND_NATURAL_SHADOW_STAGE", stage: "RPC_ATTEMPT", status: "START" }),
+      expect.objectContaining({ event: "INBOUND_NATURAL_SHADOW_CONSTRAINT_SNAPSHOT", local_check_preflight: "PASS" }),
       expect.objectContaining({ event: "INBOUND_NATURAL_SHADOW_STAGE", stage: "RPC_RESULT", status: "PASS", result: "INSERTED" }),
       expect.objectContaining({ event: "INBOUND_NATURAL_SHADOW_COMPLETE", warehouse_count: 3, rpc_result: "INSERTED" }),
     ]));
     expect(JSON.stringify(events)).not.toContain("private-order-code");
     expect(JSON.stringify(events)).not.toContain("p_bundle");
+    expect(JSON.stringify(events)).not.toContain("Kho Giao Hàng Nặng");
     log.mockRestore();
   });
 
@@ -100,6 +102,7 @@ describe("Natural Shadow observer contract", () => {
     expect(events).not.toContain("order_id=private");
     expect(events).not.toContain("customer private");
     expect(events).not.toContain("p_bundle");
+    expect(events).toContain("local_check_preflight");
     log.mockRestore();
   });
 });
