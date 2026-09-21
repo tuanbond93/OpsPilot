@@ -86,4 +86,20 @@ describe("Natural Shadow observer contract", () => {
     expect(log).toHaveBeenCalledWith(expect.objectContaining({ event: "INBOUND_NATURAL_SHADOW_FAILURE", failed_stage: "RPC_RESULT" }));
     log.mockRestore();
   });
+
+  it("emits structured RPC diagnostics without a raw database dump", async () => {
+    const log = vi.spyOn(logger, "info").mockImplementation(() => undefined as any);
+    const result = await runNaturalShadowObserverSafely(observerClient({
+      rpc: async () => ({ data: null, error: { name: "SupabaseError", code: "P0001", message: "INBOUND_EVIDENCE_V2_AUTHORITATIVE_MANIFEST_INVALID", details: "order_id=private", hint: "customer private" } }),
+    }), { checkpointAt, syncRunId: "run", trustedScheduler: true });
+    expect(result).toMatchObject({ status: "FAILED", reason: "INBOUND_EVIDENCE_V2_AUTHORITATIVE_MANIFEST_INVALID", warehousesEvaluated: 3 });
+    const events = log.mock.calls.map(([entry]) => JSON.stringify(entry)).join("\n");
+    expect(events).toContain("INBOUND_NATURAL_SHADOW_STAGE");
+    expect(events).toContain("INBOUND_NATURAL_SHADOW_FAILURE");
+    expect(events).toContain("P0001");
+    expect(events).not.toContain("order_id=private");
+    expect(events).not.toContain("customer private");
+    expect(events).not.toContain("p_bundle");
+    log.mockRestore();
+  });
 });

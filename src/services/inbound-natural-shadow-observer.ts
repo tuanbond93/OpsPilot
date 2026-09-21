@@ -7,6 +7,12 @@ import {
 import { normalizeProvinceName } from "@/integrations/telegram/topic-router";
 import { resolveProvince } from "@/notifications/gateway/scope-resolver";
 import { logger } from "@/observability/logger";
+import {
+  diagnoseNaturalShadowRpcError,
+  naturalShadowSafeFailureReason,
+  unexpectedNaturalShadowRpcResultDiagnosis,
+  type NaturalShadowRpcDiagnosis,
+} from "@/services/inbound-natural-shadow-rpc-diagnostics";
 
 export const NATURAL_SHADOW_TRIGGER_SOURCE = "opspilot-followup-cycle" as const;
 
@@ -52,7 +58,7 @@ type ShadowWarehouseEvidence = {
 
 export type NaturalShadowObserverResult =
   | { status: "SUCCESS_INSERTED" | "SUCCESS_ALREADY_OBSERVED"; checkpointId: string | null; warehousesEvaluated: 3 }
-  | { status: "FAILED"; reason: string; warehousesEvaluated: 0 | 3 };
+  | { status: "FAILED"; reason: string; warehousesEvaluated: 0 | 3; diagnosis?: NaturalShadowRpcDiagnosis };
 
 type NaturalShadowStage =
   | "OBSERVER_ENTER"
@@ -98,9 +104,15 @@ function errorCode(error: unknown): string {
   return governed ? governed[0].toUpperCase() : "UNCLASSIFIED_ERROR";
 }
 
-function stagedError(stage: NaturalShadowStage, error: unknown): Error {
+type StagedNaturalShadowError = Error & {
+  naturalShadowStage?: NaturalShadowStage;
+  naturalShadowErrorCode?: string;
+  naturalShadowDiagnosis?: NaturalShadowRpcDiagnosis;
+};
+
+function stagedError(stage: NaturalShadowStage, error: unknown, diagnosis?: NaturalShadowRpcDiagnosis): StagedNaturalShadowError {
   const wrapped = error instanceof Error ? error : new Error(String(error));
-  Object.assign(wrapped, { naturalShadowStage: stage, naturalShadowErrorCode: errorCode(error) });
+  Object.assign(wrapped, { naturalShadowStage: stage, naturalShadowErrorCode: errorCode(error), ...(diagnosis ? { naturalShadowDiagnosis: diagnosis } : {}) });
   return wrapped;
 }
 
@@ -299,12 +311,14 @@ export async function runNaturalShadowObserver(
     },
     }));
   } catch (caught) {
-    telemetry(telemetryState, "RPC_RESULT", "FAIL", { duration_ms: Date.now() - rpcStartedAt, error_code: errorCode(caught), error_class: caught instanceof Error ? caught.name : "NonError" });
-    throw stagedError("RPC_RESULT", caught);
+    const diagnosis = diagnoseNaturalShadowRpcError(caught);
+    telemetry(telemetryState, "RPC_RESULT", "FAIL", { duration_ms: Date.now() - rpcStartedAt, ...diagnosis });
+    throw stagedError("RPC_RESULT", caught, diagnosis);
   }
   if (error) {
-    telemetry(telemetryState, "RPC_RESULT", "FAIL", { duration_ms: Date.now() - rpcStartedAt, error_code: errorCode(error), error_class: "SupabaseError" });
-    return { status: "FAILED", reason: safeReason(error), warehousesEvaluated: 3 };
+    const diagnosis = diagnoseNaturalShadowRpcError(error);
+    telemetry(telemetryState, "RPC_RESULT", "FAIL", { duration_ms: Date.now() - rpcStartedAt, ...diagnosis });
+    return { status: "FAILED", reason: naturalShadowSafeFailureReason(diagnosis), warehousesEvaluated: 3, diagnosis };
   }
   const rpcResult = data?.status === "ALREADY_OBSERVED" ? "ALREADY_OBSERVED" : data?.status === "OBSERVED" ? "INSERTED" : null;
   if (rpcResult) {
@@ -313,8 +327,9 @@ export async function runNaturalShadowObserver(
     try { logger.info({ event: "INBOUND_NATURAL_SHADOW_COMPLETE", sync_run_id: input.syncRunId, checkpoint_at: input.checkpointAt, warehouse_count: warehouses.length, rpc_result: rpcResult, duration_ms: Date.now() - telemetryState.startedAt }); } catch { /* best-effort */ }
     return rpcResult === "ALREADY_OBSERVED" ? { status: "SUCCESS_ALREADY_OBSERVED", checkpointId: data.checkpoint_id || null, warehousesEvaluated: 3 } : { status: "SUCCESS_INSERTED", checkpointId: data.checkpoint_id || null, warehousesEvaluated: 3 };
   }
-  telemetry(telemetryState, "RPC_RESULT", "FAIL", { duration_ms: Date.now() - rpcStartedAt, error_code: "NATURAL_SHADOW_RPC_UNEXPECTED_RESULT", error_class: "UnexpectedResult" });
-  return { status: "FAILED", reason: "NATURAL_SHADOW_RPC_UNEXPECTED_RESULT", warehousesEvaluated: 3 };
+  const diagnosis = unexpectedNaturalShadowRpcResultDiagnosis();
+  telemetry(telemetryState, "RPC_RESULT", "FAIL", { duration_ms: Date.now() - rpcStartedAt, ...diagnosis });
+  return { status: "FAILED", reason: "NATURAL_SHADOW_RPC_UNEXPECTED_RESULT", warehousesEvaluated: 3, diagnosis };
 }
 
 export async function runNaturalShadowObserverSafely(
@@ -324,9 +339,25 @@ export async function runNaturalShadowObserverSafely(
   if (input.trustedScheduler !== true) return { status: "FAILED", reason: "NATURAL_SHADOW_NOT_TRUSTED_SCHEDULER_PATH", warehousesEvaluated: 0 };
   const telemetryState: ObserverTelemetry = { syncRunId: input.syncRunId, checkpointAt: input.checkpointAt, currentStage: "OBSERVER_ENTER", startedAt: Date.now() };
   try {
-    return await runNaturalShadowObserver(client, { ...input, trustedScheduler: true }, telemetryState);
+    const result = await runNaturalShadowObserver(client, { ...input, trustedScheduler: true }, telemetryState);
+    if (result.status === "FAILED" && result.diagnosis) {
+      try { logger.info({ event: "INBOUND_NATURAL_SHADOW_FAILURE", sync_run_id: input.syncRunId, checkpoint_at: input.checkpointAt, failed_stage: "RPC_RESULT", ...result.diagnosis }); } catch { /* best-effort */ }
+    }
+    return result;
   } catch (error) {
-    try { logger.info({ event: "INBOUND_NATURAL_SHADOW_FAILURE", sync_run_id: input.syncRunId, checkpoint_at: input.checkpointAt, failed_stage: telemetryState.currentStage, error_class: error instanceof Error ? error.name : "NonError", sanitized_error_code: errorCode(error) }); } catch { /* best-effort */ }
-    return { status: "FAILED", reason: safeReason(error), warehousesEvaluated: 0 };
+    const staged = error as StagedNaturalShadowError;
+    const diagnosis = staged.naturalShadowDiagnosis;
+    try {
+      logger.info({
+        event: "INBOUND_NATURAL_SHADOW_FAILURE",
+        sync_run_id: input.syncRunId,
+        checkpoint_at: input.checkpointAt,
+        failed_stage: telemetryState.currentStage,
+        ...(diagnosis || { error_class: error instanceof Error ? error.name : "NonError", sanitized_error_code: errorCode(error) }),
+      });
+    } catch { /* best-effort */ }
+    return diagnosis
+      ? { status: "FAILED", reason: naturalShadowSafeFailureReason(diagnosis), warehousesEvaluated: 0, diagnosis }
+      : { status: "FAILED", reason: safeReason(error), warehousesEvaluated: 0 };
   }
 }
