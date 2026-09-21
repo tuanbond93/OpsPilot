@@ -16,6 +16,10 @@ export class MockOrderSnapshotRepository implements IOrderSnapshotRepository {
     return [...this.snapshots];
   }
 
+  async getSnapshotsForSyncRun(syncRunId: string): Promise<OrderSnapshotRow[]> {
+    return this.snapshots.filter((snapshot) => snapshot.sync_run_id === syncRunId);
+  }
+
   clear(): void {
     this.snapshots = [];
   }

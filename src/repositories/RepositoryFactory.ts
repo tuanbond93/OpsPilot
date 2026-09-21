@@ -63,6 +63,8 @@ import { MockTriageAuditRepository } from "./mock/MockTriageAuditRepository";
 import type { IPlaybookDirectiveRepository } from "./interfaces/IPlaybookDirectiveRepository";
 import { SupabasePlaybookDirectiveRepository } from "./supabase/SupabasePlaybookDirectiveRepository";
 import { MockPlaybookDirectiveRepository } from "./mock/MockPlaybookDirectiveRepository";
+import type { ISnapshotV3ShadowRepository } from "./interfaces/ISnapshotV3ShadowRepository";
+import { SupabaseSnapshotV3ShadowRepository } from "./supabase/SupabaseSnapshotV3ShadowRepository";
 
 export class RepositoryFactory {
   private static incidentRepo: IIncidentRepository | null = null;
@@ -276,6 +278,10 @@ export class RepositoryFactory {
       this.orderSnapshotRepo = new SupabaseOrderSnapshotRepository(defaultClient);
     }
     return this.orderSnapshotRepo;
+  }
+
+  static getSnapshotV3ShadowRepository(client?: SupabaseClient | null): ISnapshotV3ShadowRepository | null {
+    return client ? new SupabaseSnapshotV3ShadowRepository(client) : null;
   }
 
   static getWarehouseRepository(): IWarehouseRepository {

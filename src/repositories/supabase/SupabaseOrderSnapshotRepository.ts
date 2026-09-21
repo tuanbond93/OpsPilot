@@ -50,4 +50,13 @@ export class SupabaseOrderSnapshotRepository implements IOrderSnapshotRepository
     if (error) throw new Error(`OrderSnapshotRepository.getJourneyEvidenceForIncident failed: ${error.message}`);
     return (data || []) as OrderSnapshotRow[];
   }
+
+  async getSnapshotsForSyncRun(syncRunId: string): Promise<OrderSnapshotRow[]> {
+    const { data, error } = await this.client
+      .from("order_snapshots")
+      .select("*")
+      .eq("sync_run_id", syncRunId);
+    if (error) throw new Error(`OrderSnapshotRepository.getSnapshotsForSyncRun failed: ${error.message}`);
+    return (data || []) as OrderSnapshotRow[];
+  }
 }

@@ -5,6 +5,7 @@ import { RillnetConnector } from "@/connectors/rillnet";
 import { aggregateIncidents } from "@/engine/incident";
 import { RootCauseAgent } from "@/agents/root-cause";
 import type { IOrderSnapshotRepository } from "@/repositories/interfaces/IOrderSnapshotRepository";
+import { classifyRawOrderDetail, ORDER_SNAPSHOT_RETENTION_DAYS } from "@/config/retention";
 
 export class IncidentService implements IIncidentService {
   constructor(
@@ -192,6 +193,7 @@ export class IncidentService implements IIncidentService {
               : Number(latestHistory.maximum_pickup_wait_hours);
             targetIncident.pickupDelayOrderCodes = latestHistory.pickup_delay_order_codes || [];
 
+            let rawOrderDetailStatus = classifyRawOrderDetail(latestHistory.recorded_at, false);
             if (this.orderSnapshotRepo?.getJourneyEvidenceForIncident) {
               const journeyRows = await this.orderSnapshotRepo.getJourneyEvidenceForIncident(
                 latestHistory.sync_run_id,
@@ -205,6 +207,8 @@ export class IncidentService implements IIncidentService {
                 if (!Number.isFinite(createdAt) || !Number.isFinite(endPickAt) || endPickAt < createdAt) return [];
                 return [{ orderCode: row.order_code, hours: Math.round(((endPickAt - createdAt) / 3_600_000) * 10) / 10 }];
               });
+              rawOrderDetailStatus = classifyRawOrderDetail(latestHistory.recorded_at, journeyRows.length > 0);
+              targetIncident.rawOrderDetailStatus = rawOrderDetailStatus;
               const delayed = journeys.filter((item) => item.hours > 24).sort((a, b) => b.hours - a.hours);
               targetIncident.pickupJourneyCoveragePercent = journeyRows.length > 0
                 ? Math.round((journeys.length / journeyRows.length) * 1000) / 10
@@ -220,7 +224,10 @@ export class IncidentService implements IIncidentService {
 
             // If persistence was not backfilled, use the same normalized live
             // Rillnet snapshot as a read-only evidence fallback.
-            if (Number(targetIncident.pickupJourneyCoveragePercent || 0) === 0) {
+            if (rawOrderDetailStatus === "EXPIRED_BY_RETENTION") {
+              targetIncident.journeyEvidenceSource = "raw_order_detail_expired";
+              targetIncident.rawOrderDetailStatus = rawOrderDetailStatus;
+            } else if (Number(targetIncident.pickupJourneyCoveragePercent || 0) === 0) {
               try {
                 const liveSnapshot = await new RillnetConnector().fetchSnapshot();
                 const liveIncident = aggregateIncidents(liveSnapshot.orders).find(
@@ -336,7 +343,9 @@ export class IncidentService implements IIncidentService {
             pickupDelayOrderCodes: result.context.pickupDelayOrderCodes,
             pickupDelayedCustomerBreakdown: result.context.pickupDelayedCustomerBreakdown,
             pickupDelayedWarehouseBreakdown: result.context.pickupDelayedWarehouseBreakdown,
-            journeyEvidenceSource: targetIncident.journeyEvidenceSource || "incident_history",
+             journeyEvidenceSource: targetIncident.journeyEvidenceSource || "incident_history",
+            rawOrderDetailStatus: targetIncident.rawOrderDetailStatus || "NOT_FOUND",
+            retentionDays: ORDER_SNAPSHOT_RETENTION_DAYS,
           },
           evidence: result.evidence,
           analysis: result.analysis,

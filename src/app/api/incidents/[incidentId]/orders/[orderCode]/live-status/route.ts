@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { GhnOrderTrackingClient, GhnTrackingError, parseLiveOrderTracking } from "@/connectors/ghn-order-tracking";
 import { authorizeIncidentScope } from "@/security/scope-guard";
 import type { LiveOrderTracking } from "@/connectors/ghn-order-tracking";
+import { classifyRawOrderDetail, ORDER_SNAPSHOT_RETENTION_DAYS } from "@/config/retention";
 
 export const dynamic = "force-dynamic";
 
@@ -12,11 +13,10 @@ async function resolveLinkedOrder(request: NextRequest, incidentId: string, orde
   const guard = await authorizeIncidentScope(request, incidentId, "VIEW_SYSTEM", { limit: 60, windowMs: 60_000 });
   if (!guard.ok) return guard;
   const { data: incident } = await guard.client.from("incidents").select("warehouse_id,reason_code").eq("id", guard.incident.id).maybeSingle();
-  const { data: history } = await guard.client.from("incident_history").select("sync_run_id").eq("incident_id", guard.incident.id).order("recorded_at", { ascending: false }).limit(1).maybeSingle();
+  const { data: history } = await guard.client.from("incident_history").select("sync_run_id,recorded_at").eq("incident_id", guard.incident.id).order("recorded_at", { ascending: false }).limit(1).maybeSingle();
   if (!incident || !history?.sync_run_id) return { ok: false as const, response: NextResponse.json({ error: "INCIDENT_HISTORY_NOT_FOUND" }, { status: 404 }) };
   const { data: linkedOrder } = await guard.client.from("order_snapshots").select("id,order_code,warehouse_log").eq("sync_run_id", history.sync_run_id).eq("warehouse_id", incident.warehouse_id).eq("reason_code", incident.reason_code).eq("order_code", orderCode).maybeSingle();
-  if (!linkedOrder) return { ok: false as const, response: NextResponse.json({ error: "ORDER_NOT_IN_INCIDENT" }, { status: 404 }) };
-  return { ok: true as const, guard, linkedOrder };
+  return { ok: true as const, guard, linkedOrder: linkedOrder || null, rawStatus: classifyRawOrderDetail(history.recorded_at, Boolean(linkedOrder)) };
 }
 
 async function cachedTracking(client: any, orderCode: string) {
@@ -37,7 +37,8 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
   if (!linked.ok) return linked.response;
 
   if (request.nextUrl.searchParams.get("cache") === "only") {
-    const cached = await cachedTracking(linked.guard.client, orderCode);
+    if (!linked.linkedOrder) return NextResponse.json({ error: "RAW_ORDER_DETAIL_UNAVAILABLE", raw_detail_status: linked.rawStatus, retention_days: ORDER_SNAPSHOT_RETENTION_DAYS }, { status: 410, headers: { "cache-control": "no-store" } });
+    const cached = linked.linkedOrder ? await cachedTracking(linked.guard.client, orderCode) : null;
     if (cached) return NextResponse.json(cached, { headers: { "cache-control": "no-store" } });
     return NextResponse.json({ error: "TRACKING_CACHE_MISS" }, { status: 404, headers: { "cache-control": "no-store" } });
   }
@@ -75,6 +76,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
   if (!ORDER_CODE_PATTERN.test(orderCode)) return NextResponse.json({ error: "INVALID_ORDER_CODE" }, { status: 400 });
   const linked = await resolveLinkedOrder(request, incidentId, orderCode);
   if (!linked.ok) return linked.response;
+  if (!linked.linkedOrder) return NextResponse.json({ error: "RAW_ORDER_DETAIL_UNAVAILABLE", raw_detail_status: linked.rawStatus, retention_days: ORDER_SNAPSHOT_RETENTION_DAYS }, { status: 410 });
   const tracking = await request.json().catch(() => null) as LiveOrderTracking | null;
   if (!tracking || tracking.orderCode?.toUpperCase() !== orderCode || !Array.isArray(tracking.journey) || !tracking.checkedAt) return NextResponse.json({ error: "INVALID_TRACKING_PAYLOAD" }, { status: 400 });
   const existing = Array.isArray(linked.linkedOrder.warehouse_log) ? linked.linkedOrder.warehouse_log.filter((item: any) => !item?.[CACHE_MARKER]) : [];

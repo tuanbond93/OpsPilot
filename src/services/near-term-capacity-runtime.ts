@@ -1,5 +1,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { generate } from "@/ai/provider";
+import { isWithinOrderSnapshotRetention } from "@/config/retention";
 import { logger } from "@/observability/logger";
 import { buildContext, critique, detectCandidate, formatOperationalRiskPromptSummary, type AiRecommendation, type CurrentRisk, type DecisionContext, type IncomingAnswer, type LeadFact, InboundEvidenceService } from "@/domain/near-term-capacity";
 import { TelegramClient } from "@/integrations/telegram/telegram-client";
@@ -360,7 +361,7 @@ export class NearTermCapacityRuntimeService {
 
       let orderCodes: string[] = [];
       let currentKg: number | null = null;
-      if (history?.sync_run_id) {
+      if (history?.sync_run_id && isWithinOrderSnapshotRetention(history.recorded_at)) {
         const { data: orders, error: orderError } = await this.db
           .from("order_snapshots")
           .select("order_code,weight_kg")
@@ -373,6 +374,11 @@ export class NearTermCapacityRuntimeService {
         if (weights.length === (orders || []).length && weights.length > 0) {
           currentKg = weights.reduce((total, weight) => total + weight, 0);
         }
+      } else if (history?.sync_run_id) {
+        logger.info("Skipping expired raw order snapshot lookup for near-term capacity", {
+          incidentId: incident.id,
+          syncRunId: history.sync_run_id,
+        });
       }
 
       const facts: CurrentRisk = {

@@ -26,6 +26,9 @@ import { hasConflictingActions, selectApplicablePlaybookDirectives } from "@/eng
 import warehouseAssignments from "@/data/warehouse-assignments.generated.json";
 import { LaneObservationService } from "@/domain/lane-observation";
 import type { LaneObservationRepository } from "@/domain/lane-observation";
+import type { ISnapshotV3ShadowRepository } from "@/repositories/interfaces/ISnapshotV3ShadowRepository";
+import { isSnapshotV3ShadowEnabled } from "@/config/snapshot-v3";
+import { runSnapshotV3Shadow } from "@/services/snapshot-v3-shadow";
 
 const INBOUND_OBSERVATION_SOURCE = "RILLNET" as const;
 
@@ -190,7 +193,8 @@ export class SyncService implements ISyncService {
     private triageAuditRepo: ITriageAuditRepository | null = null,
     private playbookDirectiveRepo: IPlaybookDirectiveRepository | null = null,
     private laneObservationRepo: LaneObservationRepository | null = null,
-    private inboundOrderObservationRepo: IInboundOrderObservationRepository | null = null
+    private inboundOrderObservationRepo: IInboundOrderObservationRepository | null = null,
+    private snapshotV3ShadowRepo: ISnapshotV3ShadowRepository | null = null
   ) {}
 
   async runSync(_options?: SyncOptions): Promise<SyncSummary> {
@@ -205,6 +209,7 @@ export class SyncService implements ISyncService {
     let lockAcquired = false;
     let heartbeatTimer: NodeJS.Timeout | null = null;
     let syncLockTelemetry: TransientRetryTelemetry | null = null;
+    let pendingSnapshotV3Shadow: { rows: OrderSnapshotRow[]; evaluationReferenceAt: string } | null = null;
 
     const identityUnavailable = (error: unknown): SyncSummary => ({
       ok: false,
@@ -858,7 +863,16 @@ export class SyncService implements ISyncService {
               snapBatches = Math.ceil(snapshotRows.length / 500);
               snapQueries = snapBatches;
 
-              await this.orderSnapshotRepo.insertBatch(snapshotRows, 500);
+              const legacyRows = await this.orderSnapshotRepo.insertBatch(snapshotRows, 500);
+              snapRowsProcessed = legacyRows;
+              if (isSnapshotV3ShadowEnabled()) {
+                // Defer V3 writes until the sync reaches COMPLETED so a
+                // failed/partial run cannot become a reconstructable cohort.
+                pendingSnapshotV3Shadow = {
+                  rows: snapshotRows,
+                  evaluationReferenceAt: new Date(referenceTimeMs).toISOString(),
+                };
+              }
             } catch {
               // Fallback
             }
@@ -1236,6 +1250,51 @@ export class SyncService implements ISyncService {
           }));
         }
         await checkpointPhase("COMPLETED" as SyncPhase);
+        if (isSnapshotV3ShadowEnabled() && !pendingSnapshotV3Shadow && this.orderSnapshotRepo?.getSnapshotsForSyncRun) {
+          try {
+            // A resumed run may have already marked snapshot persistence
+            // complete before this process started. Recover the exact legacy
+            // cohort only for shadow comparison; production readers are not
+            // redirected.
+            pendingSnapshotV3Shadow = {
+              rows: await this.orderSnapshotRepo.getSnapshotsForSyncRun(syncRunId),
+              evaluationReferenceAt: new Date(sourceUpdatedAt || completedAt).toISOString(),
+            };
+          } catch (error) {
+            logger.error({
+              component: "SnapshotStorageV3",
+              operation: "shadowLegacyRecovery",
+              status: "error",
+              message: "[SnapshotV3][Shadow] unable to recover completed legacy cohort",
+              metadata: { syncRunId, error: safeErrorMessage(error) },
+            });
+          }
+        }
+        if (pendingSnapshotV3Shadow) {
+          const shadowResult = await runSnapshotV3Shadow({
+            shadowRepository: this.snapshotV3ShadowRepo,
+            syncRunId,
+            rows: pendingSnapshotV3Shadow.rows,
+            evaluationReferenceAt: pendingSnapshotV3Shadow.evaluationReferenceAt,
+          });
+          if (shadowResult.shadowStatus === "SUCCESS") {
+            logger.info({
+              component: "SnapshotStorageV3",
+              operation: "shadowCompare",
+              status: "success",
+              message: "[SnapshotV3][Shadow] status=matched",
+              metadata: { syncRunId, write: shadowResult.write, comparison: shadowResult.comparison },
+            });
+          } else {
+            logger.error({
+              component: "SnapshotStorageV3",
+              operation: "shadowWrite",
+              status: "error",
+              message: `[SnapshotV3][Shadow] status=${shadowResult.shadowStatus}`,
+              metadata: { syncRunId, error: shadowResult.error, comparison: shadowResult.comparison },
+            });
+          }
+        }
         logger.info({
           component: "SyncService",
           operation: "phaseCompleted",
