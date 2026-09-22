@@ -44,8 +44,36 @@ function isPersistedUuid(value: unknown): value is string {
   return typeof value === "string" && UUID_PATTERN.test(value);
 }
 
+function errorRecord(error: unknown): Record<string, unknown> | null {
+  if (!error || typeof error !== "object") return null;
+  const candidate = error as Record<string, unknown>;
+  if (candidate.error && typeof candidate.error === "object") {
+    return candidate.error as Record<string, unknown>;
+  }
+  return candidate;
+}
+
+function safeErrorCode(error: unknown): string {
+  const record = errorRecord(error);
+  if (typeof record?.code === "string" && record.code.trim()) return record.code;
+  if (error instanceof Error && error.name.trim()) return error.name;
+  return "SyncError";
+}
+
 function safeErrorMessage(error: unknown): string {
-  const message = error instanceof Error ? error.message : String(error);
+  const record = errorRecord(error);
+  const structuredMessage = [record?.message, record?.details, record?.hint]
+    .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+    .join("; ");
+  const message = error instanceof Error
+    ? error.message
+    : structuredMessage || (() => {
+      try {
+        return JSON.stringify(error);
+      } catch {
+        return String(error);
+      }
+    })();
   return message.replace(/https?:\/\/[^\s]+/g, "[URL REDACTED]").slice(0, 500);
 }
 
@@ -1328,9 +1356,8 @@ export class SyncService implements ISyncService {
         logRuntimeError("SyncService.runSync", err);
         const completedAt = new Date().toISOString();
         const durationMs = Date.now() - startTime;
-        const rawMessage = err instanceof Error ? err.message : String(err);
-        const sanitizedMessage = rawMessage.replace(/https?:\/\/[^\s]+/g, "[URL REDACTED]");
-        const errorCode = err instanceof Error ? err.name : "SyncError";
+        const sanitizedMessage = safeErrorMessage(err);
+        const errorCode = safeErrorCode(err);
 
         logger.info({
           component: "SyncService",

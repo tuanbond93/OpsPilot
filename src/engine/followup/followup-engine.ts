@@ -3,6 +3,7 @@ import type { IncidentHistoryRow, FollowupCaseRow, FollowupEventRow, FollowupSta
 import type {
   FollowupCaseUpsert,
   FollowupEventInsert,
+  FollowupCasePageCursor,
   IFollowupRepository,
 } from "@/repositories/interfaces/IFollowupRepository";
 import { evaluateProgressAssessment } from "./assessment";
@@ -31,6 +32,7 @@ import { assessOperationalCohort, evidenceFromOrder, checkpointKey, localHour, i
 // single, statement-timeout-sized write.  This preserves the same conflict
 // target and result set while bounding each database statement.
 const FOLLOWUP_CASE_UPSERT_CHUNK_SIZE = 50;
+const FOLLOWUP_CASE_READ_PAGE_SIZE = 100;
 
 function formatRillnetStatusSignature(signature: string | null | undefined): string {
   try {
@@ -127,6 +129,23 @@ export class FollowupEngine {
     }
   }
 
+  private async loadOperationalCases(metrics: MutableFollowupRunMetrics): Promise<FollowupCaseRow[]> {
+    if (!this.followupRepo) return [];
+
+    const cases: FollowupCaseRow[] = [];
+    let cursor: FollowupCasePageCursor | undefined;
+    for (;;) {
+      metrics.caseReads++;
+      const page = await this.timeOperation(metrics, "caseRead", () =>
+        this.followupRepo!.getOperationalCasesPage(cursor, FOLLOWUP_CASE_READ_PAGE_SIZE)
+      );
+      cases.push(...page.cases);
+      if (!page.nextCursor) break;
+      cursor = page.nextCursor;
+    }
+    return cases;
+  }
+
   /**
    * Processes all current operational incidents through the Follow-up State Machine.
    * State transitions and escalation decisions are 100% deterministic.
@@ -186,8 +205,7 @@ export class FollowupEngine {
     // snapshot is accepted only within the governed freshness window.
     if (!isBaseline && !orders.some(order => isFreshRillnetSnapshot(order.fetchedAt, now))) return [];
     // A failed read must abort; replacing an unavailable baseline would erase old work.
-    metrics.caseReads++;
-    const existing = this.followupRepo ? await this.followupRepo.getAllCases() : [];
+    const existing = await this.loadOperationalCases(metrics);
     const byKey = new Map(existing.map(item => [item.incident_key, item]));
     const membership = new Map(orders.map(order => [order.orderCode, evidenceFromOrder(order)]));
     // Routine operational checkpoints are Rillnet-first. GHN enrichment is
@@ -694,10 +712,7 @@ export class FollowupEngine {
     const loadAllCasesStartedAt = this.logSubphaseStart("loadAllCasesForResolution");
     let allCases: FollowupCaseRow[] = [];
     try {
-      metrics.caseReads++;
-      allCases = await this.timeOperation(metrics, "caseRead", () =>
-        this.followupRepo!.getAllCases()
-      );
+      allCases = await this.loadOperationalCases(metrics);
     } catch (error) {
       // Preserve the existing missing-database/setup fallback.
       this.logSubphaseEnd("loadAllCasesForResolution", loadAllCasesStartedAt, { caseMutations: 0, events: 0, actions: 0, repositoryCalls: metrics.caseReads, rowsLoaded: 0, status: "failed" });

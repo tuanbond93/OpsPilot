@@ -3,6 +3,7 @@ import type {
   FollowupCaseUpsert,
   FollowupEventInsert,
   IFollowupRepository,
+  FollowupCasePageCursor,
 } from "../interfaces/IFollowupRepository";
 
 export class MockFollowupRepository implements IFollowupRepository {
@@ -29,6 +30,29 @@ export class MockFollowupRepository implements IFollowupRepository {
 
   async getCasesByIncidentKeys(incidentKeys: string[]): Promise<FollowupCaseRow[]> {
     return this.inMemoryCases.filter((c) => incidentKeys.includes(c.incident_key));
+  }
+
+  async getOperationalCasesPage(cursor?: FollowupCasePageCursor, limit: number = 100): Promise<{
+    cases: FollowupCaseRow[];
+    nextCursor: FollowupCasePageCursor | null;
+  }> {
+    const eligible = [...this.inMemoryCases]
+      .filter((item) => item.current_state !== "CLOSED")
+      .sort((a, b) => {
+        const updatedAtDifference = new Date(b.updated_at || 0).getTime() - new Date(a.updated_at || 0).getTime();
+        return updatedAtDifference || b.id.localeCompare(a.id);
+      });
+    const startIndex = cursor
+      ? Math.max(0, eligible.findIndex((item) => item.id === cursor.id) + 1)
+      : 0;
+    const cases = eligible.slice(startIndex, startIndex + limit);
+    const last = cases[cases.length - 1];
+    return {
+      cases,
+      nextCursor: cases.length === limit && last?.updated_at
+        ? { updatedAt: last.updated_at, id: last.id }
+        : null,
+    };
   }
 
   async getAllCases(): Promise<FollowupCaseRow[]> {

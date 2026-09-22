@@ -5,6 +5,7 @@ import type {
   FollowupCaseUpsert,
   FollowupEventInsert,
   IFollowupRepository,
+  FollowupCasePageCursor,
 } from "../interfaces/IFollowupRepository";
 
 const FOLLOWUP_CASE_COLUMNS = [
@@ -51,6 +52,26 @@ const FOLLOWUP_EVENT_COLUMNS = [
   "created_at",
 ].join(", ");
 
+const FOLLOWUP_CASE_PAGE_SIZE = 100;
+const FOLLOWUP_PROCESSING_CASE_COLUMNS = [
+  "operational_cohort",
+  "id",
+  "incident_id",
+  "incident_key",
+  "current_state",
+  "first_detected_at",
+  "last_checked_at",
+  "last_action_requested_at",
+  "last_action_confirmed_at",
+  "resolved_at",
+  "baseline_affected_order_count",
+  "latest_affected_order_count",
+  "current_progress_percent",
+  "current_assessment",
+  "current_rillnet_status_signature",
+  "updated_at",
+].join(", ");
+
 export class SupabaseFollowupRepository extends BaseRepository implements IFollowupRepository {
   constructor(client: SupabaseClient) {
     super(client);
@@ -77,13 +98,69 @@ export class SupabaseFollowupRepository extends BaseRepository implements IFollo
     return this.executeMany<FollowupCaseRow>(query as unknown as Promise<{ data: FollowupCaseRow[] | null; error: unknown }>);
   }
 
-  async getAllCases(): Promise<FollowupCaseRow[]> {
+  async getOperationalCasesPage(cursor?: FollowupCasePageCursor, limit: number = FOLLOWUP_CASE_PAGE_SIZE): Promise<{
+    cases: FollowupCaseRow[];
+    nextCursor: FollowupCasePageCursor | null;
+  }> {
+    const boundedLimit = Math.min(Math.max(Math.trunc(limit) || FOLLOWUP_CASE_PAGE_SIZE, 1), FOLLOWUP_CASE_PAGE_SIZE);
     const query = this.client
       .from("followup_cases")
-      .select("*")
-      .order("updated_at", { ascending: false });
+      .select(FOLLOWUP_PROCESSING_CASE_COLUMNS)
+      .neq("current_state", "CLOSED");
 
-    return this.executeMany<FollowupCaseRow>(query as unknown as Promise<{ data: FollowupCaseRow[] | null; error: unknown }>);
+    if (cursor) {
+      query.or(`updated_at.lt.${cursor.updatedAt},and(updated_at.eq.${cursor.updatedAt},id.lt.${cursor.id})`);
+    }
+    query
+      .order("updated_at", { ascending: false })
+      .order("id", { ascending: false })
+      .limit(boundedLimit);
+
+    const cases = await this.executeMany<FollowupCaseRow>(
+      query as unknown as Promise<{ data: FollowupCaseRow[] | null; error: unknown }>
+    );
+    const last = cases[cases.length - 1];
+
+    return {
+      cases,
+      nextCursor: cases.length === boundedLimit && last?.updated_at
+        ? { updatedAt: last.updated_at, id: last.id }
+        : null,
+    };
+  }
+
+  async getAllCases(): Promise<FollowupCaseRow[]> {
+    const cases: FollowupCaseRow[] = [];
+    let cursor: FollowupCasePageCursor | undefined;
+
+    // Keep the public repository contract unchanged while ensuring every
+    // database statement is bounded. This method serves both the debug/API
+    // read path and the follow-up engine, so terminal cases remain included.
+    for (;;) {
+      const query = this.client
+        .from("followup_cases")
+        .select(FOLLOWUP_CASE_COLUMNS);
+
+      if (cursor) {
+        query.or(`updated_at.lt.${cursor.updatedAt},and(updated_at.eq.${cursor.updatedAt},id.lt.${cursor.id})`);
+      }
+      query
+        .order("updated_at", { ascending: false })
+        .order("id", { ascending: false })
+        .limit(FOLLOWUP_CASE_PAGE_SIZE);
+
+      const page = await this.executeMany<FollowupCaseRow>(
+        query as unknown as Promise<{ data: FollowupCaseRow[] | null; error: unknown }>
+      );
+      cases.push(...page);
+
+      if (page.length < FOLLOWUP_CASE_PAGE_SIZE) break;
+      const last = page[page.length - 1];
+      if (!last?.updated_at || !last.id) break;
+      cursor = { updatedAt: last.updated_at, id: last.id };
+    }
+
+    return cases;
   }
 
   async upsertCase(caseData: FollowupCaseUpsert): Promise<FollowupCaseRow> {

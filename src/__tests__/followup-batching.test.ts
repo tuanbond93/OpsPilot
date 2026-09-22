@@ -46,6 +46,11 @@ class CountingFollowupRepository extends MockFollowupRepository {
     return super.getAllCases();
   }
 
+  override async getOperationalCasesPage(...args: Parameters<IFollowupRepository["getOperationalCasesPage"]>) {
+    this.caseReadCalls++;
+    return super.getOperationalCasesPage(...args);
+  }
+
   override async batchUpsertCases(cases: Parameters<IFollowupRepository["batchUpsertCases"]>[0]) {
     this.caseBatchCalls++;
     return super.batchUpsertCases(cases);
