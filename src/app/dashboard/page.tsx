@@ -7,6 +7,7 @@ import { incidentRuleExplanation, incidentSignalLabel, repairOperationalText, st
 import { handleApiAccess } from "@/app/_components/apiAccess";
 import { useOpsSession } from "@/app/_components/useOpsSession";
 import { OperatorStartHere } from "@/app/dashboard/OperatorStartHere";
+import { CHECKPOINT_HOURS } from "@/domain/operational-learning/checkpoint-policy";
 
 interface KPIs {
   activeIncidents: number;
@@ -256,7 +257,7 @@ const PRIORITY_REASON_WEIGHTS: Record<string, number> = {
 };
 
 const VIETNAM_UTC_OFFSET_MS = 7 * 60 * 60 * 1000;
-const SCHEDULED_SYNC_HOURS_VIETNAM = [8, 10, 12, 14, 16, 18];
+const CHECKPOINT_SCHEDULE_LABEL = CHECKPOINT_HOURS.map((hour) => `${String(hour).padStart(2, "0")}:00`).join(", ");
 
 function formatVietnamDateTime(value: string | null) {
   if (!value || !Number.isFinite(Date.parse(value))) return "Chưa có dữ liệu";
@@ -270,7 +271,7 @@ function syncScheduleCheck(lastSync: string | null, now = new Date()) {
   const slots: Date[] = [];
   for (const dayOffset of [-1, 0, 1]) {
     const localDay = new Date(Date.UTC(vietnamNow.getUTCFullYear(), vietnamNow.getUTCMonth(), vietnamNow.getUTCDate() + dayOffset));
-    for (const hour of SCHEDULED_SYNC_HOURS_VIETNAM) slots.push(new Date(Date.UTC(localDay.getUTCFullYear(), localDay.getUTCMonth(), localDay.getUTCDate(), hour - 7)));
+    for (const hour of CHECKPOINT_HOURS) slots.push(new Date(Date.UTC(localDay.getUTCFullYear(), localDay.getUTCMonth(), localDay.getUTCDate(), hour - 7)));
   }
   slots.sort((left, right) => left.getTime() - right.getTime());
   const previous = [...slots].reverse().find((slot) => slot.getTime() <= now.getTime()) || null;
@@ -621,7 +622,7 @@ export default function ExecutiveDashboardPage() {
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
             <h2 id="sync-schedule-title" className="font-bold">Đồng bộ dữ liệu nguồn</h2>
-            <p className="mt-1 text-xs leading-5 text-slate-300">Lịch cấu hình: 08:00, 10:00, 12:00, 14:00, 16:00 và 18:00 hằng ngày (giờ Việt Nam). Trạng thái được đối chiếu với lần chạy ghi trong <code>sync_runs</code>.</p>
+            <p className="mt-1 text-xs leading-5 text-slate-300">Lịch cấu hình: {CHECKPOINT_SCHEDULE_LABEL} hằng ngày (giờ Việt Nam). Trạng thái được đối chiếu với lần chạy ghi trong <code>sync_runs</code>.</p>
           </div>
           <span className={`rounded-full border px-2.5 py-1 text-xs font-bold ${syncSchedule.onSchedule ? "border-emerald-400/40 text-emerald-200" : "border-amber-400/40 text-amber-200"}`}>{syncSchedule.onSchedule ? "Có snapshot mới từ mốc lịch gần nhất" : "Chưa có snapshot mới từ mốc lịch gần nhất"}</span>
         </div>

@@ -36,7 +36,7 @@ describe("Rillnet-first evidence boundary", () => {
         lastCheckpoint,
         members: [{
           orderCode: "LADDER", customerId: "C", warehouseId: "W", stage: "DELIVERY" as const,
-          status: "storing", observedAt: at(16), readyAt: at(6), baselineStatus: "storing",
+          status: "storing", observedAt: at(18), readyAt: at(6), baselineStatus: "storing",
           dueAt: at(10), firstSeenAt: at(8), lastReminderAt: lastActionAt || undefined,
           lastReminderStatus: lastActionAt ? "storing" : undefined,
         }],
@@ -46,7 +46,7 @@ describe("Rillnet-first evidence boundary", () => {
 
   async function runCohortTransition(state: import("@/connectors/supabase").FollowupState, checkpointHour: number, lastActionHour: number | null, options: { delivered?: boolean; resolvedAt?: string | null } = {}) {
     const repo = new MockFollowupRepository();
-    repo.seed([cohortCase(state, lastActionHour === null ? null : at(lastActionHour), `2026-09-05:${checkpointHour - 2}`, options.resolvedAt || null)], []);
+    repo.seed([cohortCase(state, lastActionHour === null ? null : at(lastActionHour), `2026-09-05:${lastActionHour ?? checkpointHour - 2}`, options.resolvedAt || null)], []);
     const current = { ...order("Kho tồn", "LADDER"), status: options.delivered ? "delivered" : "storing", fetchedAt: at(checkpointHour) };
     const engine = new FollowupEngine(repo);
     const results = await engine.processIncidentFollowups(aggregateIncidents([current]), undefined, undefined, Date.parse(at(checkpointHour)), [current]);
@@ -58,29 +58,29 @@ describe("Rillnet-first evidence boundary", () => {
     ["SECOND_PUSH_SENT", "THIRD_PUSH_PENDING"],
     ["THIRD_PUSH_SENT", "ESCALATION_PENDING"],
   ] as const)("uses the shared ladder for %s at a due cohort checkpoint", async (state, expected) => {
-    const { results } = await runCohortTransition(state, 18, 16);
+    const { results } = await runCohortTransition(state, 20, 18);
     expect(results[0]).toMatchObject({ oldState: state, newState: expected });
   });
 
   it.each(["FIRST_PUSH_SENT", "SECOND_PUSH_SENT"] as const)("does not reset an unresolved %s before the next due checkpoint", async (state) => {
     const { results } = await runCohortTransition(state, 16, 14);
-    expect(results[0]).toMatchObject({ oldState: state, newState: state });
+    expect(results).toEqual([]);
   });
 
   it("resolves, closes after the governed delay, and reopens a recurring cohort through the shared machine", async () => {
-    const resolved = await runCohortTransition("FIRST_PUSH_SENT", 18, 16, { delivered: true });
+    const resolved = await runCohortTransition("FIRST_PUSH_SENT", 20, 18, { delivered: true });
     expect(resolved.results[0]).toMatchObject({ newState: "RESOLVED" });
 
-    const closed = await runCohortTransition("RESOLVED", 18, 16, { delivered: true, resolvedAt: "2026-09-04T18:00:00+07:00" });
+    const closed = await runCohortTransition("RESOLVED", 20, 18, { delivered: true, resolvedAt: "2026-09-04T20:00:00+07:00" });
     expect(closed.results[0]).toMatchObject({ newState: "CLOSED" });
 
-    const recurring = await runCohortTransition("CLOSED", 18, 16);
+    const recurring = await runCohortTransition("CLOSED", 20, 18);
     expect(recurring.results[0]).toMatchObject({ newState: "FIRST_PUSH_PENDING" });
   });
 
   it("does not duplicate a stage transition when the same checkpoint is replayed", async () => {
-    const { repo, current, engine } = await runCohortTransition("FIRST_PUSH_SENT", 18, 16);
-    const replay = await engine.processIncidentFollowups(aggregateIncidents([current]), undefined, undefined, Date.parse(at(18)), [current]);
+    const { repo, current, engine } = await runCohortTransition("FIRST_PUSH_SENT", 20, 18);
+    const replay = await engine.processIncidentFollowups(aggregateIncidents([current]), undefined, undefined, Date.parse(at(20)), [current]);
     expect(replay).toEqual([]);
     const events = await repo.getEventsByCaseId((await repo.getAllCases())[0].id);
     expect(events.filter((event) => event.new_state === "SECOND_PUSH_PENDING")).toHaveLength(1);

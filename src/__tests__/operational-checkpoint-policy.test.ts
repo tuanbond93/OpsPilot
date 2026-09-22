@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { assessOperationalCohort, nextCot, checkpointKey, type OrderEvidence, type OperationalCohort } from "@/domain/operational-learning/checkpoint-policy";
+import { assessOperationalCohort, nextCheckpoint, nextCot, checkpointKey, type OrderEvidence, type OperationalCohort } from "@/domain/operational-learning/checkpoint-policy";
 import { verifyOutcomeObservation } from "@/domain/decision/outcome-verifier";
 import { FollowupEngine } from "@/engine/followup/followup-engine";
 import { MockFollowupRepository } from "@/repositories/mock/MockFollowupRepository";
@@ -169,9 +169,14 @@ describe("approved operational checkpoints", () => {
     expect((await repo.getAllCases())[0].current_state).toBe(state);
     expect((await queue.getAllActions())).toHaveLength(0);
   });
-  it("uses exactly the governed 08/10/12/14/16/18 local checkpoint hours and waits for the next COT after departure", () => {
-    for (const hour of [8, 10, 12, 14, 16, 18]) expect(checkpointKey(Date.parse(time(hour)))).toBe(`2026-09-05:${hour}`);
-    expect(checkpointKey(Date.parse(time(20)))).toBeNull();
+  it("uses exactly the governed 08/10/14/18/20 local checkpoint hours and waits for the next COT after departure", () => {
+    for (const hour of [8, 10, 14, 18, 20]) expect(checkpointKey(Date.parse(time(hour)))).toBe(`2026-09-05:${hour}`);
+    for (const hour of [12, 16]) expect(checkpointKey(Date.parse(time(hour)))).toBeNull();
+    expect(nextCheckpoint(Date.parse(time(8)))).toBe(new Date(time(10)).toISOString());
+    expect(nextCheckpoint(Date.parse(time(10)))).toBe(new Date(time(14)).toISOString());
+    expect(nextCheckpoint(Date.parse(time(14)))).toBe(new Date(time(18)).toISOString());
+    expect(nextCheckpoint(Date.parse(time(18)))).toBe(new Date(time(20)).toISOString());
+    expect(nextCheckpoint(Date.parse(time(20)))).toBe(new Date(time(8, "2026-09-06")).toISOString());
     expect(nextCot(time(6), 7)).toBe(Date.parse(time(7)));
     expect(nextCot(time(7), 7)).toBe(Date.parse(time(7, "2026-09-06")));
     expect(nextCot(time(19), 18)).toBe(Date.parse(time(18, "2026-09-06")));
@@ -184,10 +189,10 @@ describe("approved operational checkpoints", () => {
     const progress = assess(baseline.cohort, [], orders.map(order => ({ ...order, status: "delivering", observedAt: time(10) })), 10);
     expect(progress).toMatchObject({ progressed: 2, completed: 0, progressPercent: 100, reminderCodes: [] });
     for (const hour of [12, 14, 16]) expect(assess(progress.cohort, [], orders.map(order => ({ ...order, status: "delivering", observedAt: time(hour) })), hour).reminderCodes).toEqual([]);
-    expect(assess(progress.cohort, [], orders.map(order => ({ ...order, status: "delivering", observedAt: time(18) })), 18).reminderCodes).toEqual(["A", "B"]);
+    expect(assess(progress.cohort, [], orders.map(order => ({ ...order, status: "delivering", observedAt: time(20) })), 20).reminderCodes).toEqual(["A", "B"]);
   });
 
-  it.each([12, 16])("processes a normal scheduled cohort at %ih", async (hour) => {
+  it.each([14, 20])("processes a normal scheduled cohort at %ih", async (hour) => {
     const repo = new MockFollowupRepository();
     const engine = new FollowupEngine(repo);
     const order: NormalizedRillnetOrder = { id: `checkpoint-${hour}`, orderCode: `checkpoint-${hour}`, status: "storing", taskCategory: "Kho tồn", warehouseId: "W", warehouseName: "Kho GHN", customerId: "C", customerName: "C", customerCode: "C", createdAt: time(6), deliverWarehouseId: "W", fetchedAt: time(8) };

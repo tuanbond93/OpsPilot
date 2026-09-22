@@ -33,7 +33,7 @@ describe("operational checkpoint notification dispatch", () => {
     expect((await queue.getActionById(action!.id))?.status).toBe("CANCELLED");
   });
 
-  it("cancels a stale current-policy push at the later governed 16:00 checkpoint", async () => {
+  it("cancels a stale current-policy push at the later governed 18:00 checkpoint", async () => {
     const queue = new ActionQueue(null);
     const result = await queue.enqueueAction({
       actionType: "FIRST_PUSH",
@@ -50,7 +50,7 @@ describe("operational checkpoint notification dispatch", () => {
     const send = vi.fn().mockResolvedValue({ outcome: "DELIVERED", providerMessageId: "msg-current" });
     const service = new NotificationService(queue, null, [deliveredProvider(send)]);
 
-    const summary = await service.dispatchPending("test-worker", atUtc(9)); // 16:00 VN
+    const summary = await service.dispatchPending("test-worker", atUtc(11)); // 18:00 VN
     const updated = await queue.getActionById(action!.id);
 
     expect(summary.sentCount).toBe(0);

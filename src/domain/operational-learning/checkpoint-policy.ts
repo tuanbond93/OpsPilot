@@ -1,7 +1,7 @@
 import type { NormalizedRillnetOrder } from "@/connectors/rillnet";
 import { canonicalWarehouseType } from "@/connectors/ghn-order-tracking/warehouse-directory";
 
-export const CHECKPOINT_HOURS = [8, 10, 12, 14, 16, 18] as const;
+export const CHECKPOINT_HOURS = [8, 10, 14, 18, 20] as const;
 const FINAL_CHECKPOINT_HOUR = CHECKPOINT_HOURS[CHECKPOINT_HOURS.length - 1];
 export const OPERATIONAL_CHECKPOINT_POLICY_VERSION = "2026-09-06.1" as const;
 const DAY = 86_400_000;
