@@ -23,7 +23,14 @@ export interface InboundPopulationManifestInput {
 }
 
 export interface IInboundOrderObservationRepository {
-  startPopulation(input: InboundPopulationManifestInput): Promise<void>;
+  /**
+   * Mark an incomplete population as rebuildable and remove its prior rows.
+   *
+   * This is intentionally separate from insertBatch: a resumed run must not
+   * leave an older attempt's rows in the exact-count population. Completed
+   * populations are immutable and must be rejected.
+   */
+  replaceIncompletePopulation(input: InboundPopulationManifestInput): Promise<void>;
   insertBatch(rows: InboundOrderObservationRow[], batchSize?: number): Promise<number>;
   countPersisted(syncRunId: string, sourceSystem: "RILLNET"): Promise<number>;
   completePopulation(input: InboundPopulationManifestInput & { persisted_observation_count: number; population_completed_at: string }): Promise<void>;

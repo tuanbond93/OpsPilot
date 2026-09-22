@@ -19,7 +19,7 @@ describe("complete inbound observation population", () => {
     const rows: InboundOrderObservationRow[] = [];
     const manifests: string[] = [];
     const fullPopulationRepo = {
-      startPopulation: vi.fn(async () => { manifests.push("STARTED"); }),
+      replaceIncompletePopulation: vi.fn(async () => { manifests.push("REPLACED"); }),
       insertBatch: vi.fn(async (input: InboundOrderObservationRow[]) => {
         rows.push(...input);
         return input.length;
@@ -60,7 +60,7 @@ describe("complete inbound observation population", () => {
     expect(fullPopulationRepo.insertBatch).toHaveBeenCalledOnce();
     expect(rows.map((row) => row.order_code)).toEqual(["NON_INCIDENT", "NON_INCIDENT_PICKED", "INCIDENT_CANDIDATE"]);
     expect(rows.every((row) => row.source_system === "RILLNET")).toBe(true);
-    expect(manifests).toEqual(["STARTED", "COMPLETE"]);
+    expect(manifests).toEqual(["REPLACED", "COMPLETE"]);
     expect(sourceCore).toEqual([expect.objectContaining({
       status: "running",
       context: expect.objectContaining({ sourceFreshness: "2026-09-19T03:00:00.000Z" }),
@@ -90,7 +90,7 @@ describe("complete inbound observation population", () => {
   it("marks the population FAILED and prevents sync success when persistence fails", async () => {
     const states: string[] = [];
     const failingRepo = {
-      startPopulation: vi.fn(async () => { states.push("STARTED"); }),
+      replaceIncompletePopulation: vi.fn(async () => { states.push("REPLACED"); }),
       insertBatch: vi.fn(async () => { throw new Error("DATABASE_WRITE_FAILED"); }),
       countPersisted: vi.fn(async () => 0),
       completePopulation: vi.fn(async () => { states.push("COMPLETE"); }),
@@ -102,6 +102,6 @@ describe("complete inbound observation population", () => {
 
     const result = await new SyncService(new MockSyncRunRepository(), null, new MockIncidentRepository(), null, null, null, null, null, null, null, null, null, failingRepo).runSync({ forceReprocessSource: true });
     expect(result.ok).toBe(false);
-    expect(states).toEqual(["STARTED", "FAILED"]);
+    expect(states).toEqual(["REPLACED", "FAILED"]);
   });
 });

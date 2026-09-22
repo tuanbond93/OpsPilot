@@ -4,7 +4,22 @@ import type { IInboundOrderObservationRepository, InboundOrderObservationRow, In
 export class SupabaseInboundOrderObservationRepository implements IInboundOrderObservationRepository {
   constructor(private readonly client: SupabaseClient) {}
 
-  async startPopulation(input: InboundPopulationManifestInput): Promise<void> {
+  async replaceIncompletePopulation(input: InboundPopulationManifestInput): Promise<void> {
+    const { data: existingManifest, error: readError } = await this.client
+      .from("inbound_population_manifests")
+      .select("population_status")
+      .eq("sync_run_id", input.sync_run_id)
+      .eq("source_system", input.source_system)
+      .maybeSingle();
+    if (readError) {
+      throw new Error(`InboundOrderObservationRepository.replaceIncompletePopulation failed: ${readError.message}`);
+    }
+    if (existingManifest?.population_status === "COMPLETE") {
+      throw new Error(
+        `INBOUND_POPULATION_REPLACEMENT_FORBIDDEN_COMPLETED: ${input.sync_run_id}/${input.source_system}`,
+      );
+    }
+
     const { error } = await this.client.from("inbound_population_manifests").upsert({
       ...input,
       population_status: "STARTED",
@@ -14,7 +29,20 @@ export class SupabaseInboundOrderObservationRepository implements IInboundOrderO
       failure_reason: null,
       updated_at: new Date().toISOString(),
     }, { onConflict: "sync_run_id,source_system" });
-    if (error) throw new Error(`InboundOrderObservationRepository.startPopulation failed: ${error.message}`);
+    if (error) throw new Error(`InboundOrderObservationRepository.replaceIncompletePopulation failed: ${error.message}`);
+
+    // The sync lock is the concurrency boundary. This sequence is deliberately
+    // not described as transactional: without a database RPC/transaction
+    // primitive, an interruption after DELETE leaves the manifest incomplete,
+    // and the next retry safely rebuilds the population from scratch.
+    const { error: deleteError } = await this.client
+      .from("inbound_order_observations")
+      .delete()
+      .eq("sync_run_id", input.sync_run_id)
+      .eq("source_system", input.source_system);
+    if (deleteError) {
+      throw new Error(`InboundOrderObservationRepository.replaceIncompletePopulation delete failed: ${deleteError.message}`);
+    }
   }
 
   async insertBatch(rows: InboundOrderObservationRow[], batchSize = 500): Promise<number> {
@@ -56,7 +84,7 @@ export class SupabaseInboundOrderObservationRepository implements IInboundOrderO
       population_status: "FAILED",
       failure_reason: input.failure_reason.slice(0, 500),
       updated_at: new Date().toISOString(),
-    }).eq("sync_run_id", input.sync_run_id).eq("source_system", input.source_system);
+    }).eq("sync_run_id", input.sync_run_id).eq("source_system", input.source_system).neq("population_status", "COMPLETE");
     if (error) throw new Error(`InboundOrderObservationRepository.failPopulation failed: ${error.message}`);
   }
 }

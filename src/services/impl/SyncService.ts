@@ -706,7 +706,7 @@ export class SyncService implements ISyncService {
             source_freshness: manifestSourceFreshness,
           };
             try {
-              await this.inboundOrderObservationRepo.startPopulation(emptyManifest);
+              await this.inboundOrderObservationRepo.replaceIncompletePopulation(emptyManifest);
               const persistedCount = await this.inboundOrderObservationRepo.countPersisted(syncRunId, INBOUND_OBSERVATION_SOURCE);
               if (persistedCount !== 0) throw new Error(`INBOUND_POPULATION_COUNT_MISMATCH: expected 0, found ${persistedCount}`);
               const populationCompletedAt = new Date().toISOString();
@@ -751,7 +751,7 @@ export class SyncService implements ISyncService {
               duplicate_conflict_count: population.duplicateConflictCount,
               source_freshness: manifestSourceFreshness,
             };
-            await this.inboundOrderObservationRepo.startPopulation(manifestInput);
+            await this.inboundOrderObservationRepo.replaceIncompletePopulation(manifestInput);
             if (population.duplicateConflictCount > 0) {
               throw new Error(`DUPLICATE_INBOUND_ORDER_CONFLICT:${population.duplicateConflictOrderCodes.join(",")}`);
             }
