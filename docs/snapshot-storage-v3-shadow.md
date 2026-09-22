@@ -1,9 +1,23 @@
-# Snapshot Storage V3 — Shadow Implementation
+# Snapshot Storage V3 — External Shadow Implementation
 
 Status: shadow-only. `SNAPSHOT_V3_SHADOW_ENABLED` defaults to `false`.
 
-The existing `order_snapshots` table remains authoritative. No existing reader
-is redirected, no legacy row is deleted, and no retention cleanup is activated.
+The existing primary Supabase project remains authoritative. V3 shadow writes
+use a separate server-only Supabase client configured by:
+
+- `SNAPSHOT_V3_SUPABASE_URL`
+- `SNAPSHOT_V3_SUPABASE_SERVICE_ROLE_KEY`
+
+The primary `SUPABASE_SERVICE_ROLE_KEY` is never reused for V3. When the flag
+is missing or not exactly `true`, no shadow client is constructed. No existing
+reader is redirected, no legacy row is deleted, and no retention cleanup is
+activated.
+
+Run `src/database/migrations/091_snapshot_storage_v3_external_shadow.sql` only
+in the secondary Supabase project. It intentionally contains no foreign keys
+to primary `sync_runs` or any other primary table. `sync_run_id` is an
+immutable external identifier, and `shadow_sync_runs` stores only the timing
+metadata needed for reconstruction.
 
 ## Warehouse-log decision
 
@@ -46,10 +60,15 @@ The comparator checks row count, order-code set, identity multiset, material
 state, age, reason, source freshness, and journey evidence.
 Results are also written to `snapshot_v3_shadow_comparisons` when the optional
 repository method is available, so the consecutive-checkpoint gate is durable.
+The comparator reads the legacy cohort from the primary database before the
+shadow repository is invoked, and the shadow repository reads only secondary
+tables plus `shadow_sync_runs`.
 
 ## Rollback
 
 Set `SNAPSHOT_V3_SHADOW_ENABLED=false` and leave all legacy readers and writers
 unchanged. The shadow tables are not read by operational application paths.
 
-The migration is prepared only and has not been executed.
+The secondary migration is prepared only and has not been executed. Migration
+090 is intentionally unchanged; any empty V3 tables already present in the
+primary project are left untouched.

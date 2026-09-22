@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { OrderSnapshotRow } from "@/connectors/supabase/types";
 import {
   calculateSnapshotV3AgeHours,
@@ -113,6 +113,10 @@ describe("Snapshot Storage V3 shadow", () => {
     vi.stubEnv("SNAPSHOT_V3_SHADOW_ENABLED", "false");
   });
 
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
   it("produces a deterministic hash and excludes technical/classification fields", () => {
     const first = row({ id: 1, created_at: "2026-09-21T01:00:00.000Z", age_hours: 24, reason_code: "KHO_TON", source_updated_at: "2026-09-21T00:00:00.000Z" });
     const second = row({ id: 999, created_at: "2026-09-21T02:00:00.000Z", age_hours: 30, reason_code: "KHO_CHUA_LUAN_CHUYEN", source_updated_at: "2026-09-22T00:00:00.000Z" });
@@ -204,5 +208,24 @@ describe("Snapshot Storage V3 shadow", () => {
     });
     expect(result.shadowStatus).toBe("DISABLED");
     expect(writeBatch).not.toHaveBeenCalled();
+  });
+
+  it("does not construct a secondary client while the flag is disabled", async () => {
+    vi.stubEnv("SNAPSHOT_V3_SHADOW_ENABLED", "false");
+    vi.stubEnv("SNAPSHOT_V3_SUPABASE_URL", "https://shadow.example.supabase.co");
+    vi.stubEnv("SNAPSHOT_V3_SUPABASE_SERVICE_ROLE_KEY", "shadow-secret");
+
+    const { createSnapshotV3ShadowClient } = await import("@/connectors/supabase/snapshot-v3-server");
+    expect(createSnapshotV3ShadowClient()).toBeNull();
+  });
+
+  it("requires dedicated shadow credentials and rejects the primary project", async () => {
+    vi.stubEnv("SNAPSHOT_V3_SHADOW_ENABLED", "true");
+    vi.stubEnv("NEXT_PUBLIC_SUPABASE_URL", "https://primary.example.supabase.co");
+    vi.stubEnv("SNAPSHOT_V3_SUPABASE_URL", "https://primary.example.supabase.co");
+    vi.stubEnv("SNAPSHOT_V3_SUPABASE_SERVICE_ROLE_KEY", "shadow-secret");
+
+    const { createSnapshotV3ShadowClient } = await import("@/connectors/supabase/snapshot-v3-server");
+    expect(createSnapshotV3ShadowClient()).toBeNull();
   });
 });

@@ -65,6 +65,8 @@ import { SupabasePlaybookDirectiveRepository } from "./supabase/SupabasePlaybook
 import { MockPlaybookDirectiveRepository } from "./mock/MockPlaybookDirectiveRepository";
 import type { ISnapshotV3ShadowRepository } from "./interfaces/ISnapshotV3ShadowRepository";
 import { SupabaseSnapshotV3ShadowRepository } from "./supabase/SupabaseSnapshotV3ShadowRepository";
+import { createSnapshotV3ShadowClient } from "@/connectors/supabase/snapshot-v3-server";
+import { isSnapshotV3ShadowEnabled } from "@/config/snapshot-v3";
 
 export class RepositoryFactory {
   private static incidentRepo: IIncidentRepository | null = null;
@@ -280,8 +282,10 @@ export class RepositoryFactory {
     return this.orderSnapshotRepo;
   }
 
-  static getSnapshotV3ShadowRepository(client?: SupabaseClient | null): ISnapshotV3ShadowRepository | null {
-    return client ? new SupabaseSnapshotV3ShadowRepository(client) : null;
+  static getSnapshotV3ShadowRepository(): ISnapshotV3ShadowRepository | null {
+    if (!isSnapshotV3ShadowEnabled()) return null;
+    const shadowClient = createSnapshotV3ShadowClient();
+    return shadowClient ? new SupabaseSnapshotV3ShadowRepository(shadowClient) : null;
   }
 
   static getWarehouseRepository(): IWarehouseRepository {

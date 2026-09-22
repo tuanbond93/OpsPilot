@@ -14,7 +14,7 @@ export type SnapshotV3StorageTelemetry = {
   referenceAvgBytes: number | null;
   stateVersionBytesTotal: number;
   referenceBytesTotal: number;
-  legacyEquivalentBytes: number;
+  legacyEquivalentBytes: number | null;
   actualStorageReductionPct: number | null;
 };
 

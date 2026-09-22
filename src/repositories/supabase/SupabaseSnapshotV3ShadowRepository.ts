@@ -34,6 +34,18 @@ export class SupabaseSnapshotV3ShadowRepository implements ISnapshotV3ShadowRepo
     evaluationReferenceAt: string,
     batchSize = 500
   ): Promise<SnapshotV3ShadowWriteResult> {
+    const sourceUpdatedAt = rows.find((row) => row.source_updated_at)?.source_updated_at || null;
+    const { error: syncRunError } = await this.client
+      .from("shadow_sync_runs")
+      .upsert({
+        sync_run_id: syncRunId,
+        source_updated_at: sourceUpdatedAt,
+        evaluation_reference_at: evaluationReferenceAt,
+        status: "COMPLETED",
+        observed_at: new Date().toISOString(),
+      }, { onConflict: "sync_run_id" });
+    if (syncRunError) throw new Error(`SnapshotV3 shadow run metadata write failed: ${syncRunError.message}`);
+
     if (rows.length === 0) return { stateVersionRows: 0, referenceRows: 0, reusedStateVersions: 0 };
 
     const stateByKey = new Map<string, { order_code: string; material_hash: string; material_state: Record<string, unknown>; valid_from: string }>();
@@ -111,12 +123,12 @@ export class SupabaseSnapshotV3ShadowRepository implements ISnapshotV3ShadowRepo
     if (!refs || refs.length === 0) return [];
 
     const stateIds = [...new Set(refs.map((ref: any) => ref.state_version_id))];
-    const [{ data: states, error: statesError }, { data: syncRun, error: syncRunError }] = await Promise.all([
+    const [{ data: states, error: statesError }, { data: syncRun, error: syncRunMetadataError }] = await Promise.all([
       this.client.from("order_state_versions").select("state_version_id,order_code,material_state").in("state_version_id", stateIds),
-      this.client.from("sync_runs").select("source_updated_at").eq("id", syncRunId).maybeSingle(),
+      this.client.from("shadow_sync_runs").select("source_updated_at,status").eq("sync_run_id", syncRunId).maybeSingle(),
     ]);
     if (statesError) throw new Error(`SnapshotV3 state version read failed: ${statesError.message}`);
-    if (syncRunError) throw new Error(`SnapshotV3 sync run read failed: ${syncRunError.message}`);
+    if (syncRunMetadataError) throw new Error(`SnapshotV3 shadow run metadata read failed: ${syncRunMetadataError.message}`);
 
     const statesById = new Map((states || []).map((state: any) => [state.state_version_id, state]));
     return refs.map((ref: any) => {
@@ -185,7 +197,7 @@ export class SupabaseSnapshotV3ShadowRepository implements ISnapshotV3ShadowRepo
       referenceAvgBytes: row?.reference_avg_bytes == null ? null : Number(row.reference_avg_bytes),
       stateVersionBytesTotal: Number(row?.state_version_bytes_total || 0),
       referenceBytesTotal: Number(row?.reference_bytes_total || 0),
-      legacyEquivalentBytes: Number(row?.legacy_equivalent_bytes || 0),
+      legacyEquivalentBytes: row?.legacy_equivalent_bytes == null ? null : Number(row.legacy_equivalent_bytes),
       actualStorageReductionPct: row?.actual_storage_reduction_pct == null ? null : Number(row.actual_storage_reduction_pct),
     };
   }

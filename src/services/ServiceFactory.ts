@@ -117,7 +117,7 @@ export class ServiceFactory {
       playbookDirectiveRepo,
       client ? new SupabaseLaneObservationRepository(client) : null,
       RepositoryFactory.getInboundOrderObservationRepository(client),
-      RepositoryFactory.getSnapshotV3ShadowRepository(client)
+      RepositoryFactory.getSnapshotV3ShadowRepository()
     );
   }
   public static getPlannerService(client?: SupabaseClient): IPlannerService {
