@@ -19,5 +19,5 @@ export type TriageAuditRecord = TriageAuditInsert & {
 
 export interface ITriageAuditRepository {
   recordBatch(items: TriageAuditInsert[]): Promise<number>;
-  getLatestByIncidentIds(incidentIds: string[]): Promise<TriageAuditRecord[]>;
+  getLatestByIncidentIds(incidentIds: string[], syncRunId?: string): Promise<TriageAuditRecord[]>;
 }

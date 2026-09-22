@@ -31,14 +31,18 @@ export class SupabaseTriageAuditRepository implements ITriageAuditRepository {
     return items.length;
   }
 
-  async getLatestByIncidentIds(incidentIds: string[]): Promise<TriageAuditRecord[]> {
+  async getLatestByIncidentIds(incidentIds: string[], syncRunId?: string): Promise<TriageAuditRecord[]> {
     const canonicalIds = canonicalIncidentIds(incidentIds);
     if (!canonicalIds.length) return [];
-    const { data, error } = await this.client
+    let query = this.client
       .from("incident_triage_evaluations")
       .select("id, incident_id, sync_run_id, route, reason_code, severity, decision_complexity, triage_reason, routing_version, evidence, created_at")
       .in("incident_id", canonicalIds)
       .order("created_at", { ascending: false });
+    if (syncRunId) {
+      query = query.eq("sync_run_id", syncRunId).limit(canonicalIds.length);
+    }
+    const { data, error } = await query;
     if (error) throw new Error(`Triage audit lookup failed: ${error.message}`);
 
     const latestByIncident = new Map<string, TriageAuditRecord>();

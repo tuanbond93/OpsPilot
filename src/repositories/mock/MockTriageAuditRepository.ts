@@ -10,10 +10,10 @@ export class MockTriageAuditRepository implements ITriageAuditRepository {
     return items.length;
   }
 
-  async getLatestByIncidentIds(incidentIds: string[]): Promise<TriageAuditRecord[]> {
+  async getLatestByIncidentIds(incidentIds: string[], syncRunId?: string): Promise<TriageAuditRecord[]> {
     const ids = new Set(incidentIds);
     return this.records
-      .filter((item) => ids.has(item.incidentId))
+      .filter((item) => ids.has(item.incidentId) && (!syncRunId || item.syncRunId === syncRunId))
       .map((item) => ({ ...item, id: `mock-triage:${item.incidentId}:${item.syncRunId}`, createdAt: new Date(0).toISOString() }));
   }
 }

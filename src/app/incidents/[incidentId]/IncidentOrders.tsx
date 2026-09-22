@@ -1,6 +1,6 @@
 "use client";
 
-import { Fragment, useCallback, useEffect, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useState } from "react";
 import { AlertTriangle, BrainCircuit, ChevronDown, ChevronUp, ExternalLink, LoaderCircle } from "lucide-react";
 import { validJourneyTime, type IncidentOrderJourneySource } from "./orderJourney";
 import { bridgeErrorMessage, cacheBridgeTracking, LiveOrderJourney, requestThroughReadyBridge, waitForBridge, type ApiData } from "./LiveOrderJourney";
@@ -64,7 +64,6 @@ export function IncidentOrders({ incidentId, onAnalysisChange }: { incidentId: s
   const [expandedUncoveredOrders, setExpandedUncoveredOrders] = useState<Set<string>>(new Set());
   const [liveOrders, setLiveOrders] = useState<Record<string, LiveOrderTracking>>({});
   const [batchState, setBatchState] = useState({ running: false, completed: 0, total: 0, failed: 0, error: "", errorCode: "" });
-  const automaticAnalysisKey = useRef("");
   const attachRillnetCustomer = useCallback((tracking: LiveOrderTracking, order: IncidentOrderJourneySource): LiveOrderTracking => ({ ...tracking, customerId: order.customer_id || tracking.customerId || null, customerName: order.customer_name || tracking.customerName || null, orderCreatedAt: order.order_created_at || tracking.orderCreatedAt || null, endPickAt: order.end_pick_at || tracking.endPickAt || null, endDeliveryAt: order.end_delivery_at || tracking.endDeliveryAt || null, endSuccessAt: order.end_success_at || tracking.endSuccessAt || null }), []);
   useEffect(() => { fetch(`/api/incidents/${encodeURIComponent(incidentId)}/orders?page=${page}&search=${encodeURIComponent(query)}`, { cache: "no-store" }).then((response) => response.json()).then(setData); }, [incidentId, page, query]);
   const toggleOrder = (code: string, setter: typeof setExpandedGroupOrders) => setter((current) => { const next = new Set(current); if (next.has(code)) next.delete(code); else next.add(code); return next; });
@@ -167,17 +166,9 @@ export function IncidentOrders({ incidentId, onAnalysisChange }: { incidentId: s
     setBatchState({ running: false, completed, total: orders.length, failed, error: terminalError, errorCode: terminalErrorCode });
   }, [attachRillnetCustomer, data?.orders, incidentId]);
 
-  useEffect(() => {
-    if (!data?.orders?.length || batchState.running) return;
-    const key = `${incidentId}:${data.oldestOrderCode || "no-oldest"}`;
-    if (automaticAnalysisKey.current === key) return;
-    automaticAnalysisKey.current = key;
-    void analyzeAllOrders();
-  }, [analyzeAllOrders, batchState.running, data?.oldestOrderCode, data?.orders?.length, incidentId]);
-
   return <section className="rounded-xl border border-slate-800 bg-slate-900 p-5">
     <h2 className="text-lg font-bold">Kiểm chứng đơn và xác định điểm nghẽn</h2>
-    <p className="mt-1 text-sm leading-6 text-slate-400">Hệ thống tự tra cứu các đơn trong sự cố, gom nhóm theo điểm nghẽn và chỉ ra kho cần xử lý.</p>
+    <p className="mt-1 text-sm leading-6 text-slate-400">Bấm “Phân tích lại” khi cần tra cứu GHN toàn bộ sự cố; màn hình ban đầu chỉ tải dữ liệu đơn đã lưu.</p>
     <label htmlFor="order-search" className="mt-3 block text-sm font-semibold">Tìm mã đơn</label>
     <input id="order-search" value={query} onChange={(event) => { setQuery(event.target.value); setPage(1); }} className="mt-1 min-h-11 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 text-base focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-400" />
     <section className="mt-4 rounded-xl border border-cyan-800/70 bg-cyan-950/20 p-4"><div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-center"><div><h3 className="font-bold text-cyan-100">{batchState.running ? "Đang phân tích toàn bộ sự cố" : batchState.error ? "Cần kết nối lại GHN" : "Phân tích tự động"}</h3><p className="mt-1 text-sm text-slate-400">{batchState.running ? `Đã xử lý ${batchState.completed}/${batchState.total} đơn.` : batchState.error ? "Phiên tra cứu GHN không còn hoạt động. Đăng nhập lại rồi tiếp tục phân tích." : "Kết quả sẽ được gom theo nguyên nhân và kho chịu trách nhiệm."}</p></div><div className="flex flex-wrap gap-2">{batchState.errorCode === "GHN_SESSION_EXPIRED" && <a href="https://tracuunoibo.ghn.vn/internal" target="_blank" rel="noopener noreferrer" className="inline-flex min-h-11 shrink-0 items-center justify-center gap-2 rounded-lg border border-amber-400/50 bg-amber-500/10 px-4 font-bold text-amber-100 hover:bg-amber-500/20"><ExternalLink aria-hidden="true" size={17}/>Đăng nhập lại GHN</a>}<button type="button" disabled={batchState.running || !(data?.orders?.length)} onClick={() => void analyzeAllOrders(true)} className="inline-flex min-h-11 shrink-0 items-center justify-center gap-2 rounded-lg bg-cyan-500 px-4 font-bold text-slate-950 disabled:cursor-wait disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cyan-300">{batchState.running ? <LoaderCircle aria-hidden="true" className="animate-spin" size={18}/> : <BrainCircuit aria-hidden="true" size={18}/>} {batchState.running ? `Đang xử lý ${batchState.completed}/${batchState.total}` : batchState.error ? "Thử lại sau khi đăng nhập" : "Phân tích lại"}</button></div></div>{batchState.total > 0 && <div className="mt-3" aria-live="polite"><div className="h-2 overflow-hidden rounded-full bg-slate-800"><div className="h-full bg-cyan-400 transition-[width]" style={{ width: `${Math.round((batchState.completed / batchState.total) * 100)}%` }}/></div>{!batchState.error && !batchState.running && <p className="mt-2 text-xs text-emerald-200">Đã phân tích {batchState.completed - batchState.failed}/{batchState.total} đơn. Xem các nhóm kết quả bên dưới.</p>}{batchState.error && <div role="alert" className="mt-2 rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-100"><p className="font-semibold">Chưa thể hoàn tất phân tích</p><p className="mt-1">{batchState.errorCode === "GHN_SESSION_EXPIRED" ? "Mở GHN, đăng nhập lại, quay về đây và bấm “Thử lại sau khi đăng nhập”." : batchState.error}</p></div>}</div>}</section>

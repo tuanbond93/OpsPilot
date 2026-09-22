@@ -7,7 +7,6 @@ import { SchedulerRunner, schedulerRunner } from "./scheduler";
 import { HealthRegistry } from "./health";
 import { SCHEDULER_JOBS } from "../config/scheduler";
 import { generate } from "../ai";
-import { createClient } from "@supabase/supabase-js";
 
 export interface StartupReport {
   success: boolean;
@@ -219,77 +218,11 @@ export class StartupValidator {
           const factExists = Boolean(factRows && factRows.length > 0);
           const firstFact = (factRows?.[0] || null) as any;
 
-          // 3. Stored procedure probe & permissions
-          let rpcServiceRoleAllowed = false;
-          let rpcPublicRevoked = false;
-          let rpcDetail = "";
-
-          // 3a. Probe with service_role (pass invalid values to trigger constraint/not-null error without mutating)
-          try {
-            const { error: srRpcErr } = await dbClient.rpc("replace_vehicle_availability_fact", {
-              p_warehouse_id: null as any,
-              p_supplier_name: "Thiên Phú",
-              p_vehicle_class: "TRUCK_1_9T",
-              p_available_count: 1,
-              p_available_at: new Date().toISOString(),
-              p_captured_at: new Date().toISOString(),
-              p_valid_until: new Date().toISOString(),
-              p_source_ref: "TEST_PROBE",
-              p_supplied_by: "system",
-              p_supplier_role: "SYSTEM_ADMIN",
-            });
-            // If function exists and service_role has permission, Postgres executes it and fails on NOT NULL warehouse_id
-            if (srRpcErr && (srRpcErr.message?.includes("null value") || srRpcErr.code === "23502" || srRpcErr.message?.includes("constraint"))) {
-              rpcServiceRoleAllowed = true;
-              rpcDetail = "SERVICE_ROLE_EXECUTION_VERIFIED";
-            } else if (!srRpcErr) {
-              rpcServiceRoleAllowed = true;
-            } else {
-              rpcDetail = srRpcErr.message;
-            }
-          } catch (e: any) {
-            rpcDetail = e?.message || String(e);
-          }
-
-          // 3b. Probe with anon (must be denied permission or hidden from schema cache)
-          const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-          const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-          let anonClient = null;
-          let anonRpcDetail = "";
-          if (supabaseUrl && anonKey) {
-            try {
-              anonClient = createClient(supabaseUrl, anonKey, { auth: { persistSession: false } });
-              const { error: anonRpcErr } = await anonClient.rpc("replace_vehicle_availability_fact", {
-                p_warehouse_id: "21160000",
-                p_supplier_name: "Thiên Phú",
-                p_vehicle_class: "TRUCK_1_9T",
-                p_available_count: 1,
-                p_available_at: new Date().toISOString(),
-                p_captured_at: new Date().toISOString(),
-                p_valid_until: new Date().toISOString(),
-                p_source_ref: "TEST_PROBE",
-                p_supplied_by: "system",
-                p_supplier_role: "SYSTEM_ADMIN",
-              });
-              if (anonRpcErr) {
-                anonRpcDetail = `[anon code=${anonRpcErr.code} msg=${anonRpcErr.message}]`;
-                const msgLower = (anonRpcErr.message || "").toLowerCase();
-                if (
-                  anonRpcErr.code === "42501" ||
-                  anonRpcErr.code === "PGRST202" ||
-                  msgLower.includes("permission denied") ||
-                  msgLower.includes("could not find") ||
-                  msgLower.includes("schema cache") ||
-                  msgLower.includes("not found")
-                ) {
-                  rpcPublicRevoked = true;
-                }
-              }
-            } catch (e: any) {
-              anonRpcDetail = `[anon exception: ${e?.message || String(e)}]`;
-              rpcPublicRevoked = true;
-            }
-          }
+          // 3. Write-capable RPC and insert probes are intentionally omitted from
+          // normal read paths. The explicit health/operations tooling owns any
+          // deeper write-policy verification; dashboard navigation must remain
+          // strictly read-only.
+          const rpcDetail = "WRITE_PROBES_SKIPPED_ON_READ_PATH";
 
           // 4. Unique Current Index verification (Read-only assertion verified live)
           // Live probe previously confirmed code 23505 duplicate key rejection on uq_fleet_avail_single_current.
@@ -297,28 +230,8 @@ export class StartupValidator {
           const uniqueIndexPass = true;
           const indexDetail = "INDEX_ACTIVE_AND_ENFORCED";
 
-          // 5. RLS and direct write policy check
-          let anonReadBlocked = false;
-          let directClientWritePolicyAdded = false;
-          if (anonClient) {
-            try {
-              const { data: anonData } = await anonClient.from("vehicle_fleet_availability").select("id").limit(1);
-              anonReadBlocked = (!anonData || anonData.length === 0);
-
-              // Verify anon direct-write is blocked by RLS
-              const { error: anonWriteErr } = await anonClient.from("vehicle_fleet_availability").insert({
-                warehouse_id: "21160000",
-                supplier_name: "Thiên Phú",
-                vehicle_class: "TRUCK_1_9T",
-              });
-              if (anonWriteErr && (anonWriteErr.message?.includes("policy") || anonWriteErr.code === "42501")) {
-                directClientWritePolicyAdded = false;
-              }
-            } catch {
-              anonReadBlocked = true;
-            }
-          }
-
+          // 5. Read-path health intentionally does not create an anon client or
+          // issue any write probe. This is reported explicitly below.
           // 6. Old bad fact status & expiration check
           const nowMs = Date.now();
           const validUntilMs = firstFact?.valid_until ? new Date(firstFact.valid_until).getTime() : 0;
@@ -329,7 +242,7 @@ export class StartupValidator {
           const expectedValidUntil = new Date("2026-09-19T17:00:00+07:00").toISOString();
           const originalValidUntilPreserved = validUntilNormalized === expectedValidUntil;
 
-          const migrationAllPass = colsPass && rpcServiceRoleAllowed && rpcPublicRevoked && uniqueIndexPass;
+          const migrationAllPass = colsPass && uniqueIndexPass;
 
           return {
             status: "GREEN",
@@ -338,12 +251,12 @@ export class StartupValidator {
               supersessionColumns: colsPass ? "PASS" : "FAIL",
               uniqueCurrentIndex: uniqueIndexPass ? "PASS" : "FAIL",
               indexDetail,
-              atomicReplaceRpc: rpcServiceRoleAllowed ? "PASS" : "FAIL",
-              rpcPublicRevoked: rpcPublicRevoked ? "YES" : "NO",
-              rpcServiceRoleAllowed: rpcServiceRoleAllowed ? "YES" : "NO",
-              rpcDetail: `${rpcDetail} ${anonRpcDetail}`.trim(),
-              rlsEnabled: anonReadBlocked ? "YES" : "NO",
-              directClientWritePolicyAdded: directClientWritePolicyAdded ? "YES" : "NO",
+              atomicReplaceRpc: "NOT_PROBED_READ_PATH",
+              rpcPublicRevoked: "NOT_PROBED_READ_PATH",
+              rpcServiceRoleAllowed: "NOT_PROBED_READ_PATH",
+              rpcDetail,
+              rlsEnabled: "NOT_PROBED_READ_PATH",
+              directClientWritePolicyAdded: "NOT_PROBED_READ_PATH",
               oldBadFactOriginalValidUntilPreserved: originalValidUntilPreserved ? "YES" : "NO",
               oldBadFactSupersededAt: firstFact?.superseded_at === null ? "NULL" : (firstFact?.superseded_at || "NULL"),
               oldBadFactActiveNow: isActiveNow ? "YES" : "NO",

@@ -17,8 +17,29 @@ export async function GET(
 
     const service = ServiceFactory.getIncidentService(dbClient);
     const result = await service.getIncidentHistory(incidentId);
+    const { data: followupCase, error: followupError } = await dbClient
+      .from("followup_cases")
+      .select("id, incident_id, incident_key, current_state, next_action_at, last_checked_at, current_progress_percent, current_assessment")
+      .eq("incident_id", result.incident.id)
+      .order("updated_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
 
-    return NextResponse.json(result);
+    if (followupError) throw followupError;
+
+    return NextResponse.json({
+      ...result,
+      followup: followupCase ? {
+        id: followupCase.id,
+        incidentId: followupCase.incident_id,
+        incidentKey: followupCase.incident_key,
+        currentState: followupCase.current_state,
+        nextActionAt: followupCase.next_action_at,
+        lastCheckedAt: followupCase.last_checked_at,
+        progressPercent: followupCase.current_progress_percent,
+        progressAssessment: followupCase.current_assessment,
+      } : null,
+    });
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
     return NextResponse.json(

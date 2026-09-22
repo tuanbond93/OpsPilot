@@ -116,24 +116,21 @@ export default function IncidentDetailPage() {
 
   const load = useCallback(async () => {
     setLoading(true); setError("");
-    const [dashboardResult, rootCauseResult, plannerResult, copilotResult, historyResult] = await Promise.allSettled([
-      requestJson("/api/dashboard"),
+    const [rootCauseResult, plannerResult, copilotResult, historyResult] = await Promise.allSettled([
       requestJson(`/api/debug/rootcause/${encodeURIComponent(incidentId)}`),
       requestJson(`/api/debug/planner/${encodeURIComponent(incidentId)}`),
       requestJson(`/api/copilot/incident/${encodeURIComponent(incidentId)}`),
       requestJson(`/api/debug/incidents/${encodeURIComponent(incidentId)}/history`),
     ]);
-    const dashboard = dashboardResult.status === "fulfilled" ? dashboardResult.value : null;
     const historyPayload = historyResult.status === "fulfilled" ? historyResult.value : null;
-    const dashboardIncident = (dashboard?.incidents?.items || []).find((item: Json) => item.incidentId === incidentId);
-    const persistedIncident = historyPayload?.incident?.warehouseName ? historyPayload.incident : null;
-    const selected = persistedIncident || dashboardIncident
-      ? { ...(persistedIncident || {}), ...(dashboardIncident || {}) }
+    const persistedIncident = historyPayload?.incident?.id && historyPayload.incident.status !== "not_found"
+      ? historyPayload.incident
       : null;
+    const selected = persistedIncident ? { ...persistedIncident } : null;
     setIncident(selected ? { ...selected, sourceReasonName: selected.reasonName, reasonName: incidentSignalLabel(selected.reasonName) } : null);
-    setFollowup((dashboard?.followups?.items || []).find((item: Json) => item.incidentKey === selected?.incidentKey) || null);
-    if (!selected && dashboardResult.status === "rejected") {
-      setError(dashboardResult.reason instanceof Error ? dashboardResult.reason.message : String(dashboardResult.reason));
+    setFollowup(historyPayload?.followup || null);
+    if (!selected && historyResult.status === "rejected") {
+      setError(historyResult.reason instanceof Error ? historyResult.reason.message : String(historyResult.reason));
     }
     setRootCause(rootCauseResult.status === "fulfilled" ? rootCauseResult.value : null);
     setPlanner(plannerResult.status === "fulfilled" ? plannerResult.value : null);

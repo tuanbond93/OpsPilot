@@ -99,7 +99,8 @@ export class DashboardService implements IDashboardService {
     }
 
     const latestTriages = await this.triageAuditRepo.getLatestByIncidentIds(
-      filteredIncidents.map((incident: any) => incident.incident_id).filter(Boolean)
+      filteredIncidents.map((incident: any) => incident.incident_id).filter(Boolean),
+      latestSyncRun?.id
     );
     const latestTriageByIncident = new Map(latestTriages.map((triage) => [triage.incidentId, triage]));
 
