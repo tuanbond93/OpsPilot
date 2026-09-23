@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type {
   IInboundOrderObservationRepository,
   InboundOrderObservationRow,
+  InboundPopulationManifest,
   InboundPopulationManifestInput,
 } from "@/repositories/interfaces/IInboundOrderObservationRepository";
 
@@ -49,6 +50,16 @@ class InMemoryPopulationRepository implements IInboundOrderObservationRepository
 
   getRows(): InboundOrderObservationRow[] {
     return [...this.persisted.values()];
+  }
+
+  async getPopulationManifest(_syncRunId: string, _sourceSystem: "RILLNET"): Promise<InboundPopulationManifest | null> {
+    if (!this.manifestStatus) return null;
+    return {
+      ...manifestInput(this.persisted.size),
+      population_status: this.manifestStatus,
+      persisted_observation_count: this.persisted.size,
+      population_completed_at: this.manifestStatus === "COMPLETE" ? "2026-09-22T01:00:30.000Z" : null,
+    };
   }
 
   async replaceIncompletePopulation(_input: InboundPopulationManifestInput): Promise<void> {

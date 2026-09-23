@@ -22,7 +22,15 @@ export interface InboundPopulationManifestInput {
   source_freshness: string | null;
 }
 
+export interface InboundPopulationManifest extends InboundPopulationManifestInput {
+  population_status: "STARTED" | "COMPLETE" | "FAILED";
+  persisted_observation_count: number;
+  population_completed_at?: string | null;
+}
+
 export interface IInboundOrderObservationRepository {
+  getPopulationManifest(syncRunId: string, sourceSystem: "RILLNET"): Promise<InboundPopulationManifest | null>;
+
   /**
    * Mark an incomplete population as rebuildable and remove its prior rows.
    *

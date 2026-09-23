@@ -463,6 +463,9 @@ export class SyncService implements ISyncService {
       let activeExceptions = new Set<string>();
       let incidents: any[] = [];
       const keyToIdMap = new Map<string, string>();
+      let reusingCompleteInboundPopulation = false;
+      let completePopulationResumeReady = false;
+      let completePopulationPersistedCount = 0;
 
       // 1. Resume Check & State Rehydration
       let syncRunId = "";
@@ -509,6 +512,42 @@ export class SyncService implements ISyncService {
                 }
               } catch {
                 incidentsRehydrated = false;
+              }
+            }
+
+            if (this.inboundOrderObservationRepo) {
+              const manifest = await this.inboundOrderObservationRepo.getPopulationManifest(
+                syncRunId,
+                INBOUND_OBSERVATION_SOURCE,
+              );
+              if (manifest?.population_status === "COMPLETE") {
+                const persistedCount = await this.inboundOrderObservationRepo.countPersisted(
+                  syncRunId,
+                  INBOUND_OBSERVATION_SOURCE,
+                );
+                if (
+                  persistedCount !== manifest.expected_observation_count
+                  || persistedCount !== manifest.persisted_observation_count
+                  || manifest.duplicate_conflict_count !== 0
+                ) {
+                  throw new Error(
+                    `INBOUND_COMPLETE_POPULATION_COUNT_MISMATCH: expected=${manifest.expected_observation_count}, manifest=${manifest.persisted_observation_count}, found=${persistedCount}`,
+                  );
+                }
+
+                reusingCompleteInboundPopulation = true;
+                completePopulationPersistedCount = persistedCount;
+                normalizedOrderCount = manifest.normalized_population_count;
+                fetchedOrderCount = unfinishedRun.fetched_order_count || manifest.normalized_population_count;
+                sourceUpdatedAt = manifest.source_freshness || unfinishedRun.source_updated_at || null;
+                const requiredCompletedPhases: SyncPhase[] = [
+                  "FETCHING_SNAPSHOT",
+                  "PERSISTING_SNAPSHOTS",
+                  "PERSISTING_INCIDENTS",
+                  "PERSISTING_HISTORY",
+                ];
+                completePopulationResumeReady = incidentsRehydrated
+                  && requiredCompletedPhases.every((phase) => completedPhases.includes(phase));
               }
             }
 
@@ -587,9 +626,21 @@ export class SyncService implements ISyncService {
       };
 
       try {
+        if (reusingCompleteInboundPopulation && !completePopulationResumeReady) {
+          throw new Error("INBOUND_COMPLETE_POPULATION_RESUME_STATE_UNAVAILABLE");
+        }
+
         // Phase 2: FETCHING_SNAPSHOT
         const pFetch = "FETCHING_SNAPSHOT" as SyncPhase;
-        if (completedPhases.includes(pFetch) && snapshotResult.orders && snapshotResult.orders.length > 0) {
+        if (reusingCompleteInboundPopulation) {
+          logger.info({
+            component: "SyncService",
+            operation: "inboundPopulation",
+            status: "info",
+            message: `[SyncResume] inboundPopulation=COMPLETE_REUSED rows=${completePopulationPersistedCount}`,
+            metadata: { syncRunId, persistedCount: completePopulationPersistedCount },
+          });
+        } else if (completedPhases.includes(pFetch) && snapshotResult.orders && snapshotResult.orders.length > 0) {
           logger.info({
               component: "SyncService",
               operation: "phaseFetch",
@@ -715,10 +766,11 @@ export class SyncService implements ISyncService {
             });
         }
 
-        // Even a zero-order snapshot needs an explicit COMPLETE manifest so
-        // the reader can distinguish a governed zero from an absent source.
+        // A COMPLETE population is immutable. A resumed process with persisted
+        // downstream state reuses its manifest and rows without refetching,
+        // normalizing, replacing, or reinserting source data.
         const manifestSourceFreshness = governedSourceFreshness(sourceUpdatedAt);
-        if (!snapshotResult.orders || snapshotResult.orders.length === 0) {
+        if (!reusingCompleteInboundPopulation && (!snapshotResult.orders || snapshotResult.orders.length === 0)) {
           if (!this.inboundOrderObservationRepo) {
             // In-memory legacy runs retain their existing behavior but cannot
             // become inbound-evidence authoritative: no manifest exists.
@@ -753,7 +805,7 @@ export class SyncService implements ISyncService {
         }
 
         // Re-normalize and load exceptions if snapshot is available
-        if (snapshotResult.orders && snapshotResult.orders.length > 0) {
+        if (!reusingCompleteInboundPopulation && snapshotResult.orders && snapshotResult.orders.length > 0) {
           const tNormStart = performance.now();
           logPhaseStart("normalizeOrders");
           normalizedOrderCount = snapshotResult.orders.length;

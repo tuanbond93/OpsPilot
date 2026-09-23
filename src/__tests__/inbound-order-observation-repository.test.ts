@@ -23,6 +23,33 @@ function chain<T>(result: T) {
 }
 
 describe("SupabaseInboundOrderObservationRepository replacement contract", () => {
+  it("reads the source manifest without mutating it", async () => {
+    const manifest = {
+      sync_run_id: input.sync_run_id,
+      source_system: input.source_system,
+      population_status: "COMPLETE",
+      normalized_population_count: 9683,
+      expected_observation_count: 9683,
+      persisted_observation_count: 9683,
+      duplicate_identical_count: 0,
+      duplicate_conflict_count: 0,
+      source_freshness: input.source_freshness,
+      population_completed_at: "2026-09-22T01:00:30.000Z",
+    };
+    const manifestSelect = {
+      eq: vi.fn(),
+      maybeSingle: vi.fn(async () => ({ data: manifest, error: null })),
+    };
+    manifestSelect.eq.mockReturnValue(manifestSelect);
+    const from = vi.fn(() => ({ select: vi.fn(() => manifestSelect) }));
+    const repository = new SupabaseInboundOrderObservationRepository({ from } as unknown as SupabaseClient);
+
+    await expect(repository.getPopulationManifest(input.sync_run_id, input.source_system)).resolves.toEqual(manifest);
+    expect(from).toHaveBeenCalledWith("inbound_population_manifests");
+    expect(manifestSelect.eq).toHaveBeenNthCalledWith(1, "sync_run_id", input.sync_run_id);
+    expect(manifestSelect.eq).toHaveBeenNthCalledWith(2, "source_system", input.source_system);
+  });
+
   it("resets the manifest before deleting the incomplete run population", async () => {
     const manifestSelect = chain({ data: { population_status: "FAILED" }, error: null });
     const manifestUpsert = vi.fn().mockResolvedValue({ error: null });

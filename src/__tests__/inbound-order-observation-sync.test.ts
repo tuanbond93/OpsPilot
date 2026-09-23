@@ -19,6 +19,7 @@ describe("complete inbound observation population", () => {
     const rows: InboundOrderObservationRow[] = [];
     const manifests: string[] = [];
     const fullPopulationRepo = {
+      getPopulationManifest: vi.fn(async () => null),
       replaceIncompletePopulation: vi.fn(async () => { manifests.push("REPLACED"); }),
       insertBatch: vi.fn(async (input: InboundOrderObservationRow[]) => {
         rows.push(...input);
@@ -90,6 +91,7 @@ describe("complete inbound observation population", () => {
   it("marks the population FAILED and prevents sync success when persistence fails", async () => {
     const states: string[] = [];
     const failingRepo = {
+      getPopulationManifest: vi.fn(async () => null),
       replaceIncompletePopulation: vi.fn(async () => { states.push("REPLACED"); }),
       insertBatch: vi.fn(async () => { throw new Error("DATABASE_WRITE_FAILED"); }),
       countPersisted: vi.fn(async () => 0),

@@ -1,8 +1,19 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
-import type { IInboundOrderObservationRepository, InboundOrderObservationRow, InboundPopulationManifestInput } from "../interfaces/IInboundOrderObservationRepository";
+import type { IInboundOrderObservationRepository, InboundOrderObservationRow, InboundPopulationManifest, InboundPopulationManifestInput } from "../interfaces/IInboundOrderObservationRepository";
 
 export class SupabaseInboundOrderObservationRepository implements IInboundOrderObservationRepository {
   constructor(private readonly client: SupabaseClient) {}
+
+  async getPopulationManifest(syncRunId: string, sourceSystem: "RILLNET"): Promise<InboundPopulationManifest | null> {
+    const { data, error } = await this.client
+      .from("inbound_population_manifests")
+      .select("sync_run_id,source_system,population_status,normalized_population_count,expected_observation_count,persisted_observation_count,duplicate_identical_count,duplicate_conflict_count,source_freshness,population_completed_at")
+      .eq("sync_run_id", syncRunId)
+      .eq("source_system", sourceSystem)
+      .maybeSingle();
+    if (error) throw new Error(`InboundOrderObservationRepository.getPopulationManifest failed: ${error.message}`);
+    return data as InboundPopulationManifest | null;
+  }
 
   async replaceIncompletePopulation(input: InboundPopulationManifestInput): Promise<void> {
     const { data: existingManifest, error: readError } = await this.client
