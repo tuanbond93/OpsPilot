@@ -14,6 +14,16 @@ export type CheckpointRecoveryInput = {
   lastSafeError: string;
 };
 
+export type StaleRunRecoveryQueueResult = {
+  outcome: "QUEUED" | "ALREADY_QUEUED" | "REJECTED";
+  code: string | null;
+  syncRunId: string | null;
+  checkpointAt: string | null;
+  recoveryStatus: string | null;
+  recoveryAttempt: number | null;
+  tokenPresent: boolean;
+};
+
 const safeError = (value: string) => value.slice(0, 500);
 
 export function isRetryableRecoveryHttpOutcome(input: { statusCode?: number | null; timedOut?: boolean; error?: string | null }): boolean {
@@ -26,7 +36,23 @@ export function nextRecoveryAttemptAt(attemptCount: number, now = Date.now()): s
   return new Date(now + RECOVERY_BACKOFF_MS * Math.max(1, attemptCount)).toISOString();
 }
 
-export async function queueCheckpointRecovery(client: SupabaseClient, input: CheckpointRecoveryInput): Promise<void> {
+export function queueCheckpointRecovery(client: SupabaseClient, input: { syncRunId: string }): Promise<StaleRunRecoveryQueueResult>;
+export function queueCheckpointRecovery(client: SupabaseClient, input: CheckpointRecoveryInput): Promise<void>;
+export async function queueCheckpointRecovery(
+  client: SupabaseClient,
+  input: CheckpointRecoveryInput | { syncRunId: string },
+): Promise<void | StaleRunRecoveryQueueResult> {
+  if ("syncRunId" in input) {
+    const { data, error } = await client.rpc("queue_stale_checkpoint_recovery_for_run", {
+      p_sync_run_id: input.syncRunId,
+    });
+    if (error) throw error;
+    if (!data || typeof data !== "object" || Array.isArray(data)) {
+      throw new Error("CHECKPOINT_RECOVERY_OPERATOR_INVALID_RESPONSE");
+    }
+    return data as StaleRunRecoveryQueueResult;
+  }
+
   const { error } = await client.from("checkpoint_recoveries").upsert({
     checkpoint_at: input.checkpointAt,
     recovery_attempt: 0,
