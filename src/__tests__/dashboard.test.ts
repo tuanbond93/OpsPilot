@@ -80,25 +80,20 @@ describe("Sprint 7 Hardened — Executive Operations Control Center Tests", () =
     }
   });
 
-  it("3. Health Semantics include status, healthReason, lastSuccessAt, lastFailureAt, and freshnessSeconds", async () => {
+  it("3. Dashboard health summary reports sync freshness without running component probes", async () => {
     const req = new Request("http://localhost:3000/api/dashboard");
     const response = await GET(req);
 
     const json = await response.json();
     const health = json.health;
 
-    expect(health.database).toHaveProperty("status");
-    expect(health.database).toHaveProperty("healthReason");
-    expect(health.database).toHaveProperty("lastSuccessAt");
-
-    expect(health.aiWorker).toHaveProperty("status");
-    expect(health.aiWorker).toHaveProperty("healthReason");
-
-    expect(health.notificationPlatform).toHaveProperty("status");
-    expect(health.notificationPlatform).toHaveProperty("healthReason");
-
-    expect(health.aiProvider).toHaveProperty("status");
-    expect(health.aiProvider).toHaveProperty("healthReason");
+    expect(health).toHaveProperty("lastSync");
+    expect(health).toHaveProperty("lastSuccessfulSync");
+    expect(health).toHaveProperty("latestSyncStatus");
+    expect(health).not.toHaveProperty("database");
+    expect(health).not.toHaveProperty("aiWorker");
+    expect(health).not.toHaveProperty("notificationPlatform");
+    expect(health).not.toHaveProperty("aiProvider");
   });
 
   it("4. Production fails closed when auth enforcement is disabled", async () => {

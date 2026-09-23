@@ -17,5 +17,6 @@ export interface IAiJobRepository {
   ): Promise<AiAnalysisJobRow | null>;
   getPendingJobByIncidentId(incidentId: string): Promise<AiAnalysisJobRow | null>;
   getAllJobs(limit?: number): Promise<AiAnalysisJobRow[]>;
+  getDashboardJobs(sinceIso: string, limit?: number): Promise<AiAnalysisJobRow[]>;
   getLatestJobByIncidentId(incidentId: string): Promise<AiAnalysisJobRow | null>;
 }

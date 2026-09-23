@@ -41,15 +41,6 @@ export async function requestThroughBridge(orderCode: string): Promise<ApiData> 
   return requestThroughReadyBridge(orderCode);
 }
 
-export function cacheBridgeTracking(incidentId: string, tracking: ApiData) {
-  const { recipientName: _recipientName, recipientAddress: _recipientAddress, ...safeToCache } = tracking;
-  return fetch(`/api/incidents/${encodeURIComponent(incidentId)}/orders/${encodeURIComponent(tracking.orderCode)}/live-status`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(safeToCache),
-  });
-}
-
 export function bridgeErrorMessage(code: string) {
   if (code === "BRIDGE_UNAVAILABLE") return "Chưa cài hoặc chưa bật OpsPilot GHN Tracking Bridge trong Tampermonkey.";
   if (code === "GHN_SESSION_NOT_FOUND") return "Chưa bắt được phiên Tra cứu nội bộ GHN. Hãy mở GHN, đăng nhập và tra cứu một mã đơn để Bridge nhận phiên mới.";
@@ -78,7 +69,6 @@ export function LiveOrderJourney({ orderCode, onResolved }: { orderCode: string;
       let payload: ApiData;
       try {
         payload = await requestThroughBridge(orderCode);
-        void cacheBridgeTracking(incidentId, payload);
       } catch (bridgeError) {
         const response = await fetch(`/api/incidents/${encodeURIComponent(incidentId)}/orders/${encodeURIComponent(orderCode)}/live-status`, { cache: "no-store" });
         if (!response.ok) throw bridgeError;
@@ -95,11 +85,7 @@ export function LiveOrderJourney({ orderCode, onResolved }: { orderCode: string;
     }
   }, [orderCode, onResolved]);
 
-  useEffect(() => {
-    void load();
-    const timer = window.setInterval(() => { if (document.visibilityState === "visible") void load(); }, 60_000);
-    return () => window.clearInterval(timer);
-  }, [load]);
+  useEffect(() => { void load(); }, [load]);
 
   if (loading && !data) return <div aria-busy="true" aria-live="polite" className="flex min-h-40 items-center justify-center gap-3 rounded-xl border border-cyan-900/60 bg-cyan-950/20 text-cyan-200"><LoaderCircle aria-hidden="true" className="animate-spin" size={20}/><span>Đang kiểm tra trực tiếp trên GHN…</span></div>;
   if (error && !data) return <div role="alert" className="rounded-xl border border-amber-500/40 bg-amber-500/10 p-4 text-amber-100"><div className="flex gap-3"><AlertTriangle aria-hidden="true" className="mt-0.5 shrink-0" size={20}/><div><p className="font-semibold">Không thể xác minh trạng thái trực tiếp</p><p className="mt-1 text-sm text-amber-200/80">{error}</p><div className="mt-3 flex flex-wrap gap-2">{errorCode === "BRIDGE_UNAVAILABLE" && <a href="/ghn-bridge.user.js" className="inline-flex min-h-11 items-center rounded-lg bg-amber-300 px-3 font-bold text-slate-950 focus-visible:outline focus-visible:outline-2 focus-visible:outline-amber-100">Cài Tampermonkey Bridge</a>}<button type="button" onClick={() => void load()} className="inline-flex min-h-11 items-center gap-2 rounded-lg border border-amber-400/40 px-3 font-semibold focus-visible:outline focus-visible:outline-2 focus-visible:outline-amber-300"><RefreshCw aria-hidden="true" size={16}/>Thử lại</button>{errorCode === "GHN_SESSION_NOT_FOUND" && <a href="https://tracuunoibo.ghn.vn/" target="_blank" rel="noopener noreferrer" className="inline-flex min-h-11 items-center rounded-lg border border-amber-400/40 px-3 font-semibold">Mở trang GHN</a>}</div></div></div></div>;

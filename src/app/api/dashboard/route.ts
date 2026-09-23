@@ -80,7 +80,6 @@ export async function GET(request: Request) {
           aiJobsRunning: 0,
           notificationsPending: 0,
           notificationsFailed: 0,
-          telegramPushSentToday: 0,
         },
         incidents: emptyBounded,
         workerStatus: { pendingCount: 0, processingCount: 0, completedTodayCount: 0, failedTodayCount: 0, retryQueueCount: 0, workerHealth: "degraded", lastExecution: null, averageRuntimeMs: 0, queueDepth: 0 },

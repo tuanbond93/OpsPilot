@@ -236,6 +236,15 @@ export class SupabaseAiJobRepository extends BaseRepository implements IAiJobRep
     return this.executeMany<AiAnalysisJobRow>(query as any);
   }
 
+  async getDashboardJobs(sinceIso: string, limit: number = 200): Promise<AiAnalysisJobRow[]> {
+    const query = this.client.from("ai_analysis_jobs")
+      .select("*")
+      .or("status.in.(PENDING,PROCESSING),updated_at.gte." + sinceIso)
+      .order("updated_at", { ascending: false })
+      .limit(limit);
+    return this.executeMany<AiAnalysisJobRow>(query as any);
+  }
+
   async getLatestJobByIncidentId(incidentId: string): Promise<AiAnalysisJobRow | null> {
     const query = this.client
       .from("ai_analysis_jobs")

@@ -159,6 +159,13 @@ export class MockAiJobRepository implements IAiJobRepository {
       .slice(0, limit);
   }
 
+  async getDashboardJobs(sinceIso: string, limit: number = 200): Promise<AiAnalysisJobRow[]> {
+    return [...this.inMemoryJobs]
+      .filter((job) => job.status === "PENDING" || job.status === "PROCESSING" || (job.updated_at || "") >= sinceIso)
+      .sort((a, b) => new Date(b.updated_at || b.created_at || 0).getTime() - new Date(a.updated_at || a.created_at || 0).getTime())
+      .slice(0, limit);
+  }
+
   async getLatestJobByIncidentId(incidentId: string): Promise<AiAnalysisJobRow | null> {
     const matches = this.inMemoryJobs.filter((j) => j.incident_id === incidentId);
     return matches.sort((a, b) => new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime())[0] || null;

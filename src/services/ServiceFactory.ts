@@ -183,8 +183,7 @@ export class ServiceFactory {
     return new DashboardService(
       RepositoryFactory.getDashboardRepository(client),
       RepositoryFactory.getAiJobRepository(client),
-      RepositoryFactory.getSyncRunRepository(client),
-      RepositoryFactory.getTriageAuditRepository(client)
+      RepositoryFactory.getSyncRunRepository(client)
     );
   }
   public static getProjectionService(client?: SupabaseClient): IProjectionService {

@@ -3,9 +3,6 @@ import { BusinessRules } from "../../config/business-rules";
 import { IDashboardRepository } from "../../repositories/interfaces/IDashboardRepository";
 import { IAiJobRepository } from "../../repositories/interfaces/IAiJobRepository";
 import { ISyncRunRepository } from "../../repositories/interfaces/ISyncRunRepository";
-import { HealthRegistry } from "../../integrations/health";
-import { StartupValidator } from "../../integrations/startup-validator";
-import { ITriageAuditRepository } from "../../repositories/interfaces/ITriageAuditRepository";
 
 const VIETNAM_OFFSET_MS = 7 * 60 * 60 * 1000;
 
@@ -25,8 +22,7 @@ export class DashboardService implements IDashboardService {
   constructor(
     private dashboardRepo: IDashboardRepository,
     private aiJobRepo: IAiJobRepository,
-    private syncRepo: ISyncRunRepository,
-    private triageAuditRepo: ITriageAuditRepository
+    private syncRepo: ISyncRunRepository
   ) {}
 
   async getDashboard(context: DashboardContext): Promise<any> {
@@ -51,28 +47,18 @@ export class DashboardService implements IDashboardService {
     const [
       incidentsListRaw,
       warehousesListRaw,
-      plannerListRaw,
       notificationsListRaw,
-      telegramRemindersToday,
-      latestSyncRun,
       recentSyncRuns,
-      allAiJobs,
-      actionEvents,
-      followupEvents,
-      plannerReviewEvents,
+      dashboardAiJobs,
     ] = await Promise.all([
-      this.dashboardRepo.getIncidentSummaries(),
+      this.dashboardRepo.getIncidentSummaries(allowedWarehouseIds, configuredScope),
       this.dashboardRepo.getWarehouseSummaries(),
-      this.dashboardRepo.getPlannerSummaries(),
       this.dashboardRepo.getNotificationSummaries(),
-      this.dashboardRepo.getTelegramFollowupRemindersUpdatedSince(vietnamDay.startIso),
-      this.syncRepo.getLatestSyncRun(),
       this.syncRepo.getLatestSyncRuns(20),
-      this.aiJobRepo.getAllJobs(100),
-      this.dashboardRepo.getRecentActionEvents(30),
-      this.dashboardRepo.getRecentFollowupEvents(30),
-      this.dashboardRepo.getRecentPlannerReviewEvents(30),
+      this.aiJobRepo.getDashboardJobs(new Date(now - 7 * 24 * 60 * 60 * 1000).toISOString(), 200),
     ]);
+    const latestSyncRun = recentSyncRuns[0] || null;
+    const latestSuccessfulSyncRun = recentSyncRuns.find((run) => run.status === "success") || null;
 
     incidentsMs = Math.round(performance.now() - t0);
 
@@ -92,16 +78,11 @@ export class DashboardService implements IDashboardService {
     }
 
     const latestAiJobByIncident = new Map<string, any>();
-    for (const job of allAiJobs) {
+    for (const job of dashboardAiJobs) {
       if (job.incident_id && !latestAiJobByIncident.has(job.incident_id)) {
         latestAiJobByIncident.set(job.incident_id, job);
       }
     }
-
-    const latestTriages = await this.triageAuditRepo.getLatestByIncidentIds(
-      filteredIncidents.map((incident: any) => incident.incident_id).filter(Boolean)
-    );
-    const latestTriageByIncident = new Map(latestTriages.map((triage) => [triage.incidentId, triage]));
 
     const liveIncidentsList = filteredIncidents.map((i: any) => {
       let riskMap: any = { score: 50, level: "medium" };
@@ -122,7 +103,7 @@ export class DashboardService implements IDashboardService {
         }
       }
       
-      const triage = latestTriageByIncident.get(i.incident_id);
+      const triage = i.triage || null;
       const triageEvidence = triage?.evidence || {};
       const pilotScope = triageEvidence.pilotScope === true;
       return {
@@ -155,6 +136,10 @@ export class DashboardService implements IDashboardService {
         followupState: i.followup_state || "NEW",
         followupResolvedAt: i.followup_resolved_at || null,
         followupClosedAt: i.followup_closed_at || null,
+        followupProgressPercent: i.followup_progress_percent === null || i.followup_progress_percent === undefined ? null : Number(i.followup_progress_percent),
+        followupProgressAssessment: i.followup_assessment || null,
+        followupNextActionAt: i.followup_next_action_at || null,
+        followupLastCheckedAt: i.followup_last_checked_at || null,
         plannerStatus: i.planner_status || "NONE",
         aiStatus: latestAiJobByIncident.get(i.incident_id)?.status || "NONE",
         triage: triage ? {
@@ -195,15 +180,8 @@ export class DashboardService implements IDashboardService {
       && (isTodayInVietnam(i.followupResolvedAt) || isTodayInVietnam(i.followupClosedAt))
     ).length;
 
-    const telegramPushSentToday = telegramRemindersToday.filter((reminder: any) =>
-      reminder.status === "SENT" && isTodayInVietnam(reminder.sent_at)
-    ).length;
-    const telegramPushFailedToday = telegramRemindersToday.filter((reminder: any) =>
-      reminder.status === "FAILED" && isTodayInVietnam(reminder.updated_at)
-    ).length;
-
-    const aiJobsPending = allAiJobs.filter((j: any) => j.status === "PENDING").length;
-    const aiJobsRunning = allAiJobs.filter((j: any) => j.status === "PROCESSING").length;
+    const aiJobsPending = dashboardAiJobs.filter((j: any) => j.status === "PENDING").length;
+    const aiJobsRunning = dashboardAiJobs.filter((j: any) => j.status === "PROCESSING").length;
 
     let notificationsPending = 0;
     let notificationsFailed = 0;
@@ -226,7 +204,7 @@ export class DashboardService implements IDashboardService {
       )
     ).length;
 
-    const plannerDraftsWaitingReview = plannerListRaw.filter((r: any) => r.approval_state === "DRAFT").length;
+    const plannerDraftsWaitingReview = liveIncidentsList.filter((incident: any) => incident.plannerStatus === "DRAFT").length;
 
     const kpis = {
       activeIncidents: activeIncidentsCount,
@@ -238,8 +216,7 @@ export class DashboardService implements IDashboardService {
       aiJobsPending,
       aiJobsRunning,
       notificationsPending,
-      notificationsFailed: telegramPushFailedToday,
-      telegramPushSentToday,
+      notificationsFailed,
       followupsWaiting,
       plannerDraftsWaitingReview,
     };
@@ -251,14 +228,14 @@ export class DashboardService implements IDashboardService {
       hasMore: liveIncidentsList.length > 20,
     };
 
-    const completedTodayAi = allAiJobs.filter((j: any) => j.status === "COMPLETED" && j.completed_at?.startsWith(todayStr)).length;
-    const failedTodayAi = allAiJobs.filter((j: any) => j.status === "FAILED" && j.updated_at?.startsWith(todayStr)).length;
-    const retryQueueCount = allAiJobs.filter((j: any) => j.status === "PENDING" && j.attempt_count > 0).length;
+    const completedTodayAi = dashboardAiJobs.filter((j: any) => j.status === "COMPLETED" && j.completed_at?.startsWith(todayStr)).length;
+    const failedTodayAi = dashboardAiJobs.filter((j: any) => j.status === "FAILED" && j.updated_at?.startsWith(todayStr)).length;
+    const retryQueueCount = dashboardAiJobs.filter((j: any) => j.status === "PENDING" && j.attempt_count > 0).length;
 
     let totalRuntimeMs = 0;
     let completedRuntimeCount = 0;
 
-    for (const j of allAiJobs) {
+    for (const j of dashboardAiJobs) {
       if (j.status === "COMPLETED" && j.started_at && j.completed_at) {
         totalRuntimeMs += new Date(j.completed_at).getTime() - new Date(j.started_at).getTime();
         completedRuntimeCount++;
@@ -273,7 +250,7 @@ export class DashboardService implements IDashboardService {
       failedTodayCount: failedTodayAi,
       retryQueueCount,
       workerHealth: failedTodayAi > 5 ? "degraded" : aiJobsRunning > 0 ? "healthy" : "idle",
-      lastExecution: allAiJobs[0]?.updated_at || null,
+      lastExecution: dashboardAiJobs[0]?.updated_at || null,
       averageRuntimeMs,
       queueDepth: aiJobsPending + aiJobsRunning,
     };
@@ -289,10 +266,10 @@ export class DashboardService implements IDashboardService {
       items: liveIncidentsList.slice(0, 20).map((c: any) => ({
         incidentKey: c.incidentKey,
         currentState: c.followupState,
-        nextActionAt: null,
-        lastCheckedAt: c.lastDetectedAt,
-        progressPercent: c.followupState === "CLOSED" ? 100 : 50,
-        progressAssessment: "monitored_by_read_model",
+        nextActionAt: c.followupNextActionAt,
+        lastCheckedAt: c.followupLastCheckedAt || c.lastDetectedAt,
+        progressPercent: c.followupProgressPercent,
+        progressAssessment: c.followupProgressAssessment,
       })),
       totalCount: liveIncidentsList.length,
       displayedCount: Math.min(20, liveIncidentsList.length),
@@ -323,155 +300,28 @@ export class DashboardService implements IDashboardService {
       hasMore: notificationsListRaw.length > 20,
     };
 
-    const approvedPlannerCount = plannerListRaw.filter((r: any) => r.approval_state === "APPROVED").length;
-    const rejectedPlannerCount = plannerListRaw.filter((r: any) => r.approval_state === "REJECTED").length;
-
-    const recentRecommendations: any[] = [];
-    for (const r of plannerListRaw) {
-      const rec = r.recommendation;
-      if (rec && Array.isArray(rec.recommendations)) {
-        for (const item of rec.recommendations) {
-          recentRecommendations.push({
-            id: item.id || `rec-${r.incident_id}`,
-            runId: r.incident_id,
-            incidentId: r.incident_id,
-            title: item.title || item.type,
-            type: item.type,
-            targetRole: item.targetRole || "OPERATIONS_LEAD",
-            priority: item.priority || "high",
-            confidenceScore: r.confidence || 85,
-            status: r.approval_state,
-          });
-        }
-      }
-    }
+    const approvedPlannerCount = liveIncidentsList.filter((incident: any) => incident.plannerStatus === "APPROVED").length;
+    const rejectedPlannerCount = liveIncidentsList.filter((incident: any) => incident.plannerStatus === "REJECTED").length;
 
     const boundedPlannerSummary = {
       draftCount: plannerDraftsWaitingReview,
       approvedCount: approvedPlannerCount,
       rejectedCount: rejectedPlannerCount,
       recentRecommendations: {
-        items: recentRecommendations.slice(0, 20),
-        totalCount: recentRecommendations.length,
-        displayedCount: Math.min(20, recentRecommendations.length),
-        hasMore: recentRecommendations.length > 20,
+        items: [],
+        totalCount: 0,
+        displayedCount: 0,
+        hasMore: false,
       },
     };
 
-    const rawTimelineItems: any[] = [];
-
-    if (latestSyncRun) {
-      const syncTime = latestSyncRun.completed_at || latestSyncRun.started_at;
-      rawTimelineItems.push({
-        eventId: `sync-${latestSyncRun.id}`,
-        eventType: "SYNC_WORKFLOW_FINISHED",
-        source: "sync_runs",
-        occurredAt: syncTime,
-        entityId: latestSyncRun.id,
-        title: "Rillnet Snapshot Sync Completed",
-        description: `Fetched ${latestSyncRun.fetched_order_count} orders, aggregated ${latestSyncRun.incident_count} incidents in ${latestSyncRun.duration_ms || 0}ms.`,
-        actor: "system_cron",
-      });
-    }
-
-    for (const fe of followupEvents || []) {
-      rawTimelineItems.push({
-        eventId: `fevt-${fe.id}`,
-        eventType: `FOLLOWUP_${fe.event_type}`,
-        source: "followup_events",
-        occurredAt: fe.event_time || fe.created_at || nowIso,
-        entityId: fe.followup_case_id,
-        title: `Follow-up Transition: ${fe.old_state} ? ${fe.new_state}`,
-        description: `Assessment: ${fe.assessment}. ${fe.notes || ""}`.trim(),
-        actor: fe.confirmed_by || "system_engine",
-      });
-    }
-
-    for (const ae of actionEvents || []) {
-      rawTimelineItems.push({
-        eventId: `actevt-${ae.id}`,
-        eventType: `NOTIFICATION_${ae.event_type}`,
-        source: "notification_action_events",
-        occurredAt: ae.created_at || nowIso,
-        entityId: ae.action_id,
-        title: `Notification Action Event: ${ae.event_type}`,
-        description: `Status changed from ${ae.old_status} to ${ae.new_status} via provider ${ae.provider}.`,
-        actor: "notification_dispatcher",
-      });
-    }
-
-    for (const pe of plannerReviewEvents || []) {
-      rawTimelineItems.push({
-        eventId: `pevt-${pe.id}`,
-        eventType: `PLANNER_${pe.event_type}`,
-        source: "planner_review_events",
-        occurredAt: pe.created_at || nowIso,
-        entityId: pe.planner_run_id,
-        title: `Action Planner Review: ${pe.event_type}`,
-        description: pe.note || `Run #${pe.planner_run_id} reviewed by operator.`,
-        actor: pe.actor || "operator",
-      });
-    }
-
-    rawTimelineItems.sort(
-      (a, b) => new Date(b.occurredAt).getTime() - new Date(a.occurredAt).getTime()
-    );
-
-    const boundedTimeline = {
-      items: rawTimelineItems.slice(0, 30),
-      totalCount: rawTimelineItems.length,
-      displayedCount: Math.min(30, rawTimelineItems.length),
-      hasMore: rawTimelineItems.length > 30,
-    };
-
-    if (HealthRegistry.getCheckers().length === 0) {
-      await StartupValidator.run();
-    }
-    const healthReport = await HealthRegistry.checkAll();
-    const comps = healthReport.components;
+    const boundedTimeline = { items: [], totalCount: 0, displayedCount: 0, hasMore: false };
 
     const health = {
-      database: comps.database || {
-        status: "GREEN",
-        healthReason: "Successfully query database",
-        lastSuccessAt: nowIso,
-        lastFailureAt: null,
-        freshnessSeconds: 0,
-      },
-      aiWorker: comps.aiworker || comps.ai_worker || {
-        status: "GREEN",
-        healthReason: "AI background worker active",
-        lastSuccessAt: nowIso,
-        lastFailureAt: null,
-        freshnessSeconds: 0,
-      },
-      notificationPlatform: comps.telegram || {
-        status: "GREEN",
-        healthReason: "Telegram notification dispatch online",
-        lastSuccessAt: nowIso,
-        lastFailureAt: null,
-        freshnessSeconds: 0,
-      },
-      aiProvider: comps.aiprovider || {
-        status: "GREEN",
-        healthReason: "AI API services fully operational",
-        lastSuccessAt: nowIso,
-        lastFailureAt: null,
-        freshnessSeconds: 0,
-      },
-      cronWorker: comps.scheduler || {
-        status: "GREEN",
-        healthReason: "declarative cron scheduler operational",
-        lastSuccessAt: nowIso,
-        lastFailureAt: null,
-        freshnessSeconds: 0,
-      },
-      // A failed/latest attempt must not be presented as a fresh snapshot.
       lastSync: latestSyncRun?.completed_at || latestSyncRun?.started_at || null,
-      lastSuccessfulSync: recentSyncRuns.find((run) => run.status === "success")?.completed_at || recentSyncRuns.find((run) => run.status === "success")?.started_at || null,
+      lastSuccessfulSync: latestSuccessfulSyncRun?.completed_at || latestSuccessfulSyncRun?.started_at || null,
       latestSyncStatus: latestSyncRun?.status || null,
-      lastAiWorker: allAiJobs[0]?.updated_at || null,
-      lastNotificationDispatch: null,
+      lastAiWorker: dashboardAiJobs[0]?.updated_at || null,
     };
 
     const aggregationMs = Math.round(performance.now() - tStart);
@@ -497,10 +347,9 @@ export class DashboardService implements IDashboardService {
         aiJobsPending: "Count of AI background analysis jobs in PENDING status",
         aiJobsRunning: "Count of AI background analysis jobs in PROCESSING status",
         notificationsPending: "Count of notification actions in PENDING status",
-        notificationsFailed: "Telegram follow-up cases with a failed delivery in the current Vietnam day",
-        telegramPushSentToday: "Telegram follow-up cases delivered successfully in the current Vietnam day",
+        notificationsFailed: "Failed notification actions in the bounded notification summary",
         followupsWaiting: "Follow-up cases in active waiting states",
-        plannerDraftsWaitingReview: "Action Planner runs in DRAFT status waiting for review",
+        plannerDraftsWaitingReview: "DRAFT planner runs among the bounded active incidents",
       },
       incidents: boundedIncidents,
       workerStatus,

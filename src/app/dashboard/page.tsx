@@ -20,7 +20,6 @@ interface KPIs {
   aiJobsRunning: number;
   notificationsPending: number;
   notificationsFailed: number;
-  telegramPushSentToday: number;
   followupsWaiting: number;
   plannerDraftsWaitingReview: number;
 }
@@ -120,25 +119,11 @@ interface TimelineItem {
   actor: string | null;
 }
 
-interface HealthIndicator {
-  status: "green" | "yellow" | "red" | "unknown";
-  healthReason: string;
-  lastSuccessAt: string | null;
-  lastFailureAt: string | null;
-  freshnessSeconds: number | null;
-}
-
 interface SystemHealth {
-  database: HealthIndicator;
-  aiWorker: HealthIndicator;
-  notificationPlatform: HealthIndicator;
-  aiProvider: HealthIndicator;
-  cronWorker: HealthIndicator;
   lastSync: string | null;
   lastSuccessfulSync?: string | null;
   latestSyncStatus?: string | null;
   lastAiWorker: string | null;
-  lastNotificationDispatch: string | null;
 }
 
 interface DiagnosticsTimings {
@@ -392,7 +377,7 @@ export default function ExecutiveDashboardPage() {
         // The review queue already contains only incidents with a Copilot run.
         // Fetch it once instead of probing every dashboard incident and turning
         // the normal "analysis not created yet" state into a burst of 404s.
-        const reviewResponse = await fetch("/api/copilot/reviews?limit=100", { cache: "no-store" });
+        const reviewResponse = await fetch("/api/copilot/reviews?limit=50", { cache: "no-store" });
         const reviewResult = await reviewResponse.json();
         handleApiAccess(reviewResponse, reviewResult, "Không thể tải hàng đợi đánh giá Copilot.");
         const visibleIncidentIds = new Set(
@@ -416,9 +401,7 @@ export default function ExecutiveDashboardPage() {
   }, [selectedScope]);
 
   useEffect(() => {
-    fetchDashboardData();
-    const interval = setInterval(fetchDashboardData, 30000);
-    return () => clearInterval(interval);
+    void fetchDashboardData();
   }, [fetchDashboardData]);
 
   useEffect(() => {
@@ -549,7 +532,7 @@ export default function ExecutiveDashboardPage() {
           <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-300">Đây là nơi bạn nhìn nhanh tình hình trong phạm vi phụ trách và bắt đầu xử lý việc quan trọng nhất.</p>
         </div>
 
-        {/* Scope, Controls Governance & Health Indicators */}
+        {/* Scope and operator controls */}
         <div className="flex flex-wrap items-center gap-3">
           <Link
             href="/reviews"
@@ -587,22 +570,12 @@ export default function ExecutiveDashboardPage() {
               </select>
             </label>
           </div>
-
-          <div className="flex min-h-11 items-center gap-2 bg-slate-900 border border-slate-800 px-3 py-1.5 rounded-xl text-xs">
-                <span className="text-slate-400 font-semibold">Tình trạng hệ thống:</span>
-            <div className="flex items-center gap-1.5 font-mono">
-              <span title={`Database: ${health?.database?.healthReason}`} className={`w-2.5 h-2.5 rounded-full ${health?.database?.status === "green" ? "bg-emerald-400" : "bg-rose-500"}`}></span>
-              <span title={`AI Worker: ${health?.aiWorker?.healthReason}`} className={`w-2.5 h-2.5 rounded-full ${health?.aiWorker?.status === "green" ? "bg-emerald-400" : health?.aiWorker?.status === "yellow" ? "bg-amber-400" : "bg-rose-500"}`}></span>
-              <span title={`Notification Platform: ${health?.notificationPlatform?.healthReason}`} className={`w-2.5 h-2.5 rounded-full ${health?.notificationPlatform?.status === "green" ? "bg-emerald-400" : "bg-amber-400"}`}></span>
-              <span title={`Cron Worker: ${health?.cronWorker?.healthReason}`} className={`w-2.5 h-2.5 rounded-full ${health?.cronWorker?.status === "green" ? "bg-emerald-400" : "bg-amber-400"}`}></span>
-            </div>
-          </div>
-
           <button
             onClick={fetchDashboardData}
-            className="inline-flex min-h-11 items-center gap-2 rounded-xl border border-slate-800 bg-slate-900 px-4 text-xs font-semibold text-slate-200 transition hover:bg-slate-800 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-300"
+            disabled={loading}
+            className="inline-flex min-h-11 items-center gap-2 rounded-xl border border-slate-800 bg-slate-900 px-4 text-xs font-semibold text-slate-200 transition hover:bg-slate-800 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-300 disabled:cursor-not-allowed disabled:opacity-50"
           >
-            <RefreshCw aria-hidden="true" size={16}/> Làm mới
+            <RefreshCw aria-hidden="true" size={16} className={loading ? "animate-spin motion-reduce:animate-none" : ""}/> Làm mới
           </button>
           {session.can("MANAGE_SYSTEM") && <details className="group w-full rounded-xl border border-slate-800 bg-slate-900 sm:w-auto">
             <summary className="flex min-h-11 cursor-pointer list-none items-center gap-2 px-4 text-xs font-semibold text-slate-300 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-300">
@@ -738,11 +711,6 @@ export default function ExecutiveDashboardPage() {
             <span className="text-2xl font-extrabold text-emerald-400 block font-mono">{kpis?.incidentsResolvedToday || 0}</span>
           </div>
 
-          <div className="p-4 bg-slate-900 border border-cyan-500/30 rounded-2xl space-y-1">
-            <span className="text-cyan-400 font-semibold">Push case thành công hôm nay</span>
-            <span className="text-2xl font-extrabold text-cyan-400 block font-mono">{kpis?.telegramPushSentToday || 0}</span>
-          </div>
-
           <div className="p-4 bg-slate-900 border border-purple-500/30 rounded-2xl space-y-1">
             <span className="text-purple-400 font-semibold">Tác vụ AI đang chạy</span>
             <span className="text-2xl font-extrabold text-purple-400 block font-mono">
@@ -751,7 +719,7 @@ export default function ExecutiveDashboardPage() {
           </div>
 
           <div className="p-4 bg-slate-900 border border-rose-500/30 rounded-2xl space-y-1">
-            <span className="text-rose-400 font-semibold">Push case thất bại hôm nay</span>
+            <span className="text-rose-400 font-semibold">Thông báo thất bại</span>
             <span className="text-2xl font-extrabold text-rose-400 block font-mono">{kpis?.notificationsFailed || 0}</span>
           </div>
 
