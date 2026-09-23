@@ -1,16 +1,74 @@
 import type { AiAnalysisJobRow, AiJobPriority, AiJobStatus } from "@/connectors/supabase/types";
-import type { IAiJobRepository } from "../interfaces/IAiJobRepository";
+import type { AiRunEnqueueResult, IAiJobRepository } from "../interfaces/IAiJobRepository";
 import { logger } from "@/observability/logger";
 
 export class MockAiJobRepository implements IAiJobRepository {
   private inMemoryJobs: AiAnalysisJobRow[] = [];
+  private eligibleByRun = new Map<string, Array<{ incidentId: string; priority: AiJobPriority }>>();
+  private jobIdByRunAndIncident = new Map<string, string>();
+  enqueueRunCallCount = 0;
 
   clearMemory(): void {
     this.inMemoryJobs = [];
+    this.eligibleByRun.clear();
+    this.jobIdByRunAndIncident.clear();
+    this.enqueueRunCallCount = 0;
   }
 
   seed(jobs: AiAnalysisJobRow[]): void {
     this.inMemoryJobs = [...jobs];
+  }
+
+  seedEligibleForSyncRun(syncRunId: string, candidates: Array<{ incidentId: string; priority?: AiJobPriority }>): void {
+    this.eligibleByRun.set(syncRunId, candidates.map((candidate) => ({
+      incidentId: candidate.incidentId,
+      priority: candidate.priority || "medium",
+    })));
+  }
+
+  async enqueueEligibleForSyncRun(syncRunId: string): Promise<AiRunEnqueueResult> {
+    this.enqueueRunCallCount += 1;
+    const candidates = this.eligibleByRun.get(syncRunId) || [];
+    const now = new Date().toISOString();
+    let alreadyLinkedCount = 0;
+    let reusedCount = 0;
+    let createdCount = 0;
+
+    for (const candidate of candidates) {
+      const linkKey = `${syncRunId}:${candidate.incidentId}`;
+      if (this.jobIdByRunAndIncident.has(linkKey)) {
+        alreadyLinkedCount += 1;
+        continue;
+      }
+      const activeJob = this.inMemoryJobs.find((job) =>
+        job.incident_id === candidate.incidentId && (job.status === "PENDING" || job.status === "PROCESSING")
+      );
+      if (activeJob) {
+        this.jobIdByRunAndIncident.set(linkKey, activeJob.id);
+        reusedCount += 1;
+        continue;
+      }
+      const job: AiAnalysisJobRow = {
+        id: `aijob-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+        incident_id: candidate.incidentId,
+        priority: candidate.priority,
+        status: "PENDING",
+        attempt_count: 0,
+        max_attempts: 3,
+        scheduled_at: now,
+        started_at: null,
+        completed_at: null,
+        locked_at: null,
+        worker_id: null,
+        last_error: null,
+        created_at: now,
+        updated_at: now,
+      };
+      this.inMemoryJobs.push(job);
+      this.jobIdByRunAndIncident.set(linkKey, job.id);
+      createdCount += 1;
+    }
+    return { eligibleCount: candidates.length, alreadyLinkedCount, reusedCount, createdCount };
   }
 
   async enqueueJob(

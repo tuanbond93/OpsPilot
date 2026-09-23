@@ -1,12 +1,29 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { AiAnalysisJobRow, AiJobPriority, AiJobStatus } from "@/connectors/supabase/types";
 import { BaseRepository } from "../base/BaseRepository";
-import type { IAiJobRepository } from "../interfaces/IAiJobRepository";
+import type { AiRunEnqueueResult, IAiJobRepository } from "../interfaces/IAiJobRepository";
 import { logger } from "@/observability/logger";
 
 export class SupabaseAiJobRepository extends BaseRepository implements IAiJobRepository {
   constructor(client: SupabaseClient) {
     super(client);
+  }
+
+  async enqueueEligibleForSyncRun(syncRunId: string): Promise<AiRunEnqueueResult> {
+    const { data, error } = await this.client.rpc("enqueue_ai_analysis_jobs_for_sync_run", {
+      p_sync_run_id: syncRunId,
+    });
+    if (error) throw new Error(`AI run enqueue failed: ${error.message}`);
+
+    const result = Array.isArray(data) ? data[0] : data;
+    if (!result) throw new Error("AI run enqueue returned no result");
+
+    return {
+      eligibleCount: Number(result.eligible_count),
+      alreadyLinkedCount: Number(result.already_linked_count),
+      reusedCount: Number(result.reused_count),
+      createdCount: Number(result.created_count),
+    };
   }
 
   async enqueueJob(

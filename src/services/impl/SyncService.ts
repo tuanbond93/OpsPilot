@@ -238,6 +238,7 @@ export class SyncService implements ISyncService {
     let heartbeatTimer: NodeJS.Timeout | null = null;
     let syncLockTelemetry: TransientRetryTelemetry | null = null;
     let pendingSnapshotV3Shadow: { rows: OrderSnapshotRow[]; evaluationReferenceAt: string } | null = null;
+    let resumeCheckpointRun = false;
 
     const identityUnavailable = (error: unknown): SyncSummary => ({
       ok: false,
@@ -268,7 +269,9 @@ export class SyncService implements ISyncService {
         if (existing.status === "success" || existing.current_phase === "COMPLETED") {
           return { ok: true, skipped: true, skipReason: "CHECKPOINT_ALREADY_COMPLETED", syncRunId: existing.id, startedAt, completedAt: startedAt, durationMs: 0, fetchedOrderCount: existing.fetched_order_count, normalizedOrderCount: existing.normalized_order_count, incidentCount: existing.incident_count, phaseTimings: {}, dbInstrumentation: { totalQueries: 0, phases: {}, bottlenecksDetected: [] }, syncLockAttempts: 0, syncLockRetryCount: 0, syncLockFinalStatus: "NOT_ATTEMPTED" };
         }
-        return { ok: false, syncRunId: existing.id, startedAt, completedAt: startedAt, durationMs: 0, fetchedOrderCount: 0, normalizedOrderCount: 0, incidentCount: 0, phaseTimings: {}, dbInstrumentation: { totalQueries: 0, phases: {}, bottlenecksDetected: [] }, error: { code: "CHECKPOINT_ALREADY_STARTED", message: "This checkpoint already has an operational sync run." }, syncLockAttempts: 0, syncLockRetryCount: 0, syncLockFinalStatus: "NOT_ATTEMPTED" };
+        // The global sync lease below serializes recovery while retaining the
+        // exact checkpoint run identity instead of creating a replacement.
+        resumeCheckpointRun = true;
       }
     }
 
@@ -472,7 +475,17 @@ export class SyncService implements ISyncService {
       let completedPhases: SyncPhase[] = [];
 
       try {
-          const unfinishedRun: SyncRunRow | null = (await retryTransientInfrastructure(() => this.syncRunRepo!.getUnfinishedSyncRun())).value;
+          const unfinishedRun: SyncRunRow | null = (await retryTransientInfrastructure(() =>
+            resumeCheckpointRun
+              ? this.syncRunRepo!.getSyncRunForCheckpoint(_options!.checkpointAt!)
+              : this.syncRunRepo!.getUnfinishedSyncRun()
+          )).value;
+          if (resumeCheckpointRun && !unfinishedRun) {
+            throw new Error("CHECKPOINT_RUN_MISSING_AFTER_LOCK");
+          }
+          if (resumeCheckpointRun && unfinishedRun && (unfinishedRun.status === "success" || unfinishedRun.current_phase === "COMPLETED")) {
+            return { ok: true, skipped: true, skipReason: "CHECKPOINT_ALREADY_COMPLETED", syncRunId: unfinishedRun.id, startedAt, completedAt: startedAt, durationMs: 0, fetchedOrderCount: unfinishedRun.fetched_order_count, normalizedOrderCount: unfinishedRun.normalized_order_count, incidentCount: unfinishedRun.incident_count, phaseTimings: {}, dbInstrumentation: { totalQueries: 0, phases: {}, bottlenecksDetected: [] }, syncLockAttempts: 0, syncLockRetryCount: 0, syncLockFinalStatus: "NOT_ATTEMPTED" };
+          }
           if (unfinishedRun) {
             if (!isPersistedUuid(unfinishedRun.id)) {
               throw new Error("Persistent sync run returned a non-UUID identity.");
@@ -1237,44 +1250,31 @@ export class SyncService implements ISyncService {
           }
 
           if (this.aiJobRepo && incidents.length > 0) {
-            // Preserve the non-null repository across async callbacks. TypeScript
-            // cannot otherwise guarantee that a mutable class property remains
-            // available after the Promise boundary.
-            const aiJobRepo = this.aiJobRepo;
-            const eligibleIncidents = incidents.filter((inc) => {
-              const dbId = keyToIdMap.get(inc.incidentKey)!;
-              const triage = triageByIncidentId.get(dbId);
-              return Boolean(dbId && triage && shouldEnqueueAiJob(triage));
-            });
-
-            // Supabase enqueue performs a network round-trip. Running every
-            // incident serially made a normal sync consume the whole Vercel
-            // request budget, preventing downstream Telegram confirmation.
-            // Keep concurrency bounded to protect the database while ensuring
-            // the durable sync can reach its notification phase promptly.
-            const enqueueConcurrency = 10;
-            for (let offset = 0; offset < eligibleIncidents.length; offset += enqueueConcurrency) {
-              const batch = eligibleIncidents.slice(offset, offset + enqueueConcurrency);
-              await Promise.all(batch.map(async (inc) => {
-                const dbId = keyToIdMap.get(inc.incidentKey)!;
-                const triage = triageByIncidentId.get(dbId);
-                if (dbId && triage && shouldEnqueueAiJob(triage)) {
-                const priority = inc.priorityScore >= 75 ? "urgent" : inc.priorityScore >= 50 ? "high" : "medium";
-                try {
-                  await aiJobRepo.enqueueJob(dbId, priority);
-                  successfulEnqueue++;
-                } catch (e: any) {
-                  logger.info({
-                    component: "SyncService",
-                    operation: "enqueueAIJob",
-                    status: "error",
-                    message: `[AI Queue] FAILED incidentId=${dbId}`,
-                    metadata: { error: e?.message || String(e) }
-                  });
-                  throw e;
-                }
-                }
-              }));
+            try {
+              if (!this.triageAuditRepo) {
+                throw new Error("TRIAGE_AUDIT_REQUIRED_FOR_IDEMPOTENT_AI_ENQUEUE");
+              }
+              const enqueueResult = await this.aiJobRepo.enqueueEligibleForSyncRun(syncRunId);
+              successfulEnqueue = enqueueResult.alreadyLinkedCount + enqueueResult.reusedCount + enqueueResult.createdCount;
+              if (successfulEnqueue !== enqueueResult.eligibleCount) {
+                throw new Error(`AI_ENQUEUE_INCOMPLETE:${successfulEnqueue}/${enqueueResult.eligibleCount}`);
+              }
+              logger.info({
+                component: "SyncService",
+                operation: "enqueueAIJobsForRun",
+                status: "success",
+                message: `[AI Queue] run=${syncRunId} eligible=${enqueueResult.eligibleCount} linked=${enqueueResult.alreadyLinkedCount} reused=${enqueueResult.reusedCount} created=${enqueueResult.createdCount}`,
+                metadata: enqueueResult,
+              });
+            } catch (e: any) {
+              logger.info({
+                component: "SyncService",
+                operation: "enqueueAIJobsForRun",
+                status: "error",
+                message: `[AI Queue] FAILED syncRunId=${syncRunId}`,
+                metadata: { error: e?.message || String(e) },
+              });
+              throw e;
             }
           }
 

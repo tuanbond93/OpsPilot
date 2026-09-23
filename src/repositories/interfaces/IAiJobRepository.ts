@@ -1,6 +1,14 @@
 import type { AiAnalysisJobRow, AiJobPriority } from "@/connectors/supabase/types";
 
+export type AiRunEnqueueResult = {
+  eligibleCount: number;
+  alreadyLinkedCount: number;
+  reusedCount: number;
+  createdCount: number;
+};
+
 export interface IAiJobRepository {
+  enqueueEligibleForSyncRun(syncRunId: string): Promise<AiRunEnqueueResult>;
   enqueueJob(
     incidentId: string,
     priority?: AiJobPriority,
