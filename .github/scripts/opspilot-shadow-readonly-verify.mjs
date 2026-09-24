@@ -63,7 +63,7 @@ function verifyTarget() {
   return dbUrl.toString();
 }
 
-function psqlSelect(databaseUrl, sql, label) {
+function psqlOutput(databaseUrl, sql, label) {
   const result = spawnSync("psql", [
     "-X", "--set=ON_ERROR_STOP=1", "--no-align", "--tuples-only", "--quiet",
     "--dbname", databaseUrl,
@@ -88,8 +88,13 @@ function psqlSelect(databaseUrl, sql, label) {
 
   const lines = String(result.stdout || "").trim().split(/\r?\n/).filter(Boolean);
   if (lines.length !== 1) fail(`${label}_OUTPUT_SHAPE`, `expected one row; received ${lines.length}`);
+  return lines[0];
+}
+
+function psqlSelect(databaseUrl, sql, label) {
+  const output = psqlOutput(databaseUrl, sql, label);
   try {
-    return JSON.parse(lines[0]);
+    return JSON.parse(output);
   } catch {
     fail(`${label}_JSON_PARSE`, "the separate SELECT did not return one JSON value");
   }
@@ -227,7 +232,7 @@ function main() {
   const extras = publicTables.filter((name) => !expectedTables.includes(name));
   const missing = expectedTables.filter((name) => !presentV3Tables.includes(name));
   const counts = missing.length === 0 ? psqlSelect(databaseUrl, V3_COUNTS_SQL, "V3_ROW_COUNTS") : null;
-  const digest = psqlSelect(databaseUrl, V3_DIGEST_SQL, "V3_SCHEMA_DIGEST");
+  const digest = psqlOutput(databaseUrl, V3_DIGEST_SQL, "V3_SCHEMA_DIGEST");
 
   const leftovers = [
     ...inventory.leftoverRelations,
