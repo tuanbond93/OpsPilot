@@ -517,10 +517,10 @@ function seedCleanupCore() {
     sqlGeneration(caseId, core[2], null, "1 day", "1 day", "COMMITTED"),
     sqlGeneration(caseId, core[3], null, "8 days", null, "PREPARING"),
     sqlGeneration(caseId, core[4], null, "6 days", null, "PREPARING"),
-    sqlGeneration(activeCase, active[0], null, "30 days", "30 days", "COMMITTED"),
+    sqlGeneration(activeCase, active[0], null, "3 days", "3 days", "COMMITTED"),
     sqlGeneration(activeCase, active[1], null, "2 days", "2 days", "COMMITTED"),
     sqlGeneration(activeCase, active[2], activeRun, "10 days", "10 days", "COMMITTED"),
-    sqlGeneration(recoveryCase, recovery[0], null, "30 days", "30 days", "COMMITTED"),
+    sqlGeneration(recoveryCase, recovery[0], null, "3 days", "3 days", "COMMITTED"),
     sqlGeneration(recoveryCase, recovery[1], null, "2 days", "2 days", "COMMITTED"),
     sqlGeneration(recoveryCase, recovery[2], recoveryRun, "10 days", "10 days", "COMMITTED"),
   ];
