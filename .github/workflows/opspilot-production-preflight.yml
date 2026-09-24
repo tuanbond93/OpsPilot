@@ -32,7 +32,7 @@ jobs:
           PGPASSWORD: ${{ secrets.PROD_DB_PASSWORD }}
           PROD_SUPABASE_URL: ${{ secrets.PROD_SUPABASE_URL }}
         run: |
-          python - <<'PY
+          python -c '
           import os,sys
           from urllib.parse import urlparse
           ref="elwnbwimgzijuelfjdsq"
@@ -58,7 +58,7 @@ jobs:
             out.write("identity_ok=true\n")
           print("PRODUCTION_IDENTITY=PASS")
           print("PRODUCTION_PROJECT_REF="+project_ref)
-          PY
+          '
       - name: Install psql client
         shell: bash
         run: |
