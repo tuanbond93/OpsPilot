@@ -2,6 +2,8 @@ import type { Incident } from "../incident";
 import type { IncidentHistoryRow, FollowupCaseRow, FollowupEventRow, FollowupState } from "../../connectors/supabase";
 import type {
   FollowupCaseUpsert,
+  FollowupCaseLinkRow,
+  FollowupEventEvidence,
   FollowupEventInsert,
   FollowupCasePageCursor,
   IFollowupRepository,
@@ -21,18 +23,25 @@ import {
   type ActionType,
   type EnqueueActionParams,
 } from "../action-queue";
-import type { ActionQueueMetrics, IActionQueue } from "../action-queue/IActionQueue";
+import type { ActionQueueMetrics, IActionQueue, LegacyNotificationActionEvidence } from "../action-queue/IActionQueue";
 import { logRuntimeError, logRuntimeMessage, serializedPayloadBytes } from "@/observability/runtimeDiagnostics";
 import { logger } from "@/observability/logger";
 import type { NormalizedRillnetOrder } from "@/connectors/rillnet";
 import { assessOperationalCohort, evidenceFromOrder, checkpointKey, localHour, isFreshRillnetSnapshot, nextCheckpoint, OPERATIONAL_CHECKPOINT_POLICY_VERSION } from "@/domain/operational-learning/checkpoint-policy";
+import {
+  FOLLOWUP_CASE_UPSERT_MAX_PAYLOAD_BYTES,
+  FOLLOWUP_CASE_UPSERT_MAX_ROWS,
+  followupCaseUpsertPayloadBytes,
+  planFollowupCaseUpsertChunks,
+} from "./upsert-batching";
 
-// PostgREST translates one bulk upsert into one PostgreSQL statement.  Cohort
-// rows contain their evidence JSON, so an entire checkpoint must not become a
-// single, statement-timeout-sized write.  This preserves the same conflict
-// target and result set while bounding each database statement.
-const FOLLOWUP_CASE_UPSERT_CHUNK_SIZE = 50;
 const FOLLOWUP_CASE_READ_PAGE_SIZE = 100;
+const FOLLOWUP_LEGACY_READ_BATCH_SIZE = 100;
+
+interface LegacyRecoveryEvidence {
+  events: FollowupEventEvidence[] | null;
+  actions: LegacyNotificationActionEvidence[] | null;
+}
 
 function formatRillnetStatusSignature(signature: string | null | undefined): string {
   try {
@@ -109,24 +118,73 @@ export class FollowupEngine {
    * The narrow legacy recovery is allowed only after every durable source says
    * no Push 1 was delivered.  An unreadable history is deliberately unsafe.
    */
-  private async canRecoverLegacyUnpushedCase(prior: FollowupCaseRow | undefined): Promise<boolean> {
-    if (!prior || prior.current_state !== "FOLLOWING_UP" || !this.followupRepo || !this.actionQueue?.getActionsByIncidentId) return false;
-    if (prior.last_action_confirmed_at) return false;
-    try {
-      const [events, actions] = await Promise.all([
-        this.followupRepo.getEventsByCaseId(prior.id),
-        this.actionQueue.getActionsByIncidentId(prior.incident_id),
-      ]);
-      if (actions === null) return false;
-      const confirmedInEvents = events.some(event => event.event_type === "PUSH_CONFIRMED" || event.new_state === "FIRST_PUSH_SENT");
-      const deliveredOrOpenFirstPush = actions.some(action => action.action_type === "FIRST_PUSH" && (
-        action.status === "SENT" || action.status === "PENDING" || action.status === "PROCESSING"
-        || action.outcome === "DELIVERED" || Boolean(action.provider_message_id)
-      ));
-      return !confirmedInEvents && !deliveredOrOpenFirstPush;
-    } catch {
-      return false;
+  private canRecoverLegacyUnpushedCase(
+    prior: FollowupCaseRow | undefined,
+    evidence: LegacyRecoveryEvidence | undefined
+  ): boolean {
+    if (!prior || prior.current_state !== "FOLLOWING_UP" || prior.last_action_confirmed_at) return false;
+    if (!evidence?.events || !evidence.actions) return false;
+
+    const confirmedInEvents = evidence.events.some(event => event.event_type === "PUSH_CONFIRMED" || event.new_state === "FIRST_PUSH_SENT");
+    const deliveredOrOpenFirstPush = evidence.actions.some(action => action.action_type === "FIRST_PUSH" && (
+      action.status === "SENT" || action.status === "PENDING" || action.status === "PROCESSING"
+      || action.outcome === "DELIVERED" || Boolean(action.provider_message_id)
+    ));
+    return !confirmedInEvents && !deliveredOrOpenFirstPush;
+  }
+
+  private async loadLegacyRecoveryEvidence(cases: FollowupCaseRow[]): Promise<Map<string, LegacyRecoveryEvidence>> {
+    const startedAt = performance.now();
+    const evidenceByCaseId = new Map<string, LegacyRecoveryEvidence>();
+    const getEventsByCaseIds = this.followupRepo?.getEventsByCaseIds?.bind(this.followupRepo);
+    const getActionsByIncidentIds = this.actionQueue?.getActionsByIncidentIds?.bind(this.actionQueue);
+    let queryCount = 0;
+    let failedBatchCount = 0;
+
+    if (!getEventsByCaseIds || !getActionsByIncidentIds) {
+      for (const followupCase of cases) evidenceByCaseId.set(followupCase.id, { events: null, actions: null });
+      logRuntimeMessage(`[FollowupRuntime] subphase=legacyEvidence event=end candidateCount=${cases.length} bulkReadQueryCount=0 batchSize=${FOLLOWUP_LEGACY_READ_BATCH_SIZE} durationMs=${Number((performance.now() - startedAt).toFixed(2))} status=unavailable`);
+      return evidenceByCaseId;
     }
+
+    for (let index = 0; index < cases.length; index += FOLLOWUP_LEGACY_READ_BATCH_SIZE) {
+      const chunk = cases.slice(index, index + FOLLOWUP_LEGACY_READ_BATCH_SIZE);
+      queryCount += 2;
+      const [eventResult, actionResult] = await Promise.allSettled([
+        getEventsByCaseIds(chunk.map(item => item.id)),
+        getActionsByIncidentIds(chunk.map(item => item.incident_id)),
+      ]);
+
+      if (eventResult.status !== "fulfilled" || actionResult.status !== "fulfilled" || actionResult.value === null) {
+        failedBatchCount++;
+        for (const followupCase of chunk) evidenceByCaseId.set(followupCase.id, { events: null, actions: null });
+        continue;
+      }
+
+      const eventsByCaseId = new Map<string, FollowupEventEvidence[]>();
+      for (const event of eventResult.value) {
+        const rows = eventsByCaseId.get(event.followup_case_id) || [];
+        rows.push(event);
+        eventsByCaseId.set(event.followup_case_id, rows);
+      }
+      const actionsByIncidentId = new Map<string, LegacyNotificationActionEvidence[]>();
+      for (const action of actionResult.value) {
+        const incidentId = String(action.payload?.incidentId || action.payload?.incident_id || "");
+        const rows = actionsByIncidentId.get(incidentId) || [];
+        rows.push(action);
+        actionsByIncidentId.set(incidentId, rows);
+      }
+
+      for (const followupCase of chunk) {
+        evidenceByCaseId.set(followupCase.id, {
+          events: eventsByCaseId.get(followupCase.id) || [],
+          actions: actionsByIncidentId.get(followupCase.incident_id) || [],
+        });
+      }
+    }
+
+    logRuntimeMessage(`[FollowupRuntime] subphase=legacyEvidence event=end candidateCount=${cases.length} bulkReadQueryCount=${queryCount} failedBatchCount=${failedBatchCount} batchSize=${FOLLOWUP_LEGACY_READ_BATCH_SIZE} durationMs=${Number((performance.now() - startedAt).toFixed(2))} status=${failedBatchCount ? "partial" : "success"}`);
+    return evidenceByCaseId;
   }
 
   private async loadOperationalCases(metrics: MutableFollowupRunMetrics): Promise<FollowupCaseRow[]> {
@@ -220,6 +278,15 @@ export class FollowupEngine {
         status: "monitoring", priorityScore: 0, firstDetectedAt: item.first_detected_at, lastDetectedAt: new Date(now).toISOString(),
         affectedOrderCount: 0, affectedOrders: [], sampleOrderCodes: [], averageAgeHours: null, maximumAgeHours: null, oldestOrderCode: null });
     }
+    const legacyRecoveryCandidates = [...work.values()].flatMap((incident) => {
+      const prior = byKey.get(incident.incidentKey);
+      const alreadyProcessed = prior?.operational_cohort?.lastCheckpoint === checkpoint
+        && !Object.keys(prior.operational_cohort.verification?.failures || {}).length;
+      return !alreadyProcessed && prior?.current_state === "FOLLOWING_UP" && !prior.last_action_confirmed_at
+        ? [prior]
+        : [];
+    });
+    const legacyEvidenceByCaseId = await this.loadLegacyRecoveryEvidence(legacyRecoveryCandidates);
     const results: ProcessedFollowupItem[] = [];
     const mutations: FollowupCaseUpsert[] = [];
     const params: ProcessTransitionParams[] = [];
@@ -235,7 +302,10 @@ export class FollowupEngine {
       const incoming = [...codes].flatMap(code => { const order = membership.get(code); return order ? [order] : []; });
       const assessment = assessOperationalCohort(prior?.operational_cohort, incoming, observations, now);
       const oldState = prior?.current_state || "NEW";
-      const mayRecoverLegacyUnpushed = await this.canRecoverLegacyUnpushedCase(prior);
+      const mayRecoverLegacyUnpushed = this.canRecoverLegacyUnpushedCase(
+        prior,
+        prior ? legacyEvidenceByCaseId.get(prior.id) : undefined
+      );
       // A pre-policy 08h baseline was recorded as FOLLOWING_UP without ever
       // requesting Push 1. Recover only when durable action and Event Store
       // history positively show no delivered or open first-push workflow.
@@ -631,42 +701,58 @@ export class FollowupEngine {
   private async persistCases(
     cases: FollowupCaseUpsert[],
     metrics: MutableFollowupRunMetrics
-  ): Promise<FollowupCaseRow[]> {
+  ): Promise<FollowupCaseLinkRow[]> {
     const startedAt = this.logSubphaseStart("batchUpsertCases");
-    const chunks = Array.from(
-      { length: Math.ceil(cases.length / FOLLOWUP_CASE_UPSERT_CHUNK_SIZE) },
-      (_, index) => cases.slice(index * FOLLOWUP_CASE_UPSERT_CHUNK_SIZE, (index + 1) * FOLLOWUP_CASE_UPSERT_CHUNK_SIZE)
-    );
-    metrics.caseWrites += chunks.length;
+    let chunks: FollowupCaseUpsert[][] = [];
+    let upsertDurationMs = 0;
+    let upsertStartedAt: number | null = null;
     try {
-      const result: FollowupCaseRow[] = [];
+      chunks = planFollowupCaseUpsertChunks(cases);
+      metrics.caseWrites += chunks.length;
+      upsertStartedAt = performance.now();
+      const result: FollowupCaseLinkRow[] = [];
       for (const chunk of chunks) {
         result.push(...await this.timeOperation(metrics, "caseWrite", () =>
           this.followupRepo!.batchUpsertCases(chunk)
         ));
       }
+      upsertDurationMs = performance.now() - upsertStartedAt;
       this.logSubphaseEnd("batchUpsertCases", startedAt, {
         caseMutations: cases.length,
         events: 0,
         actions: 0,
         repositoryCalls: chunks.length,
         rowsLoaded: result.length,
-        payloadBytes: serializedPayloadBytes(cases),
+        payloadBytes: cases.length > 0 ? followupCaseUpsertPayloadBytes(cases) : 0,
       });
+      this.logCaseUpsertMetrics(cases, chunks, upsertDurationMs, "success");
       return result;
     } catch (error) {
+      if (upsertStartedAt !== null) upsertDurationMs = performance.now() - upsertStartedAt;
       this.logSubphaseEnd("batchUpsertCases", startedAt, {
         caseMutations: cases.length,
         events: 0,
         actions: 0,
         repositoryCalls: chunks.length,
         rowsLoaded: 0,
-        payloadBytes: serializedPayloadBytes(cases),
+        payloadBytes: cases.length > 0 ? followupCaseUpsertPayloadBytes(cases) : 0,
         status: "failed",
       });
+      this.logCaseUpsertMetrics(cases, chunks, upsertDurationMs, "failed");
       logRuntimeError("FollowupEngine.batchUpsertCases", error);
       throw error;
     }
+  }
+
+  private logCaseUpsertMetrics(
+    cases: FollowupCaseUpsert[],
+    chunks: FollowupCaseUpsert[][],
+    durationMs: number,
+    status: "success" | "failed"
+  ): void {
+    const maxChunkRows = Math.max(0, ...chunks.map(chunk => chunk.length));
+    const maxChunkPayloadBytes = Math.max(0, ...chunks.map(followupCaseUpsertPayloadBytes));
+    logRuntimeMessage(`[FollowupRuntime] subphase=batchUpsertCases metrics candidateCount=${cases.length} plannedMutations=${cases.length} chunkCount=${chunks.length} maxChunkRows=${maxChunkRows} maxChunkPayloadBytes=${maxChunkPayloadBytes} rowLimit=${FOLLOWUP_CASE_UPSERT_MAX_ROWS} payloadLimitBytes=${FOLLOWUP_CASE_UPSERT_MAX_PAYLOAD_BYTES} totalUpsertDurationMs=${Number(durationMs.toFixed(2))} status=${status}`);
   }
 
   private async persistEvents(

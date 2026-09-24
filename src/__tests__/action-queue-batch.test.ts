@@ -195,4 +195,29 @@ describe("Sprint 10.3 — Batch ActionQueue Persistence Tests", () => {
     expect(insertCalls).toBe(1);
     expect(eventInsertCalls).toBe(1);
   });
+
+  it("bulk-loads legacy incident action evidence in bounded JSON-path batches", async () => {
+    const calls: Array<{ column: string; ids: string[] }> = [];
+    const query = {
+      select: vi.fn().mockReturnThis(),
+      in: vi.fn((column: string, ids: string[]) => {
+        calls.push({ column, ids });
+        return query;
+      }),
+      eq: vi.fn(() => {
+        return Promise.resolve({ data: [], error: null });
+      }),
+    };
+    const client = { from: vi.fn().mockReturnValue(query) } as any;
+    const queue = new ActionQueue(client);
+    const incidentIds = Array.from({ length: 201 }, (_, index) => `incident-${index}`);
+
+    await expect(queue.getActionsByIncidentIds(incidentIds)).resolves.toEqual([]);
+
+    expect(query.select).toHaveBeenCalledWith("action_type,status,outcome,provider_message_id,payload");
+    expect(query.eq).toHaveBeenCalledWith("action_type", "FIRST_PUSH");
+    expect(calls.map(call => call.ids.length)).toEqual([100, 100, 1]);
+    expect(calls.every(call => call.column === "payload->>incidentId")).toBe(true);
+    expect(calls.flatMap(call => call.ids)).toEqual(incidentIds);
+  });
 });

@@ -3,6 +3,7 @@ import { ActionQueue, Deduplicator, type EnqueueActionParams } from "@/engine/ac
 import { FollowupEngine } from "@/engine/followup";
 import { MockFollowupRepository } from "@/repositories/mock/MockFollowupRepository";
 import type { IFollowupRepository } from "@/repositories/interfaces/IFollowupRepository";
+import type { FollowupCaseLinkRow } from "@/repositories/interfaces/IFollowupRepository";
 import type { FollowupCaseRow, FollowupEventRow } from "@/connectors/supabase/types";
 import type { Incident } from "@/engine/incident";
 import { SupabaseFollowupRepository } from "@/repositories/supabase/SupabaseFollowupRepository";
@@ -246,25 +247,16 @@ describe("Sprint 10.1 follow-up persistence batching", () => {
   });
 
   it("maps Supabase batch methods with explicit conflict keys and columns", async () => {
-    const caseRow: FollowupCaseRow = {
+    const caseRow: FollowupCaseLinkRow = {
       id: "case-1",
       incident_id: "incident-1",
       incident_key: "batch:1",
-      current_state: "FIRST_PUSH_PENDING",
-      first_detected_at: "2026-08-05T08:00:00.000Z",
-      last_checked_at: "2026-08-06T00:00:00.000Z",
-      baseline_affected_order_count: 100,
-      latest_affected_order_count: 100,
-      current_progress_percent: 0,
-      current_assessment: "no_progress",
-      created_at: "2026-08-05T08:00:00.000Z",
-      updated_at: "2026-08-06T00:00:00.000Z",
     };
     const query = {
       upsert: vi.fn().mockReturnThis(),
       insert: vi.fn().mockReturnThis(),
       select: vi.fn().mockReturnThis(),
-      then: (resolve: (value: { data: FollowupCaseRow[]; error: null }) => unknown) =>
+      then: (resolve: (value: { data: FollowupCaseLinkRow[]; error: null }) => unknown) =>
         Promise.resolve(resolve({ data: [caseRow], error: null })),
     };
     const client = {
@@ -285,7 +277,30 @@ describe("Sprint 10.1 follow-up persistence batching", () => {
       [expect.objectContaining({ incident_id: "incident-1", incident_key: "batch:1", updated_at: expect.any(String) })],
       { onConflict: "incident_key" }
     );
-    expect(query.select).toHaveBeenCalledWith(expect.stringContaining("incident_id"));
-    expect(query.select).not.toHaveBeenCalledWith("*");
+    expect(query.select).toHaveBeenCalledWith("id, incident_id, incident_key");
+    expect(query.select).not.toHaveBeenCalledWith(expect.stringContaining("operational_cohort"));
+  });
+
+  it("bulk-loads only legacy event evidence in bounded case-id batches", async () => {
+    const calls: Array<{ column: string; ids: string[] }> = [];
+    const query = {
+      select: vi.fn().mockReturnThis(),
+      in: vi.fn((column: string, ids: string[]) => {
+        calls.push({ column, ids });
+        return query;
+      }),
+      or: vi.fn(() => Promise.resolve({ data: [], error: null })),
+    };
+    const client = { from: vi.fn().mockReturnValue(query) } as unknown as SupabaseClient;
+    const repository = new SupabaseFollowupRepository(client);
+    const caseIds = Array.from({ length: 201 }, (_, index) => `case-${index}`);
+
+    await expect(repository.getEventsByCaseIds(caseIds)).resolves.toEqual([]);
+
+    expect(query.select).toHaveBeenCalledWith("followup_case_id,event_type,new_state");
+    expect(query.or).toHaveBeenCalledWith("event_type.eq.PUSH_CONFIRMED,new_state.eq.FIRST_PUSH_SENT");
+    expect(calls.map(call => call.ids.length)).toEqual([100, 100, 1]);
+    expect(calls.every(call => call.column === "followup_case_id")).toBe(true);
+    expect(calls.flatMap(call => call.ids)).toEqual(caseIds);
   });
 });

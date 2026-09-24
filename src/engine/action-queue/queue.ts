@@ -5,7 +5,7 @@ import type {
   EnqueueActionParams,
   ActionStatus,
 } from "./types";
-import type { ActionQueueMetrics, IActionQueue, ActionQueueDeduplicationResult } from "./IActionQueue";
+import type { ActionQueueMetrics, IActionQueue, ActionQueueDeduplicationResult, LegacyNotificationActionEvidence } from "./IActionQueue";
 import { Deduplicator } from "./deduplicator";
 import { isFallbackAllowed } from "@/connectors/supabase/fallback-policy";
 import { logger } from "@/observability/logger";
@@ -319,6 +319,37 @@ export class ActionQueue implements IActionQueue {
       }
     }
     return this.inMemoryQueue.filter(action => String(action.payload?.incidentId || action.payload?.incident_id || "") === incidentId);
+  }
+
+  async getActionsByIncidentIds(incidentIds: string[]): Promise<LegacyNotificationActionEvidence[] | null> {
+    const ids = Array.from(new Set(incidentIds.filter(Boolean)));
+    if (ids.length === 0) return [];
+
+    if (this.client) {
+      try {
+        const rows: LegacyNotificationActionEvidence[] = [];
+        const chunkSize = 100;
+        for (let index = 0; index < ids.length; index += chunkSize) {
+          const chunk = ids.slice(index, index + chunkSize);
+          const { data, error } = await this.client
+            .from("notification_actions")
+            .select("action_type,status,outcome,provider_message_id,payload")
+            .in("payload->>incidentId", chunk)
+            .eq("action_type", "FIRST_PUSH");
+
+          if (error || !data) return null;
+          rows.push(...data as LegacyNotificationActionEvidence[]);
+        }
+        return rows;
+      } catch {
+        return null;
+      }
+    }
+
+    const idSet = new Set(ids);
+    return this.inMemoryQueue
+      .filter((action) => idSet.has(String(action.payload?.incidentId || action.payload?.incident_id || "")))
+      .map(({ action_type, status, outcome, provider_message_id, payload }) => ({ action_type, status, outcome, provider_message_id, payload }));
   }
 
   /**

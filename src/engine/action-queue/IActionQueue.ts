@@ -18,6 +18,11 @@ export interface ActionQueueDeduplicationResult {
   reason: "in_memory_duplicate" | "db_unique_constraint";
 }
 
+export type LegacyNotificationActionEvidence = Pick<
+  NotificationActionRow,
+  "action_type" | "status" | "outcome" | "provider_message_id" | "payload"
+>;
+
 export interface IActionQueue {
   getMetricsSnapshot?(): ActionQueueMetrics;
   enqueueAction(
@@ -51,4 +56,6 @@ export interface IActionQueue {
   ): Promise<NotificationActionEventRow>;
   /** Returns null when durable action history cannot be read safely. */
   getActionsByIncidentId?(incidentId: string): Promise<NotificationActionRow[] | null>;
+  /** Bulk durable-history read; null means the history was unavailable. */
+  getActionsByIncidentIds?(incidentIds: string[]): Promise<LegacyNotificationActionEvidence[] | null>;
 }

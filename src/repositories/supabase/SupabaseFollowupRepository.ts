@@ -3,7 +3,9 @@ import type { FollowupCaseRow, FollowupEventRow } from "@/connectors/supabase/ty
 import { BaseRepository } from "../base/BaseRepository";
 import type {
   FollowupCaseUpsert,
+  FollowupCaseLinkRow,
   FollowupEventInsert,
+  FollowupEventEvidence,
   IFollowupRepository,
   FollowupCasePageCursor,
 } from "../interfaces/IFollowupRepository";
@@ -53,6 +55,8 @@ const FOLLOWUP_EVENT_COLUMNS = [
 ].join(", ");
 
 const FOLLOWUP_CASE_PAGE_SIZE = 100;
+const FOLLOWUP_EVIDENCE_BATCH_SIZE = 100;
+const FOLLOWUP_CASE_LINK_COLUMNS = ["id", "incident_id", "incident_key"].join(", ");
 const FOLLOWUP_PROCESSING_CASE_COLUMNS = [
   "operational_cohort",
   "id",
@@ -179,7 +183,7 @@ export class SupabaseFollowupRepository extends BaseRepository implements IFollo
     return this.executeSingle<FollowupCaseRow>(query as any);
   }
 
-  async batchUpsertCases(cases: FollowupCaseUpsert[]): Promise<FollowupCaseRow[]> {
+  async batchUpsertCases(cases: FollowupCaseUpsert[]): Promise<FollowupCaseLinkRow[]> {
     if (cases.length === 0) return [];
 
     const now = new Date().toISOString();
@@ -191,9 +195,9 @@ export class SupabaseFollowupRepository extends BaseRepository implements IFollo
     const query = this.client
       .from("followup_cases")
       .upsert(payload, { onConflict: "incident_key" })
-      .select(FOLLOWUP_CASE_COLUMNS);
+      .select(FOLLOWUP_CASE_LINK_COLUMNS);
 
-    return this.executeMany<FollowupCaseRow>(query as unknown as Promise<{ data: FollowupCaseRow[] | null; error: unknown }>);
+    return this.executeMany<FollowupCaseLinkRow>(query as unknown as Promise<{ data: FollowupCaseLinkRow[] | null; error: unknown }>);
   }
 
   async insertEvent(eventData: FollowupEventInsert): Promise<FollowupEventRow> {
@@ -239,6 +243,26 @@ export class SupabaseFollowupRepository extends BaseRepository implements IFollo
       .order("created_at", { ascending: false });
 
     return this.executeMany<FollowupEventRow>(query as unknown as Promise<{ data: FollowupEventRow[] | null; error: unknown }>);
+  }
+
+  async getEventsByCaseIds(followupCaseIds: string[]): Promise<FollowupEventEvidence[]> {
+    const ids = Array.from(new Set(followupCaseIds.filter(Boolean)));
+    if (ids.length === 0) return [];
+
+    const rows: FollowupEventEvidence[] = [];
+    for (let index = 0; index < ids.length; index += FOLLOWUP_EVIDENCE_BATCH_SIZE) {
+      const chunk = ids.slice(index, index + FOLLOWUP_EVIDENCE_BATCH_SIZE);
+      const query = this.client
+        .from("followup_events")
+        .select("followup_case_id,event_type,new_state")
+        .in("followup_case_id", chunk)
+        .or("event_type.eq.PUSH_CONFIRMED,new_state.eq.FIRST_PUSH_SENT");
+
+      rows.push(...await this.executeMany<FollowupEventEvidence>(
+        query as unknown as Promise<{ data: FollowupEventEvidence[] | null; error: unknown }>
+      ));
+    }
+    return rows;
   }
 
   async getRecentEvents(limit: number = 30): Promise<FollowupEventRow[]> {

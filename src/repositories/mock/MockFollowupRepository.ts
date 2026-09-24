@@ -2,6 +2,7 @@ import type { FollowupCaseRow, FollowupEventRow } from "@/connectors/supabase/ty
 import type {
   FollowupCaseUpsert,
   FollowupEventInsert,
+  FollowupEventEvidence,
   IFollowupRepository,
   FollowupCasePageCursor,
 } from "../interfaces/IFollowupRepository";
@@ -140,6 +141,13 @@ export class MockFollowupRepository implements IFollowupRepository {
     return this.inMemoryEvents
       .filter((e) => e.followup_case_id === followupCaseId)
       .sort((a, b) => new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime());
+  }
+
+  async getEventsByCaseIds(followupCaseIds: string[]): Promise<FollowupEventEvidence[]> {
+    const ids = new Set(followupCaseIds.filter(Boolean));
+    return this.inMemoryEvents
+      .filter((event) => ids.has(event.followup_case_id))
+      .map(({ followup_case_id, event_type, new_state }) => ({ followup_case_id, event_type, new_state }));
   }
 
   async getRecentEvents(limit: number = 30): Promise<FollowupEventRow[]> {
