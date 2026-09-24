@@ -90,6 +90,10 @@ jobs:
           sudo apt-get update
           sudo apt-get install --yes postgresql-client
 
+      - name: Test separation of psql command tags from SELECT output
+        working-directory: harness
+        run: node --test .github/scripts/opspilot-shadow-final-gate-output.test.mjs
+
       - name: Verify Shadow target, empty V3 tables, and capture schema digest
         id: preflight
         working-directory: harness
@@ -111,7 +115,7 @@ jobs:
         run: node .github/scripts/opspilot-shadow-final-gate.mjs test
 
       - name: Remove test-only objects and verify exact V3 schema restoration
-        if: always() && steps.preflight.outcome == 'success'
+        if: ${{ always() && steps.preflight.outcome == 'success' }}
         working-directory: harness
         env:
           SHADOW_SUPABASE_URL: ${{ secrets.SHADOW_SUPABASE_URL }}

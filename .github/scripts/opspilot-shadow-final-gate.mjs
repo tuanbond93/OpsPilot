@@ -3,6 +3,7 @@ import { existsSync, readFileSync, unlinkSync, writeFileSync, appendFileSync } f
 import { resolve } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { performance } from "node:perf_hooks";
+import { parseSingleJsonSelect, parseSingleScalarSelect } from "./opspilot-shadow-final-gate-output.mjs";
 
 const TARGET_REF = "qkrpbompjwxfpicjfoub";
 const PRIMARY_REF = "elwnbwimgzijuelfjdsq";
@@ -78,14 +79,20 @@ function dbEnvironment() {
   };
 }
 
-function psql(sql, options = {}) {
+function executePsql(sql, options = {}) {
   const { pg } = dbEnvironment();
-  const args = ["-X", "-v", "ON_ERROR_STOP=1", "-A", "-t"];
+  const args = ["-X", "-v", "ON_ERROR_STOP=1", "-A", "-t", "-q"];
   if (options.file) args.push("-f", options.file);
   else args.push("-c", sql);
   const result = spawnSync("psql", args, {
     encoding: "utf8",
-    env: { ...process.env, ...pg },
+    env: {
+      ...process.env,
+      ...pg,
+      PGOPTIONS: options.readOnly
+        ? "-c statement_timeout=8s -c default_transaction_read_only=on"
+        : pg.PGOPTIONS,
+    },
     maxBuffer: 16 * 1024 * 1024,
   });
   if (result.status !== 0) {
@@ -93,6 +100,26 @@ function psql(sql, options = {}) {
     throw new Error(`PSQL_FAILED:${output.slice(-3000)}`);
   }
   return result.stdout.trim();
+}
+
+function runSql(sql, options = {}) {
+  // DDL, DO blocks, and mutations are judged only by psql's exit code.
+  // Their stdout can contain command tags and is deliberately discarded.
+  executePsql(sql, options);
+}
+
+function queryJson(sql, label) {
+  if (!/^\s*(SELECT|WITH)\b/i.test(sql)) {
+    throw new Error(`GATE_FAILED:${label}_MUST_BE_A_SEPARATE_SELECT`);
+  }
+  return parseSingleJsonSelect(executePsql(sql, { readOnly: true }), label);
+}
+
+function queryScalar(sql, label) {
+  if (!/^\s*(SELECT|WITH)\b/i.test(sql)) {
+    throw new Error(`GATE_FAILED:${label}_MUST_BE_A_SEPARATE_SELECT`);
+  }
+  return parseSingleScalarSelect(executePsql(sql, { readOnly: true }), label);
 }
 
 const V3_DIGEST_SQL = `
@@ -184,7 +211,7 @@ function ensureCandidate() {
 function preflight() {
   const migrationPath = ensureCandidate();
   if (!existsSync(migrationPath)) throw new Error("GATE_FAILED:CANDIDATE_MIGRATION_MISSING");
-  const identity = psql(`
+  runSql(`
     DO $$ BEGIN
       IF to_regclass('public.shadow_sync_runs') IS NULL
         OR to_regclass('public.order_state_versions') IS NULL
@@ -199,34 +226,37 @@ function preflight() {
         OR to_regclass('public.checkpoint_recoveries') IS NOT NULL
         OR to_regclass('public.followup_case_members') IS NOT NULL
         OR to_regclass('public.followup_case_member_generations') IS NOT NULL
-        OR to_regclass('public.followup_case_cohort_archive') IS NOT NULL THEN
+        OR to_regclass('public.followup_case_cohort_archive') IS NOT NULL
+        OR to_regprocedure('public.cleanup_followup_case_member_generations(boolean,integer,integer)') IS NOT NULL
+        OR to_regprocedure('public.opspilot_shadow_test_runtime_settings()') IS NOT NULL THEN
         RAISE EXCEPTION 'TEMPORARY_TEST_OBJECT_ALREADY_EXISTS';
       END IF;
       IF (SELECT count(*) FROM pg_roles WHERE rolname IN ('anon','authenticated','service_role')) <> 3 THEN
         RAISE EXCEPTION 'SUPABASE_ROLES_MISSING';
       END IF;
     END $$;
+  `);
+  check(true, "SHADOW_IDENTITY_CHECK", "API and database endpoints matched Shadow project ref");
+  check(true, "SERVICE_ROLE_KEY_IDENTITY", "service_role key claim matched Shadow project ref");
+  check(true, "PRIMARY_REF_REJECTED");
+  const version = queryJson(`
     SELECT jsonb_build_object(
       'serverVersion', current_setting('server_version'),
       'serverVersionNum', current_setting('server_version_num')::integer,
       'statementTimeout', current_setting('statement_timeout'),
       'database', current_database()
     )::text;
-  `);
-  check(true, "SHADOW_IDENTITY_CHECK", "API and database endpoints matched Shadow project ref");
-  check(true, "SERVICE_ROLE_KEY_IDENTITY", "service_role key claim matched Shadow project ref");
-  check(true, "PRIMARY_REF_REJECTED");
-  const version = JSON.parse(identity.split(/\r?\n/).at(-1));
-  const counts = JSON.parse(psql(`
+  `, "DATABASE_IDENTITY");
+  const counts = queryJson(`
     SELECT jsonb_build_object(
       'shadow_sync_runs', (SELECT count(*) FROM public.shadow_sync_runs),
       'order_state_versions', (SELECT count(*) FROM public.order_state_versions),
       'snapshot_v3_shadow_comparisons', (SELECT count(*) FROM public.snapshot_v3_shadow_comparisons),
       'sync_run_order_refs', (SELECT count(*) FROM public.sync_run_order_refs)
     )::text;
-  `));
+  `, "V3_TABLE_COUNTS");
   check(Object.values(counts).every((count) => Number(count) === 0), "V3_TABLES_EMPTY", JSON.stringify(counts));
-  const digest = psql(V3_DIGEST_SQL);
+  const digest = queryScalar(V3_DIGEST_SQL, "V3_SCHEMA_DIGEST");
   check(/^[0-9a-f]{32}$/.test(digest), "V3_SCHEMA_DIGEST_CAPTURED", digest);
   const state = { safe: true, projectRef: TARGET_REF, candidate: TARGET_COMMIT, digest, counts, version };
   writeFileSync(STATE_FILE, JSON.stringify(state, null, 2), { mode: 0o600 });
@@ -280,10 +310,6 @@ REVOKE ALL ON FUNCTION public.opspilot_shadow_test_runtime_settings() FROM PUBLI
 GRANT EXECUTE ON FUNCTION public.opspilot_shadow_test_runtime_settings() TO service_role;
 NOTIFY pgrst, 'reload schema';
 `;
-
-function runSql(sql) {
-  return psql(sql);
-}
 
 function apiRequest(path, init = {}) {
   const { apiUrl } = dbEnvironment();
@@ -525,7 +551,7 @@ async function cleanupSemantics(report) {
   check(apply.body.deletedGenerations === 2 && apply.body.deletedMemberRows === 2, "CLEANUP_APPLY", JSON.stringify(apply.body));
   const second = await callCleanup(false, 5, 5000);
   check(second.body.deletedGenerations === 0 && second.body.deletedMemberRows === 0, "CLEANUP_IDEMPOTENT", JSON.stringify(second.body));
-  const result = JSON.parse(runSql(`
+  const result = queryJson(`
     SELECT jsonb_build_object(
       'G1Removed', NOT EXISTS (SELECT 1 FROM public.followup_case_member_generations WHERE followup_case_id=${pgLiteral(ids.caseId)}::uuid AND generation_id=${pgLiteral(ids.core[0])}::uuid),
       'G2PreviousPresent', EXISTS (SELECT 1 FROM public.followup_case_member_generations WHERE followup_case_id=${pgLiteral(ids.caseId)}::uuid AND generation_id=${pgLiteral(ids.core[1])}::uuid),
@@ -537,7 +563,7 @@ async function cleanupSemantics(report) {
       'ActivePointer', (SELECT member_generation_id FROM public.followup_cases WHERE id=${pgLiteral(ids.activeCase)}::uuid),
       'RecoveryPointer', (SELECT member_generation_id FROM public.followup_cases WHERE id=${pgLiteral(ids.recoveryCase)}::uuid)
     )::text;
-  `));
+  `, "CLEANUP_RETENTION_STATE");
   check(result.G1Removed && result.G2PreviousPresent && result.G3CurrentPresent && result.G4OldPreparingRemoved && result.G5YoungPreparingPresent, "GENERATION_RETENTION_EXPECTATIONS");
   check(result.ActiveRunPresent && result.PendingRecoveryPresent && result.ActivePointer === ids.active[1] && result.RecoveryPointer === ids.recovery[1], "ACTIVE_AND_PENDING_RECOVERY_PROTECTED");
   report.cleanupDry = true;
@@ -569,7 +595,7 @@ async function batchAndMemberLimits(report) {
   check(dry.body.eligibleGenerationsInBatch === 5, "CASE_BATCH_LIMIT_DRY_RUN", String(dry.body.eligibleGenerationsInBatch));
   const apply = await callCleanup(false, 5, 5000);
   check(apply.body.deletedGenerations <= 5 && apply.body.deletedMemberRows <= 5000, "CASE_BATCH_LIMIT", JSON.stringify(apply.body));
-  const remaining = Number(psql(`SELECT count(*) FROM public.followup_case_member_generations WHERE generation_status='PREPARING' AND created_at < now()-interval '7 days'`));
+  const remaining = Number(queryScalar(`SELECT count(*) FROM public.followup_case_member_generations WHERE generation_status='PREPARING' AND created_at < now()-interval '7 days'`, "OLD_PREPARING_REMAINING"));
   check(remaining >= 1, "CASE_BATCH_LIMIT_LEFT_WORK");
   for (let i = 0; i < 4; i += 1) {
     const next = await callCleanup(false, 5, 5000);
@@ -585,7 +611,7 @@ async function batchAndMemberLimits(report) {
   check(oldRows.maxChunkRows <= 500 && oldRows.maxChunkBytes <= 131072, "MEMBER_FIXTURE_CHUNK_LIMIT");
   const limited = await callCleanup(false, 5, 5000);
   check(limited.body.deletedMemberRows <= 5000, "MEMBER_ROW_LIMIT", JSON.stringify(limited.body));
-  const leftAfterFirst = Number(psql(`SELECT count(*) FROM public.followup_case_members WHERE followup_case_id=${pgLiteral(limitCase)}::uuid AND generation_id=${pgLiteral(old)}::uuid`));
+  const leftAfterFirst = Number(queryScalar(`SELECT count(*) FROM public.followup_case_members WHERE followup_case_id=${pgLiteral(limitCase)}::uuid AND generation_id=${pgLiteral(old)}::uuid`, "MEMBER_LIMIT_REMAINING"));
   check(leftAfterFirst === 1, "MEMBER_ROW_LIMIT_REMAINDER", String(leftAfterFirst));
   const final = await callCleanup(false, 5, 5000);
   check(final.body.deletedMemberRows === 1 && final.body.deletedGenerations === 1, "MEMBER_ROW_LIMIT_RESUMABLE", JSON.stringify(final.body));
@@ -609,8 +635,8 @@ async function postgrestAnd10k(report) {
   check(rpcDry.body.dryRun === true && Number.isInteger(rpcDry.body.eligibleGenerationsInBatch), "POSTGREST_RPC_DRY_RUN", JSON.stringify(rpcDry.body));
   const rpcApply = await callCleanup(false, 5, 5000);
   check(rpcApply.body.dryRun === false && rpcApply.body.deletedGenerations >= 1, "POSTGREST_RPC_APPLY", JSON.stringify(rpcApply.body));
-  check(Number(psql(`SELECT count(*) FROM public.followup_case_member_generations WHERE followup_case_id=${pgLiteral(safeCase)}::uuid AND generation_id=${pgLiteral(current)}::uuid`)) === 1, "POSTGREST_APPLY_CURRENT_PROTECTED");
-  check(Number(psql(`SELECT count(*) FROM public.followup_case_member_generations WHERE followup_case_id=${pgLiteral(safeCase)}::uuid AND generation_id=${pgLiteral(abandoned)}::uuid`)) === 0, "POSTGREST_APPLY_OLD_REMOVED");
+  check(Number(queryScalar(`SELECT count(*) FROM public.followup_case_member_generations WHERE followup_case_id=${pgLiteral(safeCase)}::uuid AND generation_id=${pgLiteral(current)}::uuid`, "POSTGREST_CURRENT_COUNT")) === 1, "POSTGREST_APPLY_CURRENT_PROTECTED");
+  check(Number(queryScalar(`SELECT count(*) FROM public.followup_case_member_generations WHERE followup_case_id=${pgLiteral(safeCase)}::uuid AND generation_id=${pgLiteral(abandoned)}::uuid`, "POSTGREST_ABANDONED_COUNT")) === 0, "POSTGREST_APPLY_OLD_REMOVED");
   report.postgrestRpcDry = true;
   report.postgrestRpcApply = true;
 
@@ -626,14 +652,14 @@ async function postgrestAnd10k(report) {
   const keyRead = await readMemberKeys(caseId, generationId, 10000);
   const expectedKeys = Array.from({ length: 10000 }, (_, index) => `SHADOW10K-${String(index).padStart(5, "0")}`);
   check(keyRead.keys.every((key, index) => key === expectedKeys[index]), "POSTGREST_EXACT_KEY_SET");
-  const dbCounts = JSON.parse(psql(`
+  const dbCounts = queryJson(`
     SELECT jsonb_build_object(
       'rows', count(*), 'distinctKeys', count(DISTINCT order_code),
       'timeout', current_setting('statement_timeout')
     )::text
     FROM public.followup_case_members
     WHERE followup_case_id=${pgLiteral(caseId)}::uuid AND generation_id=${pgLiteral(generationId)}::uuid;
-  `));
+  `, "FIXTURE_DATABASE_COUNTS");
   check(Number(dbCounts.rows) === 10000 && Number(dbCounts.distinctKeys) === 10000, "DATABASE_COUNT_AND_KEY_SET", JSON.stringify(dbCounts));
   const commitMs = await setGenerationCommitted(caseId, generationId, 10000);
   const pointerMs = await flipPointer(caseId, generationId, 10000);
@@ -696,7 +722,7 @@ async function skipLockedGate(report) {
 }
 
 function postTestSchemaCheck() {
-  const result = JSON.parse(runSql(`
+  runSql(`
     DO $$ BEGIN
       IF to_regclass('public.followup_case_members') IS NULL
         OR to_regclass('public.followup_case_member_generations') IS NULL
@@ -732,8 +758,15 @@ function postTestSchemaCheck() {
         RAISE EXCEPTION 'MIGRATION_094_RPC_SECURITY_DEFINITION_FAILED';
       END IF;
     END $$;
-    SELECT jsonb_build_object('memberTable',to_regclass('public.followup_case_members')::text,'generationTable',to_regclass('public.followup_case_member_generations')::text,'archiveTable',to_regclass('public.followup_case_cohort_archive')::text,'cleanupRpc',to_regprocedure('public.cleanup_followup_case_member_generations(boolean,integer,integer)')::text)::text;
-  `));
+  `);
+  const result = queryJson(`
+    SELECT jsonb_build_object(
+      'memberTable', to_regclass('public.followup_case_members')::text,
+      'generationTable', to_regclass('public.followup_case_member_generations')::text,
+      'archiveTable', to_regclass('public.followup_case_cohort_archive')::text,
+      'cleanupRpc', to_regprocedure('public.cleanup_followup_case_member_generations(boolean,integer,integer)')::text
+    )::text;
+  `, "MIGRATION_SCHEMA_OBJECTS");
   check(Boolean(result.cleanupRpc), "MIGRATION_094_OBJECTS_AND_SECURITY", JSON.stringify(result));
 }
 
@@ -746,7 +779,7 @@ async function test() {
   runSql(BOOTSTRAP_SQL);
   console.log("MINIMAL_TEST_BOOTSTRAP=PASS");
   const applyStart = performance.now();
-  psql("", { file: migrationPath });
+  runSql("", { file: migrationPath });
   report.migrationMs = performance.now() - applyStart;
   report.migration = true;
   check(true, "MIGRATION_094_LIVE", `${report.migrationMs.toFixed(2)}ms`);
@@ -808,10 +841,10 @@ function restore() {
   if (!state.safe || state.projectRef !== TARGET_REF || state.candidate !== TARGET_COMMIT) throw new Error("GATE_FAILED:RESTORE_STATE_IDENTITY");
   const migrationPath = ensureCandidate();
   void migrationPath;
-  const currentDigest = psql(V3_DIGEST_SQL);
+  const currentDigest = queryScalar(V3_DIGEST_SQL, "V3_SCHEMA_DIGEST_BEFORE_RESTORE");
   if (currentDigest !== state.digest) throw new Error("GATE_FAILED:V3_DIGEST_CHANGED_BEFORE_RESTORE; temporary test objects left for owner review");
   runSql(RESTORE_SQL);
-  const remaining = JSON.parse(runSql(`
+  runSql(`
     DO $$ BEGIN
       IF to_regtype('public.followup_state_enum') IS NOT NULL
         OR to_regclass('public.sync_runs') IS NOT NULL
@@ -825,14 +858,16 @@ function restore() {
         RAISE EXCEPTION 'TEMPORARY_OBJECT_REMAINS_AFTER_RESTORE';
       END IF;
     END $$;
+  `);
+  const remaining = queryJson(`
     SELECT jsonb_build_object(
       'shadow_sync_runs', (SELECT count(*) FROM public.shadow_sync_runs),
       'order_state_versions', (SELECT count(*) FROM public.order_state_versions),
       'snapshot_v3_shadow_comparisons', (SELECT count(*) FROM public.snapshot_v3_shadow_comparisons),
       'sync_run_order_refs', (SELECT count(*) FROM public.sync_run_order_refs)
     )::text;
-  `));
-  const afterDigest = psql(V3_DIGEST_SQL);
+  `, "V3_ROWS_AFTER_RESTORE");
+  const afterDigest = queryScalar(V3_DIGEST_SQL, "V3_SCHEMA_DIGEST_AFTER_RESTORE");
   check(afterDigest === state.digest, "SHADOW_SCHEMA_MATCH", afterDigest);
   check(Object.values(remaining).every((count) => Number(count) === 0), "SHADOW_ROWS_AFTER_RESTORE", JSON.stringify(remaining));
   unlinkSync(STATE_FILE);
