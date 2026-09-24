@@ -1,147 +1,42 @@
-name: OpsPilot Production Read-Only Preflight
-
+name: OpsPilot Production Read-Only Liveness Check
 on:
   workflow_dispatch:
-
 permissions:
   contents: read
-
 concurrency:
-  group: opspilot-production-preflight
+  group: opspilot-production-read-only-liveness
   cancel-in-progress: false
-
 jobs:
-  preflight:
+  liveness:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 10
     environment:
       name: opspilot-production-rollout
     steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-
-      - name: Verify project identity before database access
-        id: identity
+      - name: Verify Production project identity before database access
         shell: bash
         env:
-          PGHOST: ${{ secrets.PROD_DB_HOST }}
-          PGPORT: ${{ secrets.PROD_DB_PORT }}
-          PGUSER: ${{ secrets.PROD_DB_USER }}
-          PGDATABASE: ${{ secrets.PROD_DB_NAME }}
-          PGPASSWORD: ${{ secrets.PROD_DB_PASSWORD }}
           PROD_SUPABASE_URL: ${{ secrets.PROD_SUPABASE_URL }}
         run: |
-          python -c '
-          import os,sys
+          python - <<'PY'
+          import os, sys
           from urllib.parse import urlparse
-          ref="elwnbwimgzijuelfjdsq"
-          shadow="qkrpbompjwxfpicjfoub"
-          raw_url=os.environ.get("PROD_SUPABASE_URL","").strip()
-          if not raw_url:
-            print("PRODUCTION_IDENTITY=FAIL; REASON=SUPABASE_URL_MISSING")
-            sys.exit(1)
-          try:
-            parsed=urlparse(raw_url)
-            host=(parsed.hostname or "").lower().rstrip(".")
-          except Exception:
-            print("PRODUCTION_IDENTITY=FAIL; REASON=INVALID_SUPABASE_URL")
-            sys.exit(1)
-          project_ref=host[:-len(".supabase.co")] if host.endswith(".supabase.co") else ""
-          if project_ref==shadow or shadow in host:
-            print("PRODUCTION_IDENTITY=FAIL; REASON=SHADOW_REF_REJECTED")
-            sys.exit(1)
-          if parsed.scheme.lower()!="https" or project_ref!=ref or host!=ref+".supabase.co":
-            print("PRODUCTION_IDENTITY=FAIL; REASON=PRODUCTION_REF_UNVERIFIED")
-            sys.exit(1)
-          with open(os.environ["GITHUB_OUTPUT"],"a") as out:
-            out.write("identity_ok=true\n")
-          print("PRODUCTION_IDENTITY=PASS")
-          print("PRODUCTION_PROJECT_REF="+project_ref)
-          '
-      - name: Install psql client
+          prod = "elwnbwimgzijuelfjdsq"
+          shadow = "qkrpbompjwxfpicjfoub"
+          parsed = urlparse(os.environ.get("PROD_SUPABASE_URL", ""))
+          host = (parsed.hostname or "").lower().rstrip(".")
+          ref = host[:-len(".supabase.co")] if host.endswith(".supabase.co") else ""
+          if parsed.scheme.lower() != "https" or host != prod + ".supabase.co" or ref != prod or ref == shadow:
+              print("PRODUCTION_IDENTITY=FAIL")
+              sys.exit(1)
+          print("PRODUCTION_IDENTITY=PASS; PROJECT_REF=" + prod)
+          PY
+      - name: Install PostgreSQL client
         shell: bash
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq postgresql-client
-          psql --version
-
-      - name: Create individually labeled read-only audit helper
-        if: steps.identity.outputs.identity_ok == 'true'
-        shell: bash
-        run: |
-          cat > "$RUNNER_TEMP/preflight.py" <<'PY'
-          import json,os,re,subprocess,sys
-          from pathlib import Path
-          baseline=Path(os.environ["RUNNER_TEMP"])/"preflight.json"
-          Q=[
-          ("Q0_COLUMN_TYPES",r"""SELECT jsonb_build_object('app_columns',COALESCE((SELECT jsonb_agg(jsonb_build_object('table',table_name,'column',column_name,'data_type',data_type,'udt_name',udt_name) ORDER BY table_name,ordinal_position) FROM information_schema.columns WHERE table_schema='public' AND table_name IN ('followup_cases','sync_runs','checkpoint_recoveries')),'[]'::jsonb),'cron_columns',COALESCE((SELECT jsonb_agg(jsonb_build_object('column',a.attname,'type',format_type(a.atttypid,a.atttypmod)) ORDER BY a.attnum) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace JOIN pg_attribute a ON a.attrelid=c.oid WHERE n.nspname='cron' AND c.relname='job' AND a.attnum>0 AND NOT a.attisdropped),'[]'::jsonb))::text"""),
-          ("Q1_DATABASE_SIZE",r"""SELECT jsonb_build_object('database_mb',round(pg_database_size(current_database())/1048576.0,2))::text"""),
-          ("Q2_ACTIVE_CONNECTIONS",r"""SELECT jsonb_build_object('active_connections',(SELECT count(*) FROM pg_stat_activity WHERE datname=current_database() AND backend_type='client backend'))::text"""),
-          ("Q3A_MIGRATION_OBJECTS",r"""SELECT jsonb_build_object('members',to_regclass('public.followup_case_members') IS NOT NULL,'generations',to_regclass('public.followup_case_member_generations') IS NOT NULL,'archive',to_regclass('public.followup_case_cohort_archive') IS NOT NULL)::text"""),
-          ("Q3B_GENERATION_COLUMNS",r"""SELECT jsonb_build_object('cohort_version',EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='followup_cases' AND column_name='cohort_version'),'member_generation_id',EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='followup_cases' AND column_name='member_generation_id'))::text"""),
-          ("Q3C_CLEANUP_FUNCTION",r"""SELECT jsonb_build_object('cleanup',to_regprocedure('public.cleanup_followup_case_member_generations(boolean,integer,integer)') IS NOT NULL)::text"""),          ("Q4_ACTIVE_CHECKPOINT",r"""WITH r AS (SELECT count(*) n FROM public.sync_runs WHERE lower(status::text) IN ('running','dispatching')), c AS (SELECT count(*) FILTER(WHERE upper(status::text) IN ('DISPATCHING','RUNNING')) active,count(*) FILTER(WHERE upper(status::text)='PENDING') pending FROM public.checkpoint_recoveries) SELECT jsonb_build_object('active_runs',(SELECT n FROM r),'recoveries',(SELECT to_jsonb(c) FROM c),'active_checkpoint_in_progress',(SELECT n FROM r)>0 OR (SELECT active FROM c)>0)::text"""),
-          ("Q5_CRON_STATE",r"""WITH j AS (SELECT count(*) n,COALESCE(jsonb_agg(jsonb_build_object('jobid',jobid::text,'jobname',jobname,'schedule',schedule,'active',active) ORDER BY jobid::text),'[]'::jsonb) rows,COALESCE(bool_and(active IS FALSE),false) off FROM cron.job WHERE jobid::text IN ('14','15','16','17')) SELECT jsonb_build_object('jobs',rows,'expected_jobs_found',n=4,'all_off',n=4 AND off)::text FROM j"""),
-          ("Q6_FOLLOWUP_COUNTS",r"""WITH c AS (SELECT count(*) total,count(*) FILTER(WHERE COALESCE(current_state::text,'')<>'CLOSED') active,count(*) FILTER(WHERE current_state::text='CLOSED') closed,count(*) FILTER(WHERE current_state::text='RESOLVED') resolved,count(*) FILTER(WHERE COALESCE(current_state::text,'')<>'CLOSED' AND operational_cohort IS NULL) active_null_cohort FROM public.followup_cases), s AS (SELECT count(*) rows,md5(COALESCE(string_agg(id::text||':'||COALESCE(updated_at::text,''),'|' ORDER BY id),'')) digest FROM public.followup_cases) SELECT jsonb_build_object('cases',(SELECT to_jsonb(c) FROM c),'case_state',(SELECT to_jsonb(s) FROM s))::text"""),
-          ("Q7_V1_COUNTS",r"""SELECT jsonb_build_object('active_v1',count(*) FILTER(WHERE COALESCE(current_state::text,'')<>'CLOSED' AND to_jsonb(operational_cohort)->>'version'='1'),'active_v2_or_other',count(*) FILTER(WHERE COALESCE(current_state::text,'')<>'CLOSED' AND COALESCE(to_jsonb(operational_cohort)->>'version','')<>'1'))::text FROM public.followup_cases"""),
-          ("Q8_LARGEST_COHORT",r"""WITH v AS (SELECT id,to_jsonb(operational_cohort) cohort,octet_length(to_jsonb(operational_cohort)::text) bytes FROM public.followup_cases WHERE COALESCE(current_state::text,'')<>'CLOSED' AND to_jsonb(operational_cohort)->>'version'='1'), m AS (SELECT v.id,count(x.value) members,count(DISTINCT NULLIF(btrim(x.value->>'orderCode'),'')) codes,count(x.value) FILTER(WHERE NULLIF(btrim(x.value->>'customerId'),'') IS NULL OR NULLIF(btrim(x.value->>'warehouseId'),'') IS NULL OR NULLIF(btrim(x.value->>'status'),'') IS NULL OR NULLIF(btrim(x.value->>'baselineStatus'),'') IS NULL OR NULLIF(btrim(x.value->>'observedAt'),'') IS NULL OR COALESCE(x.value->>'stage','') NOT IN ('DELIVERY','TRANSIT','OUTBOUND','UNKNOWN')) bad FROM v LEFT JOIN LATERAL jsonb_array_elements(CASE WHEN jsonb_typeof(v.cohort->'members')='array' THEN v.cohort->'members' ELSE '[]'::jsonb END) x(value) ON true GROUP BY v.id), q AS (SELECT (SELECT count(*) FROM v WHERE jsonb_typeof(cohort->'members') IS DISTINCT FROM 'array') missing_members,(SELECT count(*) FROM v WHERE jsonb_typeof(cohort->'baselineCodes') IS DISTINCT FROM 'array') missing_baseline_codes,COALESCE((SELECT count(*) FROM m WHERE members<>codes),0) duplicate_or_empty_keys,COALESCE((SELECT count(*) FROM m WHERE bad>0),0) invalid_required_cases,(SELECT count(*) FROM v a LEFT JOIN m b ON b.id=a.id WHERE jsonb_typeof(a.cohort->'members') IS DISTINCT FROM 'array' OR jsonb_typeof(a.cohort->'baselineCodes') IS DISTINCT FROM 'array' OR COALESCE(b.members,0)<>COALESCE(b.codes,0) OR COALESCE(b.bad,0)>0) backfill_would_fail,COALESCE((SELECT max(members) FROM m),0) largest_members,COALESCE((SELECT max(bytes) FROM v),0) largest_bytes) SELECT jsonb_build_object('quality',to_jsonb(q))::text FROM q"""),
-          ("Q9_SCHEMA_BASELINE",r"""SELECT jsonb_build_object('schema_digest',md5(COALESCE((SELECT string_agg(table_name||'.'||ordinal_position::text||'.'||column_name||':'||data_type||':'||udt_name||':'||is_nullable||':'||COALESCE(column_default,''),'|' ORDER BY table_name,ordinal_position) FROM information_schema.columns WHERE table_schema='public' AND table_name IN ('followup_cases','followup_case_members','followup_case_member_generations','followup_case_cohort_archive')),'')||COALESCE((SELECT string_agg(tablename||':'||indexname||':'||indexdef,'|' ORDER BY tablename,indexname) FROM pg_indexes WHERE schemaname='public' AND tablename IN ('followup_cases','followup_case_members','followup_case_member_generations','followup_case_cohort_archive')),'')||COALESCE((SELECT string_agg(cl.relname||':'||co.conname||':'||pg_get_constraintdef(co.oid,true),'|' ORDER BY cl.relname,co.conname) FROM pg_constraint co JOIN pg_class cl ON cl.oid=co.conrelid JOIN pg_namespace ns ON ns.oid=cl.relnamespace WHERE ns.nspname='public' AND cl.relname IN ('followup_cases','followup_case_members','followup_case_member_generations','followup_case_cohort_archive')),'')||COALESCE((SELECT string_agg(tablename||':'||policyname||':'||permissive||':'||roles::text||':'||cmd||':'||COALESCE(qual,'')||':'||COALESCE(with_check,''),'|' ORDER BY tablename,policyname) FROM pg_policies WHERE schemaname='public' AND tablename IN ('followup_cases','followup_case_members','followup_case_member_generations','followup_case_cohort_archive')),'')))::text""")]
-          CLASSES={"22P02":"INVALID_TEXT_REPRESENTATION","42P01":"UNDEFINED_TABLE","42703":"UNDEFINED_COLUMN","42883":"UNDEFINED_FUNCTION","42501":"INSUFFICIENT_PRIVILEGE","57014":"QUERY_CANCELED","42601":"SYNTAX_ERROR","42804":"DATATYPE_MISMATCH"}
-          def runq(label,sql):
-           print("QUERY_LABEL="+label,flush=True)
-           try:r=subprocess.run(["psql","-X","-qAt","-v","ON_ERROR_STOP=1","-v","VERBOSITY=verbose","-c",sql],capture_output=True,text=True,timeout=90,check=False)
-           except Exception:print("RESULT=FAIL\nSQLSTATE=NOT_AVAILABLE\nSAFE_ERROR=PSQL_CLIENT_OR_TIMEOUT");return None,False
-           if r.returncode:
-            m=re.search(r"ERROR:\s+([0-9A-Z]{5}):",r.stderr);code=m.group(1) if m else "UNKNOWN"
-            print("RESULT=FAIL\nSQLSTATE="+code+"\nERROR_CLASS="+CLASSES.get(code,"OTHER_DATABASE_ERROR"));safe="database rejected this labeled read-only query"
-            if code=="22P02":
-             t=re.search(r"invalid input syntax for type ([a-zA-Z ]+)",r.stderr,re.I);safe="invalid text representation for "+(t.group(1).strip().upper().replace(" ","_") if t else "UNKNOWN_TYPE")
-            elif code=="57014":safe="statement timeout or query cancellation"
-            elif code in ("42P01","42703","42883"):safe="required schema object unavailable"
-            print("SAFE_ERROR="+safe)
-            msg=re.search(r"ERROR:\s+[0-9A-Z]{5}:\s*(.*)",r.stderr)
-            if msg:
-             safe_msg=re.sub(r"'[^']*'|\"[^\"]*\"","<redacted>",msg.group(1).strip());print("SAFE_ERROR_MESSAGE="+safe_msg[:240])
-            p=re.search(r"POSITION:\s*(\d+)",r.stderr)
-            if p:
-             pos=max(int(p.group(1))-1,0);ln=sql[:pos].count("\n")+1;start=max(pos-100,0);end=min(pos+100,len(sql));print("QUERY_LINE="+str(ln)+"\nQUERY_POSITION="+str(pos+1)+"\nQUERY_EXPRESSION="+sql[start:end].replace("\n"," "))
-            return None,False
-           try:v=json.loads(r.stdout.strip())
-           except Exception:print("RESULT=FAIL\nSQLSTATE=NOT_AVAILABLE\nERROR_CLASS=RESULT_FORMAT\nSAFE_ERROR=expected exactly one JSON SELECT value");return None,False
-           print("RESULT=PASS\nSQLSTATE=00000")
-           if label=="Q0_COLUMN_TYPES":print("COLUMN_TYPES="+json.dumps(v,sort_keys=True))
-           return v,True
-          def main():
-           mode=sys.argv[1];post_names={"Q0_COLUMN_TYPES","Q3A_MIGRATION_OBJECTS","Q3B_GENERATION_COLUMNS","Q3C_CLEANUP_FUNCTION","Q5_CRON_STATE","Q6_FOLLOWUP_COUNTS","Q9_SCHEMA_BASELINE"};sel=Q if mode=="pre" else [item for item in Q if item[0] in post_names];d={}
-           for label,sql in sel:
-            v,ok=runq(label,sql)
-            if not ok:print("DB_CONNECTION=PASS; READ_ONLY_QUERY=FAIL; STOPPED_AT="+label);sys.exit(3)
-            d[label]=v
-           a=d["Q3A_MIGRATION_OBJECTS"];b=d["Q3B_GENERATION_COLUMNS"];c3=d["Q3C_CLEANUP_FUNCTION"]
-           artifacts={**a,"cleanup":c3["cleanup"]};generation_columns={"cohort_version":b["cohort_version"],"member_generation_id":b["member_generation_id"]}
-           d["Q3_MIGRATION_094"]={"migration_094_present":any(artifacts.values()) or any(generation_columns.values()),"artifacts":artifacts,"generation_columns":generation_columns}
-           if mode=="pre":
-            c=d["Q6_FOLLOWUP_COUNTS"]["cases"];v=d["Q7_V1_COUNTS"];q=d["Q8_LARGEST_COHORT"]["quality"];eligible=max(v["active_v1"]-q["backfill_would_fail"],0)
-            sql="SELECT jsonb_build_object('backfill_eligible',"+str(eligible)+",'backfill_would_migrate',"+str(eligible)+",'backfill_would_skip',"+str(max(c["active"]-v["active_v1"],0))+",'backfill_would_fail',"+str(q["backfill_would_fail"])+")::text"
-            ready,ok=runq("Q10_BACKFILL_READINESS",sql)
-            if not ok:print("DB_CONNECTION=PASS; READ_ONLY_QUERY=FAIL; STOPPED_AT=Q10_BACKFILL_READINESS");sys.exit(3)
-            o={**d["Q1_DATABASE_SIZE"],**d["Q2_ACTIVE_CONNECTIONS"],**d["Q3_MIGRATION_094"],**d["Q4_ACTIVE_CHECKPOINT"],**d["Q5_CRON_STATE"],**d["Q6_FOLLOWUP_COUNTS"],**v,**q,**d["Q9_SCHEMA_BASELINE"],**ready,"column_types":d["Q0_COLUMN_TYPES"],"backfill_dry_run":"READ_ONLY_PREFLIGHT_ONLY","v3":"UNKNOWN"};jobs=o.get("jobs",[]);o["cron_all_off"]=len(jobs)==4 and all(x.get("active") is False for x in jobs);o["precheck_pass"]=(not o["migration_094_present"] and not o["active_checkpoint_in_progress"] and o["recoveries"]["pending"]==0 and o["cron_all_off"] and o["backfill_would_fail"]==0)
-            baseline.write_text(json.dumps(o,sort_keys=True),encoding="utf-8")
-            with open(os.environ["GITHUB_OUTPUT"],"a",encoding="utf-8") as f:f.write("precheck_pass="+str(o["precheck_pass"]).lower()+"\n")
-            safe=json.dumps(o,sort_keys=True,default=str);print("PREFLIGHT_RESULTS="+safe);print("BACKFILL_DRY_RUN=READ_ONLY_PREFLIGHT_ONLY");print("V3=UNKNOWN; not read from verified runtime metadata")
-            with open(os.environ["GITHUB_STEP_SUMMARY"],"a",encoding="utf-8") as f:f.write("Read-only Production preflight pre\n"+safe+"\n")
-            if not o["precheck_pass"]:sys.exit(6)
-           else:
-            if not baseline.exists():print("NO_MUTATION_ASSERTION=NOT_RUN; no successful baseline");sys.exit(5)
-            before=json.loads(baseline.read_text(encoding="utf-8"));p={**d["Q3_MIGRATION_094"],**d["Q5_CRON_STATE"],**d["Q6_FOLLOWUP_COUNTS"],**d["Q9_SCHEMA_BASELINE"]};p["no_mutation_assertion"]="PASS" if (not p["migration_094_present"] and p["schema_digest"]==before["schema_digest"] and p["case_state"]==before["case_state"] and p["jobs"]==before["jobs"]) else "FAIL";safe=json.dumps(p,sort_keys=True,default=str);print("POST_RESULTS="+safe)
-            with open(os.environ["GITHUB_STEP_SUMMARY"],"a",encoding="utf-8") as f:f.write("Read-only Production preflight post\n"+safe+"\n")
-            if p["no_mutation_assertion"]!="PASS":sys.exit(7)
-          if __name__=="__main__":main()
-          PY
-
-      - name: Verify PostgreSQL connection
-        id: connection
-        if: steps.identity.outputs.identity_ok == 'true'
+      - name: Read-only live execution evidence
         shell: bash
         env:
           PGHOST: ${{ secrets.PROD_DB_HOST }}
@@ -151,66 +46,115 @@ jobs:
           PGPASSWORD: ${{ secrets.PROD_DB_PASSWORD }}
           PGSSLMODE: require
           PGCONNECT_TIMEOUT: "10"
+          PGOPTIONS: "-c default_transaction_read_only=on -c statement_timeout=8000"
         run: |
-          set +e
-          psql -v ON_ERROR_STOP=1 -Atqc "select current_database(), current_user, version();" >"$RUNNER_TEMP/pg-connect.stdout" 2>"$RUNNER_TEMP/pg-connect.stderr"
-          rc=$?
-          if [ "$rc" -eq 0 ]; then
-            echo "DB_CONNECTION=PASS"
-            echo "connected=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          category=$(python - "$RUNNER_TEMP/pg-connect.stderr" <<'PY
-          import pathlib,re,sys
-          raw=pathlib.Path(sys.argv[1]).read_text(errors="replace").lower()
-          rules=[
-            ("DNS_FAILURE",r"could not translate host name|name or service not known|temporary failure in name resolution|no such host"),
-            ("TLS_FAILURE",r"ssl error|tls error|certificate verify|certificate validation|no pg_hba.conf entry.*ssl|ssl is required"),
-            ("AUTH_FAILURE",r"password authentication failed|no password supplied|role .* does not exist|authentication failed"),
-            ("DATABASE_FAILURE",r"database .* does not exist|invalid catalog name"),
-            ("NETWORK_FAILURE",r"connection timed out|connection refused|no route to host|network is unreachable|could not connect to server|connection reset"),
-          ]
-          for name,pattern in rules:
-            if re.search(pattern,raw,re.S):
-              print(name)
-              break
-          else:
-            print("UNKNOWN")
-          PY
+          set -euo pipefail
+          psql -X -qAt -v ON_ERROR_STOP=1 -c "select current_database(), current_user, version();" >/dev/null
+          echo "DB_CONNECTION=PASS"
+          cat > "$RUNNER_TEMP/liveness.sql" <<'SQL'
+          WITH runs AS MATERIALIZED (
+            SELECT id, status, current_phase, checkpoint_at, started_at, completed_at,
+                   completed_phases,
+                   round((extract(epoch FROM statement_timestamp() - checkpoint_at) / 60)::numeric, 2) AS age_from_checkpoint_minutes,
+                   round((extract(epoch FROM statement_timestamp() - started_at) / 60)::numeric, 2) AS age_from_started_minutes
+            FROM public.sync_runs
+            WHERE lower(status::text) IN ('running','failed')
+              AND COALESCE(current_phase::text,'') <> 'COMPLETED'
+          ), activity AS (
+            SELECT a.pid, a.application_name, a.state, a.query_start,
+                   round(extract(epoch FROM statement_timestamp() - a.query_start)::numeric,2) AS query_age_seconds,
+                   a.wait_event_type, a.wait_event, pg_blocking_pids(a.pid) AS blocking_pids,
+                   ARRAY(SELECT r.id::text FROM runs r WHERE COALESCE(a.query,'') ILIKE '%' || r.id::text || '%') AS target_run_ids,
+                   md5(COALESCE(a.query,'')) AS query_fingerprint
+            FROM pg_stat_activity a
+            WHERE a.pid <> pg_backend_pid()
+              AND a.datname = current_database()
+              AND a.state = 'active'
+              AND (
+                lower(COALESCE(a.application_name,'')) LIKE '%opspilot%'
+                OR lower(COALESCE(a.query,'')) ~ '(opspilot|followup|sync_runs|sync_locks|checkpoint|enqueue_ai|enqueue_notifications)'
+                OR EXISTS (SELECT 1 FROM runs r WHERE COALESCE(a.query,'') ILIKE '%' || r.id::text || '%')
+              )
+          ), lease AS (
+            SELECT COALESCE(jsonb_agg(jsonb_build_object(
+                     'lock_key',lock_key,'acquired_at',acquired_at,'heartbeat_at',heartbeat_at,
+                     'heartbeat_age_seconds',round(extract(epoch FROM statement_timestamp()-heartbeat_at)::numeric,2),
+                     'expires_at',expires_at,'unexpired',expires_at>statement_timestamp()
+                   )),'[]'::jsonb) AS rows,
+                   COALESCE(bool_or(expires_at>statement_timestamp()),false) AS unexpired
+            FROM public.sync_locks
+            WHERE lock_key='global:rillnet-sync'
+          ), recovery AS (
+            SELECT COALESCE(jsonb_agg(jsonb_build_object(
+                     'checkpoint_at',c.checkpoint_at,'sync_run_id',c.sync_run_id,'status',c.status,
+                     'recovery_attempt',c.recovery_attempt,'scheduled_for',c.scheduled_for,
+                     'next_attempt_at',c.next_attempt_at,'dispatch_started_at',c.dispatch_started_at,
+                     'last_http_status',c.last_http_status,'failure_stage',c.failure_stage
+                   ) ORDER BY c.created_at),'[]'::jsonb) AS rows,
+                   COALESCE(bool_or(upper(c.status::text) IN ('DISPATCHING','RUNNING')),false) AS active
+            FROM public.checkpoint_recoveries c
+            WHERE EXISTS (
+              SELECT 1 FROM runs r
+              WHERE r.id=c.sync_run_id OR (r.checkpoint_at IS NOT NULL AND r.checkpoint_at=c.checkpoint_at)
+            )
+          ), cron_state AS (
+            SELECT count(*) AS jobs_found,
+                   COALESCE(bool_and(j.active IS FALSE),false) AS all_off,
+                   COALESCE(jsonb_agg(jsonb_build_object('jobid',j.jobid,'jobname',j.jobname,'schedule',j.schedule,'active',j.active) ORDER BY j.jobid),'[]'::jsonb) AS rows
+            FROM cron.job j
+            WHERE j.jobid::text IN ('14','15','16','17')
+          ), phase_sources AS (
+            SELECT count(*) AS candidate_sources
+            FROM (
+              SELECT table_name
+              FROM information_schema.columns
+              WHERE table_schema='public'
+              GROUP BY table_name
+              HAVING bool_or(column_name='sync_run_id')
+                 AND bool_or(column_name IN ('phase','phase_name','current_phase'))
+                 AND bool_or(column_name IN ('created_at','started_at','event_at','occurred_at','finished_at'))
+            ) s
           )
-          echo "DB_CONNECTION=FAIL"
-          echo "DB_FAILURE_CATEGORY=$category"
-          echo "connected=false" >> "$GITHUB_OUTPUT"
-          exit 1
-      - name: Production database read-only preflight
-        id: preflight
-        if: steps.connection.outputs.connected == 'true'
-        env:
-          PGHOST: ${{ secrets.PROD_DB_HOST }}
-          PGPORT: ${{ secrets.PROD_DB_PORT }}
-          PGUSER: ${{ secrets.PROD_DB_USER }}
-          PGDATABASE: ${{ secrets.PROD_DB_NAME }}
-          PGPASSWORD: ${{ secrets.PROD_DB_PASSWORD }}
-          PGSSLMODE: require
-          PGCONNECT_TIMEOUT: "10"
-          PGOPTIONS: "-c default_transaction_read_only=on -c statement_timeout=8000"
-        run: python "$RUNNER_TEMP/preflight.py" pre
-      - name: Final read-only no-mutation assertion
-        if: always() && steps.identity.outputs.identity_ok == 'true' && steps.preflight.outcome == 'success'
-        env:
-          PGHOST: ${{ secrets.PROD_DB_HOST }}
-          PGPORT: ${{ secrets.PROD_DB_PORT }}
-          PGUSER: ${{ secrets.PROD_DB_USER }}
-          PGDATABASE: ${{ secrets.PROD_DB_NAME }}
-          PGPASSWORD: ${{ secrets.PROD_DB_PASSWORD }}
-          PGSSLMODE: require
-          PGCONNECT_TIMEOUT: "10"
-          PGOPTIONS: "-c default_transaction_read_only=on -c statement_timeout=8000"
-        run: python "$RUNNER_TEMP/preflight.py" post
-      - name: Report unavailable deployment metadata
-        if: always()
-        run: |
-          echo "Production app commit: NOT_AVAILABLE_IN_WORKFLOW" >> "$GITHUB_STEP_SUMMARY"
-          echo "V3 runtime: UNKNOWN; no Vercel metadata credential is configured." >> "$GITHUB_STEP_SUMMARY"
-          echo "SAFE_TO_BEGIN_094_ROLLOUT: NO while V3 remains unverified." >> "$GITHUB_STEP_SUMMARY"
-          echo "No database write, migration, backfill, cron change, deployment, or V3 change was made." >> "$GITHUB_STEP_SUMMARY"
+          SELECT jsonb_build_object(
+            'observed_at',statement_timestamp(),
+            'nonterminal_db_rows',(SELECT count(*) FROM runs),
+            'runs',COALESCE((SELECT jsonb_agg(jsonb_build_object(
+              'run_id',r.id,'status',r.status,'current_phase',r.current_phase,'checkpoint_at',r.checkpoint_at,
+              'started_at',r.started_at,'completed_at',r.completed_at,
+              'last_completed_phase',r.completed_phases ->> -1,
+              'age_from_checkpoint_minutes',r.age_from_checkpoint_minutes,
+              'age_from_last_phase_event_minutes',NULL,
+              'last_phase_event_at','NOT_AVAILABLE_IN_REPO_SCHEMA'
+            ) ORDER BY r.checkpoint_at) FROM runs r),'[]'::jsonb),
+            'phase_event_candidate_sources',(SELECT candidate_sources FROM phase_sources),
+            'active_db_session_matches',COALESCE((SELECT jsonb_agg(jsonb_build_object(
+              'pid',a.pid,'application_name',a.application_name,'state',a.state,'query_start',a.query_start,
+              'query_age_seconds',a.query_age_seconds,'wait_event_type',a.wait_event_type,'wait_event',a.wait_event,
+              'blocking_pids',a.blocking_pids,'target_run_ids',a.target_run_ids,'query_fingerprint',a.query_fingerprint
+            ) ORDER BY a.query_start) FROM activity a),'[]'::jsonb),
+            'exact_target_run_query_found',EXISTS(SELECT 1 FROM activity a WHERE cardinality(a.target_run_ids)>0),
+            'generic_matching_active_query_found',EXISTS(SELECT 1 FROM activity),
+            'matching_lock_waiters',COALESCE((SELECT jsonb_agg(jsonb_build_object('pid',a.pid,'blocking_pids',a.blocking_pids,'query_start',a.query_start)) FROM activity a WHERE cardinality(a.blocking_pids)>0),'[]'::jsonb),
+            'matching_advisory_locks',COALESCE((SELECT jsonb_agg(jsonb_build_object('pid',l.pid,'mode',l.mode,'granted',l.granted,'classid',l.classid::text,'objid',l.objid::text,'objsubid',l.objsubid)) FROM pg_locks l JOIN activity a ON a.pid=l.pid WHERE l.locktype='advisory'),'[]'::jsonb),
+            'sync_lease',(SELECT rows FROM lease),
+            'sync_lease_unexpired',(SELECT unexpired FROM lease),
+            'checkpoint_recoveries',(SELECT rows FROM recovery),
+            'active_checkpoint_recovery',(SELECT active FROM recovery),
+            'cron_jobs',(SELECT rows FROM cron_state),
+            'cron_14_to_17_all_off',(SELECT jobs_found=4 AND all_off FROM cron_state),
+            'route_max_duration_seconds',300,
+            'live_sync_execution_found',CASE
+              WHEN EXISTS(SELECT 1 FROM activity a WHERE cardinality(a.target_run_ids)>0) THEN 'YES'
+              WHEN EXISTS(SELECT 1 FROM activity)
+                OR (SELECT unexpired FROM lease)
+                OR (SELECT active FROM recovery)
+                OR EXISTS(SELECT 1 FROM activity a WHERE cardinality(a.blocking_pids)>0) THEN 'UNKNOWN'
+              WHEN (SELECT count(*) FROM runs)=0 THEN 'NO'
+              WHEN (SELECT max(started_at) FROM runs)<statement_timestamp()-interval '6 minutes'
+                AND (SELECT jobs_found=4 AND all_off FROM cron_state) THEN 'NO'
+              ELSE 'UNKNOWN'
+            END
+          )::text;
+          SQL
+          psql -X -qAt -v ON_ERROR_STOP=1 -v VERBOSITY=verbose -f "$RUNNER_TEMP/liveness.sql"
+          echo "NARROW_READ_ONLY_LIVENESS_QUERY=PASS"
