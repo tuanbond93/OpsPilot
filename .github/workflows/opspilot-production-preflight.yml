@@ -71,7 +71,7 @@ jobs:
         shell: bash
         run: |
           cat > "$RUNNER_TEMP/preflight.py" <<'PY'
-          import json,os,subprocess,sys
+          import json,os,re,subprocess,sys
           from pathlib import Path
           baseline=Path(os.environ["RUNNER_TEMP"])/"preflight.json"
           SQL = r"""
@@ -194,11 +194,18 @@ jobs:
           """
           def psql(sql):
             try:
-              result=subprocess.run(["psql","-X","-qAt","-v","ON_ERROR_STOP=1","-c",sql],
+              result=subprocess.run(["psql","-X","-qAt","-v","ON_ERROR_STOP=1","-v","VERBOSITY=verbose","-c",sql],
                 capture_output=True,text=True,timeout=90,check=False)
             except Exception:
+              print("READ_ONLY_QUERY_FAILURE_CATEGORY=CLIENT_ERROR")
               return None,None
-            if result.returncode != 0: return None,result.returncode
+            if result.returncode != 0:
+              match=re.search(r"ERROR:\s+([0-9A-Z]{5}):",result.stderr)
+              code=match.group(1) if match else "UNKNOWN"
+              categories={"42P01":"UNDEFINED_TABLE","42703":"UNDEFINED_COLUMN","42883":"UNDEFINED_FUNCTION","42501":"INSUFFICIENT_PRIVILEGE","57014":"QUERY_CANCELED","42601":"SYNTAX_ERROR","42804":"DATATYPE_MISMATCH","22P02":"INVALID_TEXT_REPRESENTATION"}
+              print("READ_ONLY_QUERY_SQLSTATE="+code)
+              print("READ_ONLY_QUERY_FAILURE_CATEGORY="+categories.get(code,"OTHER_DATABASE_ERROR"))
+              return None,result.returncode
             return result.stdout.strip(),0
           mode=sys.argv[1]
           output,query_rc=psql(SQL)
