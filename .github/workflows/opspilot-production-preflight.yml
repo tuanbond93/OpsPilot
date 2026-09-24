@@ -78,8 +78,9 @@ jobs:
           ("Q0_COLUMN_TYPES",r"""SELECT jsonb_build_object('app_columns',COALESCE((SELECT jsonb_agg(jsonb_build_object('table',table_name,'column',column_name,'data_type',data_type,'udt_name',udt_name) ORDER BY table_name,ordinal_position) FROM information_schema.columns WHERE table_schema='public' AND table_name IN ('followup_cases','sync_runs','checkpoint_recoveries')),'[]'::jsonb),'cron_columns',COALESCE((SELECT jsonb_agg(jsonb_build_object('column',a.attname,'type',format_type(a.atttypid,a.atttypmod)) ORDER BY a.attnum) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace JOIN pg_attribute a ON a.attrelid=c.oid WHERE n.nspname='cron' AND c.relname='job' AND a.attnum>0 AND NOT a.attisdropped),'[]'::jsonb))::text"""),
           ("Q1_DATABASE_SIZE",r"""SELECT jsonb_build_object('database_mb',round(pg_database_size(current_database())/1048576.0,2))::text"""),
           ("Q2_ACTIVE_CONNECTIONS",r"""SELECT jsonb_build_object('active_connections',(SELECT count(*) FROM pg_stat_activity WHERE datname=current_database() AND backend_type='client backend'))::text"""),
-          ("Q3_MIGRATION_094",r"""WITH c AS (SELECT COALESCE(array_agg(column_name),ARRAY[]::text[]) n FROM information_schema.columns WHERE table_schema='public' AND table_name='followup_cases'), a AS (SELECT to_regclass('public.followup_case_members') IS NOT NULL members,to_regclass('public.followup_case_member_generations') IS NOT NULL generations,to_regclass('public.followup_case_cohort_archive') IS NOT NULL archive,to_regprocedure('public.cleanup_followup_case_member_generations(boolean,integer,integer)') IS NOT NULL cleanup) SELECT jsonb_build_object('migration_094_present',(SELECT members OR generations OR archive OR cleanup FROM a) OR 'cohort_version'=ANY((SELECT n FROM c)) OR 'member_generation_id'=ANY((SELECT n FROM c)),'artifacts',(SELECT to_jsonb(a) FROM a),'generation_columns',jsonb_build_object('cohort_version','cohort_version'=ANY((SELECT n FROM c)),'member_generation_id','member_generation_id'=ANY((SELECT n FROM c))))::text"""),
-          ("Q4_ACTIVE_CHECKPOINT",r"""WITH r AS (SELECT count(*) n FROM public.sync_runs WHERE lower(status::text) IN ('running','dispatching')), c AS (SELECT count(*) FILTER(WHERE upper(status::text) IN ('DISPATCHING','RUNNING')) active,count(*) FILTER(WHERE upper(status::text)='PENDING') pending FROM public.checkpoint_recoveries) SELECT jsonb_build_object('active_runs',(SELECT n FROM r),'recoveries',(SELECT to_jsonb(c) FROM c),'active_checkpoint_in_progress',(SELECT n FROM r)>0 OR (SELECT active FROM c)>0)::text"""),
+          ("Q3A_MIGRATION_OBJECTS",r"""SELECT jsonb_build_object('members',to_regclass('public.followup_case_members') IS NOT NULL,'generations',to_regclass('public.followup_case_member_generations') IS NOT NULL,'archive',to_regclass('public.followup_case_cohort_archive') IS NOT NULL)::text"""),
+          ("Q3B_GENERATION_COLUMNS",r"""SELECT jsonb_build_object('cohort_version',EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='followup_cases' AND column_name='cohort_version'),'member_generation_id',EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='followup_cases' AND column_name='member_generation_id'))::text"""),
+          ("Q3C_CLEANUP_FUNCTION",r"""SELECT jsonb_build_object('cleanup',to_regprocedure('public.cleanup_followup_case_member_generations(boolean,integer,integer)') IS NOT NULL)::text"""),          ("Q4_ACTIVE_CHECKPOINT",r"""WITH r AS (SELECT count(*) n FROM public.sync_runs WHERE lower(status::text) IN ('running','dispatching')), c AS (SELECT count(*) FILTER(WHERE upper(status::text) IN ('DISPATCHING','RUNNING')) active,count(*) FILTER(WHERE upper(status::text)='PENDING') pending FROM public.checkpoint_recoveries) SELECT jsonb_build_object('active_runs',(SELECT n FROM r),'recoveries',(SELECT to_jsonb(c) FROM c),'active_checkpoint_in_progress',(SELECT n FROM r)>0 OR (SELECT active FROM c)>0)::text"""),
           ("Q5_CRON_STATE",r"""WITH j AS (SELECT count(*) n,COALESCE(jsonb_agg(jsonb_build_object('jobid',jobid::text,'jobname',jobname,'schedule',schedule,'active',active) ORDER BY jobid::text),'[]'::jsonb) rows,COALESCE(bool_and(active IS FALSE),false) off FROM cron.job WHERE jobid::text IN ('14','15','16','17')) SELECT jsonb_build_object('jobs',rows,'expected_jobs_found',n=4,'all_off',n=4 AND off)::text FROM j"""),
           ("Q6_FOLLOWUP_COUNTS",r"""WITH c AS (SELECT count(*) total,count(*) FILTER(WHERE COALESCE(current_state::text,'')<>'CLOSED') active,count(*) FILTER(WHERE current_state::text='CLOSED') closed,count(*) FILTER(WHERE current_state::text='RESOLVED') resolved,count(*) FILTER(WHERE COALESCE(current_state::text,'')<>'CLOSED' AND operational_cohort IS NULL) active_null_cohort FROM public.followup_cases), s AS (SELECT count(*) rows,md5(COALESCE(string_agg(id::text||':'||COALESCE(updated_at::text,''),'|' ORDER BY id),'')) digest FROM public.followup_cases) SELECT jsonb_build_object('cases',(SELECT to_jsonb(c) FROM c),'case_state',(SELECT to_jsonb(s) FROM s))::text"""),
           ("Q7_V1_COUNTS",r"""SELECT jsonb_build_object('active_v1',count(*) FILTER(WHERE COALESCE(current_state::text,'')<>'CLOSED' AND to_jsonb(operational_cohort)->>'version'='1'),'active_v2_or_other',count(*) FILTER(WHERE COALESCE(current_state::text,'')<>'CLOSED' AND COALESCE(to_jsonb(operational_cohort)->>'version','')<>'1'))::text FROM public.followup_cases"""),
@@ -97,9 +98,13 @@ jobs:
              t=re.search(r"invalid input syntax for type ([a-zA-Z ]+)",r.stderr,re.I);safe="invalid text representation for "+(t.group(1).strip().upper().replace(" ","_") if t else "UNKNOWN_TYPE")
             elif code=="57014":safe="statement timeout or query cancellation"
             elif code in ("42P01","42703","42883"):safe="required schema object unavailable"
-            print("SAFE_ERROR="+safe);p=re.search(r"POSITION:\s*(\d+)",r.stderr)
+            print("SAFE_ERROR="+safe)
+            msg=re.search(r"ERROR:\s+[0-9A-Z]{5}:\s*(.*)",r.stderr)
+            if msg:
+             safe_msg=re.sub(r"'[^']*'|\"[^\"]*\"","<redacted>",msg.group(1).strip());print("SAFE_ERROR_MESSAGE="+safe_msg[:240])
+            p=re.search(r"POSITION:\s*(\d+)",r.stderr)
             if p:
-             pos=max(int(p.group(1))-1,0);ln=sql[:pos].count("\n")+1;lines=sql.splitlines();print("QUERY_LINE="+str(ln)+"\nQUERY_EXPRESSION="+(lines[ln-1].strip()[:240] if lines else ""))
+             pos=max(int(p.group(1))-1,0);ln=sql[:pos].count("\n")+1;start=max(pos-100,0);end=min(pos+100,len(sql));print("QUERY_LINE="+str(ln)+"\nQUERY_POSITION="+str(pos+1)+"\nQUERY_EXPRESSION="+sql[start:end].replace("\n"," "))
             return None,False
            try:v=json.loads(r.stdout.strip())
            except Exception:print("RESULT=FAIL\nSQLSTATE=NOT_AVAILABLE\nERROR_CLASS=RESULT_FORMAT\nSAFE_ERROR=expected exactly one JSON SELECT value");return None,False
@@ -107,11 +112,14 @@ jobs:
            if label=="Q0_COLUMN_TYPES":print("COLUMN_TYPES="+json.dumps(v,sort_keys=True))
            return v,True
           def main():
-           mode=sys.argv[1];sel=Q if mode=="pre" else [Q[0],Q[3],Q[4],Q[5],Q[9]];d={}
+           mode=sys.argv[1];post_names={"Q0_COLUMN_TYPES","Q3A_MIGRATION_OBJECTS","Q3B_GENERATION_COLUMNS","Q3C_CLEANUP_FUNCTION","Q5_CRON_STATE","Q6_FOLLOWUP_COUNTS","Q9_SCHEMA_BASELINE"};sel=Q if mode=="pre" else [item for item in Q if item[0] in post_names];d={}
            for label,sql in sel:
             v,ok=runq(label,sql)
             if not ok:print("DB_CONNECTION=PASS; READ_ONLY_QUERY=FAIL; STOPPED_AT="+label);sys.exit(3)
             d[label]=v
+           a=d["Q3A_MIGRATION_OBJECTS"];b=d["Q3B_GENERATION_COLUMNS"];c3=d["Q3C_CLEANUP_FUNCTION"]
+           artifacts={**a,"cleanup":c3["cleanup"]};generation_columns={"cohort_version":b["cohort_version"],"member_generation_id":b["member_generation_id"]}
+           d["Q3_MIGRATION_094"]={"migration_094_present":any(artifacts.values()) or any(generation_columns.values()),"artifacts":artifacts,"generation_columns":generation_columns}
            if mode=="pre":
             c=d["Q6_FOLLOWUP_COUNTS"]["cases"];v=d["Q7_V1_COUNTS"];q=d["Q8_LARGEST_COHORT"]["quality"];eligible=max(v["active_v1"]-q["backfill_would_fail"],0)
             sql="SELECT jsonb_build_object('backfill_eligible',"+str(eligible)+",'backfill_would_migrate',"+str(eligible)+",'backfill_would_skip',"+str(max(c["active"]-v["active_v1"],0))+",'backfill_would_fail',"+str(q["backfill_would_fail"])+")::text"
