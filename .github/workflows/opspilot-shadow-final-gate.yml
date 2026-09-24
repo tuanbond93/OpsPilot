@@ -1,0 +1,78 @@
+name: OpsPilot Shadow final normalized-members gate
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: opspilot-shadow-final-gate
+  cancel-in-progress: false
+
+jobs:
+  shadow-final-gate:
+    if: github.repository == 'tuanbond93/OpsPilot'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment: opspilot-shadow-perf
+    env:
+      CANDIDATE_SHA: df3da8ac42902a67d60830b837019f2c6eee2b03
+      SHADOW_PROJECT_REF: qkrpbompjwxfpicjfoub
+      PRIMARY_PROJECT_REF: elwnbwimgzijuelfjdsq
+      STATE_FILE: ${{ runner.temp }}/opspilot-shadow-final-gate-state.json
+
+    steps:
+      - name: Checkout workflow and test harness revision
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          path: harness
+          persist-credentials: false
+
+      - name: Checkout exact normalized-members candidate
+        uses: actions/checkout@v4
+        with:
+          ref: df3da8ac42902a67d60830b837019f2c6eee2b03
+          path: candidate
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install PostgreSQL client
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes postgresql-client
+
+      - name: Verify Shadow target, empty V3 tables, and capture schema digest
+        id: preflight
+        working-directory: harness
+        env:
+          SHADOW_SUPABASE_URL: ${{ secrets.SHADOW_SUPABASE_URL }}
+          SHADOW_SERVICE_ROLE_KEY: ${{ secrets.SHADOW_SERVICE_ROLE_KEY }}
+          SHADOW_DATABASE_URL: ${{ secrets.SHADOW_DATABASE_URL }}
+          CANDIDATE_DIR: ${{ github.workspace }}/candidate
+        run: node .github/scripts/opspilot-shadow-final-gate.mjs preflight
+
+      - name: Apply temporary prerequisite schema and migration 094; run live gates
+        if: steps.preflight.outcome == 'success'
+        working-directory: harness
+        env:
+          SHADOW_SUPABASE_URL: ${{ secrets.SHADOW_SUPABASE_URL }}
+          SHADOW_SERVICE_ROLE_KEY: ${{ secrets.SHADOW_SERVICE_ROLE_KEY }}
+          SHADOW_DATABASE_URL: ${{ secrets.SHADOW_DATABASE_URL }}
+          CANDIDATE_DIR: ${{ github.workspace }}/candidate
+        run: node .github/scripts/opspilot-shadow-final-gate.mjs test
+
+      - name: Remove test-only objects and verify exact V3 schema restoration
+        if: always() && steps.preflight.outcome == 'success'
+        working-directory: harness
+        env:
+          SHADOW_SUPABASE_URL: ${{ secrets.SHADOW_SUPABASE_URL }}
+          SHADOW_SERVICE_ROLE_KEY: ${{ secrets.SHADOW_SERVICE_ROLE_KEY }}
+          SHADOW_DATABASE_URL: ${{ secrets.SHADOW_DATABASE_URL }}
+          CANDIDATE_DIR: ${{ github.workspace }}/candidate
+        run: node .github/scripts/opspilot-shadow-final-gate.mjs restore
