@@ -20,7 +20,7 @@ jobs:
       CANDIDATE_SHA: df3da8ac42902a67d60830b837019f2c6eee2b03
       SHADOW_PROJECT_REF: qkrpbompjwxfpicjfoub
       PRIMARY_PROJECT_REF: elwnbwimgzijuelfjdsq
-      STATE_FILE: ${{ runner.temp }}/opspilot-shadow-final-gate-state.json
+      STATE_FILE: ${{ github.workspace }}/opspilot-shadow-final-gate-state.json
 
     steps:
       - name: Checkout workflow and test harness revision
