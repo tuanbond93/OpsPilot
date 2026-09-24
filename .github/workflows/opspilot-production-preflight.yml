@@ -56,155 +56,187 @@ jobs:
           print("PRODUCTION_PROJECT_REF="+ref)
           PY
 
-      - name: Install read-only database client
-        if: steps.identity.outputs.identity_ok == 'true'
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Install psycopg
-        if: steps.identity.outputs.identity_ok == 'true'
-        run: python -m pip install --disable-pip-version-check --no-input "psycopg[binary]==3.2.9"
+      - name: Install psql client
+        shell: bash
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq postgresql-client
+          psql --version
 
       - name: Create read-only audit helper
         if: steps.identity.outputs.identity_ok == 'true'
         shell: bash
         run: |
           cat > "$RUNNER_TEMP/preflight.py" <<'PY'
-          import hashlib,json,os,sys
+          import json,os,subprocess,sys
           from pathlib import Path
-          import psycopg
-          from psycopg.rows import dict_row
           baseline=Path(os.environ["RUNNER_TEMP"])/"preflight.json"
-          def snapshot(cur):
-            cur.execute("SELECT round(pg_database_size(current_database())/1048576.0,2) AS mb")
-            mb=cur.fetchone()["mb"]
-            cur.execute("""SELECT count(*) FILTER(WHERE backend_type='client backend') AS total,
-              count(*) FILTER(WHERE backend_type='client backend' AND pid<>pg_backend_pid() AND state='active') AS active
-              FROM pg_stat_activity WHERE datname=current_database()""")
-            connections=cur.fetchone()
-            cur.execute("""SELECT to_regclass('public.followup_case_members') IS NOT NULL AS members,
-              to_regclass('public.followup_case_member_generations') IS NOT NULL AS generations,
-              to_regclass('public.followup_case_cohort_archive') IS NOT NULL AS archive,
-              to_regprocedure('public.cleanup_followup_case_member_generations(boolean,integer,integer)') IS NOT NULL AS cleanup""")
-            artifacts=cur.fetchone()
-            cur.execute("""SELECT column_name FROM information_schema.columns
-              WHERE table_schema='public' AND table_name='followup_cases'""")
-            cols={r["column_name"] for r in cur.fetchall()}
-            pointers=sorted({"cohort_version","member_generation_id"} & cols)
-            tracker=None
-            for relation in ("supabase_migrations.schema_migrations","public.schema_migrations"):
-              cur.execute("SELECT to_regclass(%s) IS NOT NULL AS present",(relation,))
-              if cur.fetchone()["present"]:
-                sch,tab=relation.split(".")
-                cur.execute("""SELECT column_name FROM information_schema.columns
-                  WHERE table_schema=%s AND table_name=%s""",(sch,tab))
-                tracker_cols={r["column_name"] for r in cur.fetchall()}
-                if "version" in tracker_cols:
-                  cur.execute("SELECT EXISTS(SELECT 1 FROM "+sch+"."+tab+" WHERE version::text LIKE %s) AS found",("%094%",))
-                  tracker=cur.fetchone()["found"]
-                  if tracker: break
-            migration=any(artifacts.values()) or bool(pointers) or tracker is True
-            cur.execute("""SELECT count(*) AS total,
-              count(*) FILTER(WHERE current_state<>'CLOSED') AS active,
-              count(*) FILTER(WHERE current_state='CLOSED') AS closed,
-              count(*) FILTER(WHERE current_state='RESOLVED') AS resolved,
-              count(*) FILTER(WHERE current_state<>'CLOSED' AND operational_cohort IS NULL) AS active_null,
-              count(*) FILTER(WHERE current_state<>'CLOSED' AND operational_cohort->>'version'='1') AS active_v1
-              FROM public.followup_cases""")
-            cases=cur.fetchone()
-            cur.execute("""WITH v AS (
-              SELECT id,operational_cohort,octet_length(operational_cohort::text) AS bytes
-              FROM public.followup_cases
-              WHERE current_state<>'CLOSED' AND operational_cohort->>'version'='1'
-            ), m AS (
-              SELECT v.id, v.operational_cohort,
-                count(x.value) AS members,
-                count(DISTINCT NULLIF(x.value->>'orderCode','')) AS distinct_codes
-              FROM v CROSS JOIN LATERAL jsonb_array_elements(
-                CASE WHEN jsonb_typeof(v.operational_cohort->'members')='array'
-                  THEN v.operational_cohort->'members' ELSE '[]'::jsonb END) x(value)
-              GROUP BY v.id,v.operational_cohort
-            )
-            SELECT (SELECT count(*) FROM v WHERE jsonb_typeof(operational_cohort->'members') IS DISTINCT FROM 'array') AS missing_members,
-              (SELECT count(*) FROM v WHERE bytes>131072) AS oversized_128k,
-              (SELECT count(*) FROM v WHERE bytes>262144) AS oversized_256k,
-              COALESCE((SELECT max(members) FROM m),0) AS largest_members,
-              COALESCE((SELECT max(bytes) FROM v),0) AS largest_bytes,
-              COALESCE((SELECT count(*) FROM m WHERE members<>distinct_codes),0) AS duplicate_or_empty_keys""")
-            quality=cur.fetchone()
-            cur.execute("""SELECT count(*) AS active_runs FROM public.sync_runs
-              WHERE lower(status::text) IN ('running','dispatching')""")
-            runs=cur.fetchone()["active_runs"]
-            cur.execute("""SELECT count(*) FILTER(WHERE upper(status::text) IN ('DISPATCHING','RUNNING')) AS active,
-              count(*) FILTER(WHERE upper(status::text)='PENDING') AS pending
-              FROM public.checkpoint_recoveries""")
-            recoveries=cur.fetchone()
-            cur.execute("SELECT jobid,jobname,schedule,active FROM cron.job WHERE jobid IN (14,15,16,17) ORDER BY jobid")
-            jobs=cur.fetchall()
-            cron_pass=len(jobs)==4 and all(r["active"] is False for r in jobs)
-            cur.execute("""SELECT table_name,ordinal_position,column_name,data_type,udt_name,is_nullable,column_default
-              FROM information_schema.columns WHERE table_schema='public'
-              AND table_name IN ('followup_cases','followup_case_members','followup_case_member_generations','followup_case_cohort_archive')
-              ORDER BY table_name,ordinal_position""")
-            schema=cur.fetchall()
-            cur.execute("""SELECT tablename,indexname,indexdef FROM pg_indexes
-              WHERE schemaname='public' AND tablename IN ('followup_cases','followup_case_members','followup_case_member_generations','followup_case_cohort_archive')
-              ORDER BY tablename,indexname""")
-            indexes=cur.fetchall()
-            cur.execute("""SELECT cl.relname,co.conname,pg_get_constraintdef(co.oid,true) AS definition
-              FROM pg_constraint co JOIN pg_class cl ON cl.oid=co.conrelid
-              JOIN pg_namespace ns ON ns.oid=cl.relnamespace
-              WHERE ns.nspname='public' AND cl.relname IN
-                ('followup_cases','followup_case_members','followup_case_member_generations','followup_case_cohort_archive')
-              ORDER BY cl.relname,co.conname""")
-            constraints=cur.fetchall()
-            cur.execute("""SELECT tablename,policyname,permissive,roles,cmd,qual,with_check
-              FROM pg_policies WHERE schemaname='public' AND tablename IN
-                ('followup_cases','followup_case_members','followup_case_member_generations','followup_case_cohort_archive')
-              ORDER BY tablename,policyname""")
-            policies=cur.fetchall()
-            digest=hashlib.sha256(json.dumps([schema,indexes,constraints,policies],sort_keys=True,default=str,separators=(",",":")).encode()).hexdigest()
-            cur.execute("""SELECT count(*) AS rows,
-              md5(COALESCE(string_agg(id::text||':'||COALESCE(updated_at::text,''),'|' ORDER BY id),'')) AS state
-              FROM public.followup_cases""")
-            case_state=cur.fetchone()
-            return {"database_mb":mb,"active_connections":connections["total"],"active_other_queries":connections["active"],
-              "migration_094_present":migration,"migration_tracker_094":tracker,"migration_artifacts":artifacts,"pointer_columns":pointers,
-              "cases":cases,"quality":quality,"active_runs":runs,"recoveries":recoveries,
-              "cron_jobs":jobs,"cron_off":cron_pass,"schema_digest":digest,"case_state":case_state}
-          def main():
-            mode=sys.argv[1]
-            with psycopg.connect(os.environ["PROD_DATABASE_URL"],connect_timeout=15,row_factory=dict_row) as conn:
-              conn.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
-              conn.execute("SET LOCAL statement_timeout='8000ms'")
-              cur=conn.cursor()
-              data=snapshot(cur)
-              if mode=="pre":
-                baseline.write_text(json.dumps(data,sort_keys=True),encoding="utf-8")
-                busy=data["active_runs"]>0 or data["recoveries"]["active"]>0
-                data["active_checkpoint_in_progress"]=busy
-                data["precheck_pass"]=(not data["migration_094_present"] and not busy
-                  and data["recoveries"]["pending"]==0 and data["cron_off"])
-                with open(os.environ["GITHUB_OUTPUT"],"a") as out:
-                  out.write("precheck_pass="+str(data["precheck_pass"]).lower()+"\n")
-                if not data["precheck_pass"]: sys.exit(1)
-              else:
-                before=json.loads(baseline.read_text(encoding="utf-8"))
-                data["no_mutation_assertion"]="PASS" if (
-                  not data["migration_094_present"] and data["schema_digest"]==before["schema_digest"]
-                  and data["case_state"]==before["case_state"] and data["cron_jobs"]==before["cron_jobs"]
-                ) else "FAIL"
-                if data["no_mutation_assertion"]!="PASS": sys.exit(1)
-              conn.rollback()
-            safe=json.dumps(data,sort_keys=True,default=str)
-            print(safe)
-            with open(os.environ["GITHUB_STEP_SUMMARY"],"a") as out:
-              out.write("Read-only Production preflight "+mode+"\n"+safe+"\n")
-            if mode=="pre":
-              print("BACKFILL_DRY_RUN=NOT_RUN (pre-094 operator tool selects post-094 columns)")
-              print("V3=UNKNOWN; SAFE_TO_BEGIN_094_ROLLOUT=NO")
-          if __name__=="__main__": main()
+          dburl=os.environ["PROD_DATABASE_URL"]
+          SQL = r"""
+          BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY;
+          SET LOCAL statement_timeout='8000ms';
+          WITH
+          artifacts AS (
+            SELECT to_regclass('public.followup_case_members') IS NOT NULL AS members,
+                   to_regclass('public.followup_case_member_generations') IS NOT NULL AS generations,
+                   to_regclass('public.followup_case_cohort_archive') IS NOT NULL AS archive,
+                   to_regprocedure('public.cleanup_followup_case_member_generations(boolean,integer,integer)') IS NOT NULL AS cleanup
+          ),
+          parent_columns AS (
+            SELECT COALESCE(array_agg(column_name ORDER BY column_name), ARRAY[]::text[]) AS names
+            FROM information_schema.columns
+            WHERE table_schema='public' AND table_name='followup_cases'
+          ),
+          cases AS (
+            SELECT count(*) AS total,
+                   count(*) FILTER (WHERE COALESCE(current_state::text,'') <> 'CLOSED') AS active,
+                   count(*) FILTER (WHERE current_state::text='CLOSED') AS closed,
+                   count(*) FILTER (WHERE current_state::text='RESOLVED') AS resolved,
+                   count(*) FILTER (WHERE COALESCE(current_state::text,'') <> 'CLOSED' AND operational_cohort IS NULL) AS active_null,
+                   count(*) FILTER (WHERE COALESCE(current_state::text,'') <> 'CLOSED' AND operational_cohort->>'version'='1') AS active_v1
+            FROM public.followup_cases
+          ),
+          v1 AS (
+            SELECT id, operational_cohort, octet_length(operational_cohort::text) AS bytes
+            FROM public.followup_cases
+            WHERE COALESCE(current_state::text,'') <> 'CLOSED' AND operational_cohort->>'version'='1'
+          ),
+          member_stats AS (
+            SELECT v.id, count(m.value) AS members,
+                   count(DISTINCT NULLIF(btrim(m.value->>'orderCode'),'')) AS distinct_codes,
+                   count(m.value) FILTER (
+                     WHERE NULLIF(btrim(m.value->>'customerId'),'') IS NULL
+                        OR NULLIF(btrim(m.value->>'warehouseId'),'') IS NULL
+                        OR NULLIF(btrim(m.value->>'status'),'') IS NULL
+                        OR NULLIF(btrim(m.value->>'baselineStatus'),'') IS NULL
+                        OR NULLIF(btrim(m.value->>'observedAt'),'') IS NULL
+                        OR COALESCE(m.value->>'stage','') NOT IN ('DELIVERY','TRANSIT','OUTBOUND','UNKNOWN')
+                   ) AS invalid_members
+            FROM v1 v
+            LEFT JOIN LATERAL jsonb_array_elements(
+              CASE WHEN jsonb_typeof(v.operational_cohort->'members')='array'
+                   THEN v.operational_cohort->'members' ELSE '[]'::jsonb END
+            ) m(value) ON true
+            GROUP BY v.id
+          ),
+          quality AS (
+            SELECT
+              (SELECT count(*) FROM v1 WHERE jsonb_typeof(operational_cohort->'members') IS DISTINCT FROM 'array') AS missing_members,
+              (SELECT count(*) FROM v1 WHERE jsonb_typeof(operational_cohort->'baselineCodes') IS DISTINCT FROM 'array') AS missing_baseline_codes,
+              COALESCE((SELECT count(*) FROM member_stats WHERE members<>distinct_codes),0) AS duplicate_or_empty_keys,
+              COALESCE((SELECT count(*) FROM member_stats WHERE invalid_members>0),0) AS invalid_required_fields,
+              (SELECT count(*) FROM v1 v LEFT JOIN member_stats m ON m.id=v.id
+               WHERE jsonb_typeof(v.operational_cohort->'members') IS DISTINCT FROM 'array'
+                  OR jsonb_typeof(v.operational_cohort->'baselineCodes') IS DISTINCT FROM 'array'
+                  OR COALESCE(m.members,0)<>COALESCE(m.distinct_codes,0)
+                  OR COALESCE(m.invalid_members,0)>0) AS backfill_failures,
+              COALESCE((SELECT max(members) FROM member_stats),0) AS largest_members,
+              COALESCE((SELECT max(bytes) FROM v1),0) AS largest_bytes,
+              (SELECT count(*) FROM v1) AS active_v1
+          ),
+          runs AS (
+            SELECT count(*) AS active_runs FROM public.sync_runs
+            WHERE lower(status::text) IN ('running','dispatching')
+          ),
+          recoveries AS (
+            SELECT count(*) FILTER (WHERE upper(status::text) IN ('DISPATCHING','RUNNING')) AS active,
+                   count(*) FILTER (WHERE upper(status::text)='PENDING') AS pending
+            FROM public.checkpoint_recoveries
+          ),
+          jobs AS (
+            SELECT COALESCE(jsonb_agg(jsonb_build_object(
+                     'jobid',jobid,'jobname',jobname,'schedule',schedule,'active',active
+                   ) ORDER BY jobid),'[]'::jsonb) AS rows,
+                   (count(*)=4 AND bool_and(active IS FALSE)) AS all_off
+            FROM cron.job WHERE jobid IN (14,15,16,17)
+          ),
+          case_state AS (
+            SELECT count(*) AS rows,
+                   md5(COALESCE(string_agg(id::text||':'||COALESCE(updated_at::text,''),'|' ORDER BY id),'')) AS state
+            FROM public.followup_cases
+          ),
+          schema_digest AS (
+            SELECT md5(
+              COALESCE((SELECT string_agg(table_name||'.'||ordinal_position::text||'.'||column_name||':'||data_type||':'||udt_name||':'||is_nullable||':'||COALESCE(column_default,''),'|' ORDER BY table_name,ordinal_position)
+                FROM information_schema.columns WHERE table_schema='public' AND table_name IN ('followup_cases','followup_case_members','followup_case_member_generations','followup_case_cohort_archive')),'')
+              || COALESCE((SELECT string_agg(tablename||':'||indexname||':'||indexdef,'|' ORDER BY tablename,indexname)
+                FROM pg_indexes WHERE schemaname='public' AND tablename IN ('followup_cases','followup_case_members','followup_case_member_generations','followup_case_cohort_archive')),'')
+              || COALESCE((SELECT string_agg(cl.relname||':'||co.conname||':'||pg_get_constraintdef(co.oid,true),'|' ORDER BY cl.relname,co.conname)
+                FROM pg_constraint co JOIN pg_class cl ON cl.oid=co.conrelid JOIN pg_namespace ns ON ns.oid=cl.relnamespace
+                WHERE ns.nspname='public' AND cl.relname IN ('followup_cases','followup_case_members','followup_case_member_generations','followup_case_cohort_archive')),'')
+              || COALESCE((SELECT string_agg(tablename||':'||policyname||':'||permissive||':'||roles::text||':'||cmd||':'||COALESCE(qual,'')||':'||COALESCE(with_check,''),'|' ORDER BY tablename,policyname)
+                FROM pg_policies WHERE schemaname='public' AND tablename IN ('followup_cases','followup_case_members','followup_case_member_generations','followup_case_cohort_archive')),'')
+            ) AS digest
+          )
+          SELECT jsonb_build_object(
+            'database_mb',round(pg_database_size(current_database())/1048576.0,2),
+            'active_connections',(SELECT count(*) FROM pg_stat_activity WHERE datname=current_database() AND backend_type='client backend'),
+            'migration_094_present',((SELECT members OR generations OR archive OR cleanup FROM artifacts)
+                OR ('cohort_version'=ANY((SELECT names FROM parent_columns)))
+                OR ('member_generation_id'=ANY((SELECT names FROM parent_columns)))),
+            'migration_artifacts',(SELECT to_jsonb(artifacts) FROM artifacts),
+            'parent_generation_columns',jsonb_build_object('cohort_version','cohort_version'=ANY((SELECT names FROM parent_columns)),
+                'member_generation_id','member_generation_id'=ANY((SELECT names FROM parent_columns))),
+            'cases',(SELECT to_jsonb(cases) FROM cases),
+            'quality',(SELECT to_jsonb(quality) FROM quality),
+            'backfill_would_fail',(SELECT backfill_failures FROM quality),
+            'active_runs',(SELECT active_runs FROM runs),
+            'recoveries',(SELECT to_jsonb(recoveries) FROM recoveries),
+            'active_checkpoint_in_progress',((SELECT active_runs FROM runs)>0 OR (SELECT active FROM recoveries)>0),
+            'cron_jobs',(SELECT rows FROM jobs),
+            'cron_all_off',(SELECT all_off FROM jobs),
+            'schema_digest',(SELECT digest FROM schema_digest),
+            'case_state',(SELECT to_jsonb(case_state) FROM case_state)
+          )::text;
+          ROLLBACK;
+          """
+          def psql(sql):
+            try:
+              result=subprocess.run(["psql",dburl,"-X","-qAt","-v","ON_ERROR_STOP=1","-c",sql],
+                capture_output=True,text=True,timeout=90,check=False)
+            except Exception:
+              return None,None
+            if result.returncode != 0: return None,result.returncode
+            return result.stdout.strip(),0
+          mode=sys.argv[1]
+          probe,probe_rc=psql("SELECT 1;")
+          if probe_rc is None or probe_rc != 0 or probe != "1":
+            print("DB_CONNECTION=FAIL; libpq diagnostics suppressed"); sys.exit(2)
+          output,query_rc=psql(SQL)
+          if query_rc is None or query_rc != 0:
+            print("DB_CONNECTION=PASS; READ_ONLY_QUERY=FAIL; psql diagnostics suppressed"); sys.exit(3)
+          try: data=json.loads(output)
+          except Exception:
+            print("DB_CONNECTION=PASS; READ_ONLY_QUERY=FAIL; result parsing failed"); sys.exit(4)
+          quality=data["quality"]
+          active=data["cases"]["active"]
+          active_v1=quality["active_v1"]
+          data["backfill_dry_run"]="READ_ONLY_PREFLIGHT_ONLY"
+          data["backfill_eligible"]=max(active_v1-data["backfill_would_fail"],0)
+          data["backfill_would_migrate"]=data["backfill_eligible"]
+          data["backfill_would_skip"]=max(active-active_v1,0)
+          if mode=="pre":
+            data["precheck_pass"]=(not data["migration_094_present"] and not data["active_checkpoint_in_progress"]
+              and data["recoveries"]["pending"]==0 and data["cron_all_off"] and data["backfill_would_fail"]==0)
+            baseline.write_text(json.dumps(data,sort_keys=True),encoding="utf-8")
+            with open(os.environ["GITHUB_OUTPUT"],"a") as out:
+              out.write("precheck_pass="+str(data["precheck_pass"]).lower()+"\n")
+          else:
+            if not baseline.exists():
+              print("NO_MUTATION_ASSERTION=NOT_RUN; no successful preflight baseline"); sys.exit(5)
+            before=json.loads(baseline.read_text(encoding="utf-8"))
+            data["no_mutation_assertion"]="PASS" if (not data["migration_094_present"]
+              and data["schema_digest"]==before["schema_digest"] and data["case_state"]==before["case_state"]
+              and data["cron_jobs"]==before["cron_jobs"]) else "FAIL"
+          safe=json.dumps(data,sort_keys=True,default=str)
+          print(safe)
+          with open(os.environ["GITHUB_STEP_SUMMARY"],"a") as out:
+            out.write("Read-only Production preflight "+mode+"\n"+safe+"\n")
+          if mode=="pre":
+            print("BACKFILL_DRY_RUN=READ_ONLY_PREFLIGHT_ONLY")
+            print("V3=UNKNOWN; not read from verified runtime metadata")
+            if not data["precheck_pass"]: sys.exit(6)
+          elif data["no_mutation_assertion"]!="PASS": sys.exit(7)
           PY
 
       - name: Production database read-only preflight
@@ -215,7 +247,7 @@ jobs:
         run: python "$RUNNER_TEMP/preflight.py" pre
 
       - name: Final read-only no-mutation assertion
-        if: always() && steps.identity.outputs.identity_ok == 'true'
+        if: always() && steps.identity.outputs.identity_ok == 'true' && steps.preflight.outcome == 'success'
         env:
           PROD_DATABASE_URL: ${{ secrets.PROD_DATABASE_URL }}
         run: python "$RUNNER_TEMP/preflight.py" post
