@@ -202,6 +202,13 @@ jobs:
             if result.returncode != 0:
               match=re.search(r"ERROR:\s+([0-9A-Z]{5}):",result.stderr)
               code=match.group(1) if match else "UNKNOWN"
+              position=re.search(r"POSITION:\s+(\d+)",result.stderr)
+              if position:
+                error_line=SQL[:max(int(position.group(1))-1,0)].count("\n")+1
+                print("READ_ONLY_QUERY_LINE="+str(error_line))
+              value_type=re.search(r"invalid input syntax for type ([a-zA-Z ]+)",result.stderr,re.I)
+              if value_type:
+                print("READ_ONLY_QUERY_VALUE_TYPE="+value_type.group(1).strip().upper().replace(" ","_"))
               categories={"42P01":"UNDEFINED_TABLE","42703":"UNDEFINED_COLUMN","42883":"UNDEFINED_FUNCTION","42501":"INSUFFICIENT_PRIVILEGE","57014":"QUERY_CANCELED","42601":"SYNTAX_ERROR","42804":"DATATYPE_MISMATCH","22P02":"INVALID_TEXT_REPRESENTATION"}
               print("READ_ONLY_QUERY_SQLSTATE="+code)
               print("READ_ONLY_QUERY_FAILURE_CATEGORY="+categories.get(code,"OTHER_DATABASE_ERROR"))
