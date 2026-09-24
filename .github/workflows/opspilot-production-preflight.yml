@@ -30,30 +30,34 @@ jobs:
           PGUSER: ${{ secrets.PROD_DB_USER }}
           PGDATABASE: ${{ secrets.PROD_DB_NAME }}
           PGPASSWORD: ${{ secrets.PROD_DB_PASSWORD }}
+          PROD_SUPABASE_URL: ${{ secrets.PROD_SUPABASE_URL }}
         run: |
           python - <<'PY
           import os,sys
+          from urllib.parse import urlparse
           ref="elwnbwimgzijuelfjdsq"
           shadow="qkrpbompjwxfpicjfoub"
-          identity_names=("PGHOST","PGUSER")
-          if any(not os.environ.get(k) for k in identity_names):
-            print("PRODUCTION_IDENTITY=FAIL; REASON=TARGET_FIELDS_MISSING")
+          raw_url=os.environ.get("PROD_SUPABASE_URL","").strip()
+          if not raw_url:
+            print("PRODUCTION_IDENTITY=FAIL; REASON=SUPABASE_URL_MISSING")
             sys.exit(1)
-          host=os.environ["PGHOST"].strip().lower().rstrip(".")
-          user=os.environ["PGUSER"].strip().lower()
-          database=os.environ.get("PGDATABASE", "").strip().lower()
-          if shadow in host or shadow in user or shadow in database:
+          try:
+            parsed=urlparse(raw_url)
+            host=(parsed.hostname or "").lower().rstrip(".")
+          except Exception:
+            print("PRODUCTION_IDENTITY=FAIL; REASON=INVALID_SUPABASE_URL")
+            sys.exit(1)
+          project_ref=host[:-len(".supabase.co")] if host.endswith(".supabase.co") else ""
+          if project_ref==shadow or shadow in host:
             print("PRODUCTION_IDENTITY=FAIL; REASON=SHADOW_REF_REJECTED")
             sys.exit(1)
-          direct=(host=="db."+ref+".supabase.co" and user in ("postgres","postgres."+ref))
-          pooler=(host.endswith(".pooler.supabase.com") and user=="postgres."+ref)
-          if not (direct or pooler):
+          if parsed.scheme.lower()!="https" or project_ref!=ref or host!=ref+".supabase.co":
             print("PRODUCTION_IDENTITY=FAIL; REASON=PRODUCTION_REF_UNVERIFIED")
             sys.exit(1)
           with open(os.environ["GITHUB_OUTPUT"],"a") as out:
             out.write("identity_ok=true\n")
           print("PRODUCTION_IDENTITY=PASS")
-          print("PRODUCTION_PROJECT_REF="+ref)
+          print("PRODUCTION_PROJECT_REF="+project_ref)
           PY
       - name: Install psql client
         shell: bash
