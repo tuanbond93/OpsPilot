@@ -2,6 +2,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import warehouseAssignments from "@/data/warehouse-assignments.generated.json";
 import { TelegramClient } from "@/integrations/telegram";
 import { classifyIncidentChange, emptyChangeCounts, formatIncidentStatusUpdate, formatSyncHeartbeat, type IncidentStatusLine } from "@/integrations/telegram/incident-status-message";
+import { logger } from "@/observability/logger";
 
 type Assignment = { warehouseId: string; warehouseName: string; zone: string; province: string };
 type Followup = { id: string; incident_id: string; current_state: string; latest_affected_order_count: number; resolved_at: string | null };
@@ -41,6 +42,20 @@ async function loadHistories(client: SupabaseClient, incidentIds: string[]): Pro
   return result;
 }
 
+async function loadSentResolvedCaseIds(client: SupabaseClient, followupCaseIds: string[]): Promise<Set<string>> {
+  const sent = new Set<string>();
+  for (const ids of batches([...new Set(followupCaseIds)])) {
+    const { data, error } = await client.from("telegram_incident_status_updates")
+      .select("followup_case_id")
+      .eq("update_kind", "RESOLVED")
+      .eq("status", "SENT")
+      .in("followup_case_id", ids);
+    if (error) throw error;
+    for (const row of (data || []) as Array<{ followup_case_id: string }>) sent.add(row.followup_case_id);
+  }
+  return sent;
+}
+
 export async function sendIncidentSyncStatus(client: SupabaseClient, syncRunId: string, completedAt: string) {
   const result = { active: 0, changed: 0, unchanged: 0, resolved: 0, sentBatches: 0, failed: 0, skipped: 0, categories: emptyChangeCounts() };
   const [{ data: followups, error: followupError }, { data: topics, error: topicError }] = await Promise.all([
@@ -63,8 +78,31 @@ export async function sendIncidentSyncStatus(client: SupabaseClient, syncRunId: 
   const newlyResolved = pilot.filter((item) => ["RESOLVED", "CLOSED"].includes(item.current_state) && historyByIncident.get(item.incident_id)?.[0]?.sync_run_id === syncRunId);
   result.active = active.length;
   const candidates = [...active, ...newlyResolved];
+  const resolvedCandidates = candidates.filter((item) => item.current_state === "RESOLVED" || item.current_state === "CLOSED");
+  let sentResolvedCaseIds = new Set<string>();
+  let resolvedLookupError: unknown = null;
+  if (resolvedCandidates.length) {
+    try {
+      sentResolvedCaseIds = await loadSentResolvedCaseIds(client, resolvedCandidates.map((item) => item.id));
+    } catch (error) {
+      resolvedLookupError = error;
+      result.failed += resolvedCandidates.length;
+      logger.error({
+        message: "Could not verify prior resolved Telegram notices; suppressing resolved sends",
+        syncRunId,
+        followupCaseIds: resolvedCandidates.map((item) => item.id),
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+  const sendableCandidates = candidates.filter((item) => {
+    if (item.current_state !== "RESOLVED" && item.current_state !== "CLOSED") return true;
+    if (resolvedLookupError) return false;
+    if (sentResolvedCaseIds.has(item.id)) { result.skipped++; return false; }
+    return true;
+  });
   const batches = new Map<string, Array<{ followup: Followup; incident: Incident; topic: Topic; line: IncidentStatusLine; changed: boolean; resolved: boolean }>>();
-  for (const followup of candidates) {
+  for (const followup of sendableCandidates) {
     const incident = incidentById.get(followup.incident_id); if (!incident) { result.skipped++; continue; }
     const assignment = assignmentById.get(String(incident.warehouse_id)) || assignmentByName.get(incident.warehouse_name);
     const allTopics = (topics || []) as unknown as Topic[];
@@ -92,7 +130,30 @@ export async function sendIncidentSyncStatus(client: SupabaseClient, syncRunId: 
       const first = pending[0]; const group = first.topic.telegram_pilot_groups;
       const sent = await new TelegramClient().sendToChat(String(group.telegram_chat_id), formatIncidentStatusUpdate(pending.map((item) => item.line), completedAt, first.topic.province_name || "Miền Bắc 3"), { parseMode: "HTML", messageThreadId: first.topic.message_thread_id });
       const ids = pending.map((item) => item.followup.id);
-      await client.from("telegram_incident_status_updates").update({ status: "SENT", telegram_message_id: Number(sent.messageId), sent_at: new Date().toISOString(), updated_at: new Date().toISOString() }).eq("sync_run_id", syncRunId).in("followup_case_id", ids);
+      const { error: persistenceError } = await client.from("telegram_incident_status_updates").update({ status: "SENT", telegram_message_id: Number(sent.messageId), sent_at: new Date().toISOString(), updated_at: new Date().toISOString() }).eq("sync_run_id", syncRunId).in("followup_case_id", ids);
+      if (persistenceError) {
+        result.failed += pending.length;
+        const reason = `Telegram send succeeded, but SENT status persistence failed: ${persistenceError.message}`.slice(0, 1000);
+        logger.error({
+          message: "Telegram incident-status delivery could not be persisted as SENT",
+          syncRunId,
+          followupCaseIds: ids,
+          errorCode: persistenceError.code,
+          error: persistenceError.message,
+        });
+        const { error: failureRecordError } = await client.from("telegram_incident_status_updates")
+          .update({ status: "FAILED", failure_reason: reason, updated_at: new Date().toISOString() })
+          .eq("sync_run_id", syncRunId)
+          .in("followup_case_id", ids);
+        if (failureRecordError) logger.error({
+          message: "Could not persist Telegram incident-status persistence failure",
+          syncRunId,
+          followupCaseIds: ids,
+          errorCode: failureRecordError.code,
+          error: failureRecordError.message,
+        });
+        continue;
+      }
       result.sentBatches++; result.changed += pending.filter((item) => item.changed && !item.resolved).length; result.unchanged += pending.filter((item) => !item.changed).length; result.resolved += pending.filter((item) => item.resolved).length;
     } catch (error) {
       result.failed += pending.length; const reason = error instanceof Error ? error.message.slice(0, 1000) : String(error).slice(0, 1000);
