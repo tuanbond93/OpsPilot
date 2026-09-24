@@ -25,37 +25,36 @@ jobs:
         id: identity
         shell: bash
         env:
-          PROD_SUPABASE_URL: ${{ secrets.PROD_SUPABASE_URL }}
-          PROD_SERVICE_ROLE_KEY: ${{ secrets.PROD_SERVICE_ROLE_KEY }}
-          PROD_DATABASE_URL: ${{ secrets.PROD_DATABASE_URL }}
+          PGHOST: ${{ secrets.PROD_DB_HOST }}
+          PGPORT: ${{ secrets.PROD_DB_PORT }}
+          PGUSER: ${{ secrets.PROD_DB_USER }}
+          PGDATABASE: ${{ secrets.PROD_DB_NAME }}
+          PGPASSWORD: ${{ secrets.PROD_DB_PASSWORD }}
         run: |
-          python - <<'PY'
+          python - <<'PY
           import os,sys
-          from urllib.parse import urlparse,unquote
           ref="elwnbwimgzijuelfjdsq"
           shadow="qkrpbompjwxfpicjfoub"
-          names=("PROD_SUPABASE_URL","PROD_SERVICE_ROLE_KEY","PROD_DATABASE_URL")
+          names=("PGHOST","PGPORT","PGUSER","PGDATABASE","PGPASSWORD")
           if any(not os.environ.get(k) for k in names):
-            print("PRODUCTION_IDENTITY=FAIL: required secret missing"); sys.exit(1)
-          try:
-            s=urlparse(os.environ["PROD_SUPABASE_URL"])
-            d=urlparse(os.environ["PROD_DATABASE_URL"])
-            sh=(s.hostname or "").lower()
-            dh=(d.hostname or "").lower()
-            du=unquote(d.username or "")
-          except Exception:
-            print("PRODUCTION_IDENTITY=FAIL: invalid connection metadata"); sys.exit(1)
-          if shadow in sh or shadow in dh or shadow in du:
-            print("PRODUCTION_IDENTITY=FAIL: Shadow explicitly rejected"); sys.exit(1)
-          direct=dh=="db."+ref+".supabase.co" and du in ("postgres","postgres."+ref)
-          pooler=dh.endswith(".pooler.supabase.com") and du.split(".")[-1]==ref
-          if s.scheme!="https" or sh!=ref+".supabase.co" or not (direct or pooler):
-            print("PRODUCTION_IDENTITY=FAIL: project reference mismatch"); sys.exit(1)
-          open(os.environ["GITHUB_OUTPUT"],"a").write("identity_ok=true\n")
+            print("PRODUCTION_IDENTITY=FAIL")
+            sys.exit(1)
+          host=os.environ["PGHOST"].strip().lower().rstrip(".")
+          user=os.environ["PGUSER"].strip().lower()
+          database=os.environ["PGDATABASE"].strip().lower()
+          if shadow in host or shadow in user or shadow in database:
+            print("PRODUCTION_IDENTITY=FAIL")
+            sys.exit(1)
+          direct=(host=="db."+ref+".supabase.co" and user in ("postgres","postgres."+ref))
+          pooler=(host.endswith(".pooler.supabase.com") and user=="postgres."+ref)
+          if not (direct or pooler):
+            print("PRODUCTION_IDENTITY=FAIL")
+            sys.exit(1)
+          with open(os.environ["GITHUB_OUTPUT"],"a") as out:
+            out.write("identity_ok=true\n")
           print("PRODUCTION_IDENTITY=PASS")
           print("PRODUCTION_PROJECT_REF="+ref)
           PY
-
       - name: Install psql client
         shell: bash
         run: |
@@ -71,7 +70,6 @@ jobs:
           import json,os,subprocess,sys
           from pathlib import Path
           baseline=Path(os.environ["RUNNER_TEMP"])/"preflight.json"
-          dburl=os.environ["PROD_DATABASE_URL"]
           SQL = r"""
           BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY;
           SET LOCAL statement_timeout='8000ms';
@@ -192,16 +190,13 @@ jobs:
           """
           def psql(sql):
             try:
-              result=subprocess.run(["psql",dburl,"-X","-qAt","-v","ON_ERROR_STOP=1","-c",sql],
+              result=subprocess.run(["psql","-X","-qAt","-v","ON_ERROR_STOP=1","-c",sql],
                 capture_output=True,text=True,timeout=90,check=False)
             except Exception:
               return None,None
             if result.returncode != 0: return None,result.returncode
             return result.stdout.strip(),0
           mode=sys.argv[1]
-          probe,probe_rc=psql("SELECT 1;")
-          if probe_rc is None or probe_rc != 0 or probe != "1":
-            print("DB_CONNECTION=FAIL; libpq diagnostics suppressed"); sys.exit(2)
           output,query_rc=psql(SQL)
           if query_rc is None or query_rc != 0:
             print("DB_CONNECTION=PASS; READ_ONLY_QUERY=FAIL; psql diagnostics suppressed"); sys.exit(3)
@@ -239,19 +234,72 @@ jobs:
           elif data["no_mutation_assertion"]!="PASS": sys.exit(7)
           PY
 
+      - name: Verify PostgreSQL connection
+        id: connection
+        if: steps.identity.outputs.identity_ok == 'true'
+        shell: bash
+        env:
+          PGHOST: ${{ secrets.PROD_DB_HOST }}
+          PGPORT: ${{ secrets.PROD_DB_PORT }}
+          PGUSER: ${{ secrets.PROD_DB_USER }}
+          PGDATABASE: ${{ secrets.PROD_DB_NAME }}
+          PGPASSWORD: ${{ secrets.PROD_DB_PASSWORD }}
+          PGSSLMODE: require
+          PGCONNECT_TIMEOUT: "10"
+        run: |
+          set +e
+          psql -v ON_ERROR_STOP=1 -Atqc "select current_database(), current_user, version();" >"$RUNNER_TEMP/pg-connect.stdout" 2>"$RUNNER_TEMP/pg-connect.stderr"
+          rc=$?
+          if [ "$rc" -eq 0 ]; then
+            echo "DB_CONNECTION=PASS"
+            echo "connected=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          category=$(python - "$RUNNER_TEMP/pg-connect.stderr" <<'PY
+          import pathlib,re,sys
+          raw=pathlib.Path(sys.argv[1]).read_text(errors="replace").lower()
+          rules=[
+            ("DNS_FAILURE",r"could not translate host name|name or service not known|temporary failure in name resolution|no such host"),
+            ("TLS_FAILURE",r"ssl error|tls error|certificate verify|certificate validation|no pg_hba.conf entry.*ssl|ssl is required"),
+            ("AUTH_FAILURE",r"password authentication failed|no password supplied|role .* does not exist|authentication failed"),
+            ("DATABASE_FAILURE",r"database .* does not exist|invalid catalog name"),
+            ("NETWORK_FAILURE",r"connection timed out|connection refused|no route to host|network is unreachable|could not connect to server|connection reset"),
+          ]
+          for name,pattern in rules:
+            if re.search(pattern,raw,re.S):
+              print(name)
+              break
+          else:
+            print("UNKNOWN")
+          PY
+          )
+          echo "DB_CONNECTION=FAIL"
+          echo "DB_FAILURE_CATEGORY=$category"
+          echo "connected=false" >> "$GITHUB_OUTPUT"
+          exit 1
       - name: Production database read-only preflight
         id: preflight
-        if: steps.identity.outputs.identity_ok == 'true'
+        if: steps.connection.outputs.connected == 'true'
         env:
-          PROD_DATABASE_URL: ${{ secrets.PROD_DATABASE_URL }}
+          PGHOST: ${{ secrets.PROD_DB_HOST }}
+          PGPORT: ${{ secrets.PROD_DB_PORT }}
+          PGUSER: ${{ secrets.PROD_DB_USER }}
+          PGDATABASE: ${{ secrets.PROD_DB_NAME }}
+          PGPASSWORD: ${{ secrets.PROD_DB_PASSWORD }}
+          PGSSLMODE: require
+          PGCONNECT_TIMEOUT: "10"
         run: python "$RUNNER_TEMP/preflight.py" pre
-
       - name: Final read-only no-mutation assertion
         if: always() && steps.identity.outputs.identity_ok == 'true' && steps.preflight.outcome == 'success'
         env:
-          PROD_DATABASE_URL: ${{ secrets.PROD_DATABASE_URL }}
+          PGHOST: ${{ secrets.PROD_DB_HOST }}
+          PGPORT: ${{ secrets.PROD_DB_PORT }}
+          PGUSER: ${{ secrets.PROD_DB_USER }}
+          PGDATABASE: ${{ secrets.PROD_DB_NAME }}
+          PGPASSWORD: ${{ secrets.PROD_DB_PASSWORD }}
+          PGSSLMODE: require
+          PGCONNECT_TIMEOUT: "10"
         run: python "$RUNNER_TEMP/preflight.py" post
-
       - name: Report unavailable deployment metadata
         if: always()
         run: |
