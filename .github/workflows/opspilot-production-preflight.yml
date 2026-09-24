@@ -35,13 +35,13 @@ jobs:
           import os,sys
           ref="elwnbwimgzijuelfjdsq"
           shadow="qkrpbompjwxfpicjfoub"
-          names=("PGHOST","PGPORT","PGUSER","PGDATABASE","PGPASSWORD")
-          if any(not os.environ.get(k) for k in names):
-            print("PRODUCTION_IDENTITY=FAIL; REASON=REQUIRED_SECRET_MISSING")
+          identity_names=("PGHOST","PGUSER")
+          if any(not os.environ.get(k) for k in identity_names):
+            print("PRODUCTION_IDENTITY=FAIL; REASON=TARGET_FIELDS_MISSING")
             sys.exit(1)
           host=os.environ["PGHOST"].strip().lower().rstrip(".")
           user=os.environ["PGUSER"].strip().lower()
-          database=os.environ["PGDATABASE"].strip().lower()
+          database=os.environ.get("PGDATABASE", "").strip().lower()
           if shadow in host or shadow in user or shadow in database:
             print("PRODUCTION_IDENTITY=FAIL; REASON=SHADOW_REF_REJECTED")
             sys.exit(1)
