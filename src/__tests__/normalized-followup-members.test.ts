@@ -18,7 +18,7 @@ import { runFollowupCohortBackfillBatch } from "@/services/followup-cohort-backf
 
 const CASE_ID = "11111111-1111-4111-8111-111111111111";
 const RUN_ID = "22222222-2222-4222-8222-222222222222";
-const migration = readFileSync(join(process.cwd(), "src/database/migrations/094_normalized_followup_case_members.sql"), "utf8");
+const migration = readFileSync(join(process.cwd(), "src/database/migrations/094_normalized_followup_case_members.sql"), "utf8").replace(/\r\n/g, "\n");
 
 function fixture(count: number, unfinished = count): OperationalCohort {
   const members: CohortMember[] = Array.from({ length: count }, (_, index) => {
@@ -196,5 +196,16 @@ describe("normalized follow-up member generations", () => {
     expect(migration).toContain("REVOKE ALL ON FUNCTION public.cleanup_followup_case_member_generations(boolean, integer, integer) FROM PUBLIC");
     expect(migration).not.toContain("GRANT EXECUTE ON FUNCTION public.cleanup_followup_case_member_generations(boolean, integer, integer) TO anon");
     expect(migration).toContain("GRANT EXECUTE ON FUNCTION public.cleanup_followup_case_member_generations(boolean, integer, integer) TO service_role");
+  });
+
+  it("qualifies every retention-ranking column across the generation/case join", () => {
+    const cleanupRpc = migration.split("CREATE OR REPLACE FUNCTION public.cleanup_followup_case_member_generations")[1];
+    expect(cleanupRpc).toContain("PARTITION BY committed.followup_case_id");
+    expect(cleanupRpc).toContain("ORDER BY committed.committed_at DESC NULLS LAST");
+    expect(cleanupRpc).toContain("committed.created_at DESC");
+    expect(cleanupRpc).toContain("committed.generation_id DESC");
+    expect(cleanupRpc).toContain("ON ranked.followup_case_id = g.followup_case_id");
+    expect(cleanupRpc).toContain("AND ranked.generation_id = g.generation_id");
+    expect(cleanupRpc).not.toContain("ORDER BY committed_at DESC NULLS LAST, created_at DESC, generation_id DESC");
   });
 });

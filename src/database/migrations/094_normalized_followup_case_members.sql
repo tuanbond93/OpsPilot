@@ -182,16 +182,20 @@ BEGIN
       FROM candidate_cases AS fc
       JOIN public.followup_case_member_generations AS g ON g.followup_case_id = fc.id
       LEFT JOIN (
-        SELECT followup_case_id, generation_id,
+        SELECT committed.followup_case_id, committed.generation_id,
           row_number() OVER (
-            PARTITION BY followup_case_id
-            ORDER BY committed_at DESC NULLS LAST, created_at DESC, generation_id DESC
+            PARTITION BY committed.followup_case_id
+            ORDER BY committed.committed_at DESC NULLS LAST,
+              committed.created_at DESC,
+              committed.generation_id DESC
           ) AS committed_rank
         FROM public.followup_case_member_generations AS committed
         JOIN public.followup_cases AS owner_case ON owner_case.id = committed.followup_case_id
         WHERE committed.generation_status = 'COMMITTED'
           AND committed.generation_id IS DISTINCT FROM owner_case.member_generation_id
-      ) AS ranked USING (followup_case_id, generation_id)
+      ) AS ranked
+        ON ranked.followup_case_id = g.followup_case_id
+        AND ranked.generation_id = g.generation_id
       WHERE g.generation_id IS DISTINCT FROM fc.member_generation_id
         AND (
           (g.generation_status = 'COMMITTED' AND ranked.committed_rank > 1)
