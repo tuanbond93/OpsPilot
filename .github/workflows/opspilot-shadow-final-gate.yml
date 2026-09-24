@@ -2,6 +2,15 @@ name: OpsPilot Shadow final normalized-members gate
 
 on:
   workflow_dispatch:
+    inputs:
+      mode:
+        description: Run the full final gate or the read-only Shadow cleanliness check
+        required: true
+        type: choice
+        options:
+          - full
+          - verify-only
+        default: full
 
 permissions:
   contents: read
@@ -11,8 +20,42 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  shadow-readonly-verify:
+    if: github.repository == 'tuanbond93/OpsPilot' && github.event.inputs.mode == 'verify-only'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: opspilot-shadow-perf
+    env:
+      SHADOW_PROJECT_REF: qkrpbompjwxfpicjfoub
+      PRIMARY_PROJECT_REF: elwnbwimgzijuelfjdsq
+      EXPECTED_PRETEST_DIGEST: 23a13e47f5d039da860134713730187e
+
+    steps:
+      - name: Checkout read-only verifier
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install PostgreSQL client
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes postgresql-client
+
+      - name: Verify Shadow cleanliness using read-only SQL
+        env:
+          SHADOW_SUPABASE_URL: ${{ secrets.SHADOW_SUPABASE_URL }}
+          SHADOW_SERVICE_ROLE_KEY: ${{ secrets.SHADOW_SERVICE_ROLE_KEY }}
+          SHADOW_DATABASE_URL: ${{ secrets.SHADOW_DATABASE_URL }}
+        run: node .github/scripts/opspilot-shadow-readonly-verify.mjs
+
   shadow-final-gate:
-    if: github.repository == 'tuanbond93/OpsPilot'
+    if: github.repository == 'tuanbond93/OpsPilot' && github.event.inputs.mode != 'verify-only'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     environment: opspilot-shadow-perf
