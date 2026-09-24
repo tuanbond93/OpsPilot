@@ -214,7 +214,8 @@ export class FollowupEngine {
     historyMap: Map<string, IncidentHistoryRow[]> = new Map(),
     config: FollowupConfig = DEFAULT_FOLLOWUP_CONFIG,
     referenceTimeMs: number = Date.now(),
-    orders?: NormalizedRillnetOrder[]
+    orders?: NormalizedRillnetOrder[],
+    syncRunId?: string,
   ): Promise<ProcessedFollowupItem[]> {
     this.currentIncidentCount = incidents.length;
     const startedAt = performance.now();
@@ -235,7 +236,7 @@ export class FollowupEngine {
 
     try {
       if (orders) {
-        const results = await this.processOrderCohorts(incidents, orders, referenceTimeMs, metrics);
+        const results = await this.processOrderCohorts(incidents, orders, referenceTimeMs, metrics, syncRunId);
         this.publishMetrics(metrics, startedAt, "success");
         return results;
       }
@@ -254,7 +255,7 @@ export class FollowupEngine {
     }
   }
 
-  private async processOrderCohorts(incidents: Incident[], orders: NormalizedRillnetOrder[], now: number, metrics: MutableFollowupRunMetrics): Promise<ProcessedFollowupItem[]> {
+  private async processOrderCohorts(incidents: Incident[], orders: NormalizedRillnetOrder[], now: number, metrics: MutableFollowupRunMetrics, syncRunId?: string): Promise<ProcessedFollowupItem[]> {
     const checkpoint = checkpointKey(now);
     if (!checkpoint) return [];
     const isBaseline = localHour(now) === 8;
@@ -367,6 +368,12 @@ export class FollowupEngine {
         assessment: assessment.assessment, transitionResult, referenceTimeMs: now };
       const mutation = buildCaseMutation(processParams);
       mutation.operational_cohort = assessment.cohort;
+      if (prior) {
+        mutation.id = prior.id;
+        mutation.updated_at = prior.updated_at;
+        mutation.cohort_version = prior.cohort_version;
+        mutation.member_generation_id = prior.member_generation_id;
+      }
       if (!resolved) mutation.resolved_at = null;
       mutations.push(mutation); params.push(processParams);
       const payload = FollowupMessageBuilder.buildPayload({ warehouse: incident.warehouseName, reason: incident.reasonName,
@@ -403,7 +410,38 @@ export class FollowupEngine {
         reasonName: incident.reasonName, oldState, newState, progressPercent: assessment.progressPercent, assessment: assessment.assessment, payload });
     }
     if (this.followupRepo && mutations.length) {
-      const persisted = await this.persistCases(mutations, metrics);
+      let persisted: FollowupCaseLinkRow[];
+      if (syncRunId) {
+        const startedAt = this.logSubphaseStart("persistMemberGenerations");
+        metrics.caseWrites += mutations.length;
+        try {
+          persisted = await this.timeOperation(metrics, "caseWrite", () =>
+            this.followupRepo!.persistOperationalCohortGenerations!(mutations, syncRunId)
+          );
+          this.logSubphaseEnd("persistMemberGenerations", startedAt, {
+            caseMutations: mutations.length,
+            events: 0,
+            actions: 0,
+            repositoryCalls: Math.max(1, mutations.length),
+            rowsLoaded: persisted.length,
+            payloadBytes: 0,
+          });
+        } catch (error) {
+          this.logSubphaseEnd("persistMemberGenerations", startedAt, {
+            caseMutations: mutations.length,
+            events: 0,
+            actions: 0,
+            repositoryCalls: Math.max(1, mutations.length),
+            rowsLoaded: 0,
+            payloadBytes: 0,
+            status: "failed",
+          });
+          logRuntimeError("FollowupEngine.persistMemberGenerations", error);
+          throw error;
+        }
+      } else {
+        persisted = await this.persistCases(mutations, metrics);
+      }
       const ids = new Map(persisted.map(item => [item.incident_key, item.id]));
       await this.persistEvents(params.map(item => {
         const id = ids.get(item.incidentKey);

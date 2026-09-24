@@ -8,6 +8,9 @@
     "start": "next start",
     "lint": "node scripts/run-eslint.mjs",
     "test": "vitest run",
+    "backfill:followup-members": "tsx src/scripts/backfill-followup-case-members.ts",
+    "cleanup:followup-members": "tsx src/scripts/cleanup-followup-case-member-generations.ts",
+    "rollback:followup-members": "tsx src/scripts/rollback-followup-case-members.ts",
     "test:ui-runtime": "node scratch/ui-runtime-smoke.mjs",
     "evaluate": "npx tsx src/evaluation/cli.ts",
     "security:secrets": "git ls-files -z | node scripts/scan-secrets.mjs",
@@ -36,6 +39,7 @@
     "postcss": "^8.5.23",
     "tailwindcss": "^3.4.17",
     "typescript": "^5.7.3",
+    "tsx": "^4.8.1",
     "vite": "^5.4.0",
     "vite-tsconfig-paths": "^6.1.1",
     "vitest": "^4.1.10"

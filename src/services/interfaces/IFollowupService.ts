@@ -2,6 +2,8 @@ import type { Incident } from "@/engine/incident";
 import type { IncidentHistoryRow } from "@/repositories/interfaces/IIncidentHistoryRepository";
 import type { FollowupConfig } from "@/config/followup";
 import type { ProcessedFollowupItem } from "@/engine/followup/followup-engine";
+import type { FollowupCaseCohortReference } from "@/repositories/interfaces/IFollowupRepository";
+import type { OperationalCohort } from "@/domain/operational-learning/checkpoint-policy";
 
 export interface IFollowupService {
   getAllCases(): Promise<{
@@ -15,6 +17,7 @@ export interface IFollowupService {
     followupCase: any;
     events: any[];
   } | null>;
+  hydrateFollowupCaseCohorts<T extends FollowupCaseCohortReference>(cases: T[]): Promise<Array<T & { operational_cohort?: OperationalCohort | null }>>;
 
   confirmFollowupAction(
     id: string,

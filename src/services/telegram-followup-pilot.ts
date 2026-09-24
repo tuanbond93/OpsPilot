@@ -10,15 +10,21 @@ import { NotificationGateway, type DeliveryRequest } from "@/notifications/gatew
 import { FEATURE_FLAGS } from "@/config/feature-flags";
 import { dispatchRillnetChangeReviews } from "@/services/telegram-rillnet-review";
 import { formatFollowupDeliverySummary, type FollowupDeliverySummaryItem } from "@/integrations/telegram/followup-delivery-summary";
-import { checkpointKey, localHour, type OperationalCohort } from "@/domain/operational-learning/checkpoint-policy";
+import { checkpointKey, localHour } from "@/domain/operational-learning/checkpoint-policy";
 import { hasVerifiedReminderEvidence } from "@/services/ghn-checkpoint-observations";
 import { needsGhnVerification } from "@/services/evidence-policy";
+import { hydrateFollowupCaseRows } from "@/repositories/supabase/followup-case-cohort";
+import type { FollowupCaseRow } from "@/connectors/supabase/types";
 
 type PilotMember = { id: string; group_id: string; display_name: string; username: string | null; warehouse_name: string | null; warehouse_names: unknown; zone_names: unknown };
 type PilotGroup = { id: string; telegram_chat_id: string; title: string };
 type WarehouseAssignment = { warehouseId: string; warehouseName: string; warehouseType: string; zone: string; province: string };
 type PilotTopic = { id: string; group_id: string; message_thread_id: number; topic_title: string; province_name: string | null; is_escalation: boolean; status: string };
-type PendingCase = { id: string; incident_id: string; incident_key: string; current_state: string; first_detected_at: string; latest_affected_order_count: number; last_action_requested_at: string | null; operational_cohort?: OperationalCohort | null };
+type PendingCase = Pick<FollowupCaseRow,
+  "id" | "incident_id" | "incident_key" | "current_state" | "first_detected_at"
+  | "latest_affected_order_count" | "last_action_requested_at" | "operational_cohort"
+  | "cohort_version" | "member_generation_id"
+>;
 type ActionRequestEvent = { followup_case_id: string; event_type: string; event_time: string };
 type Incident = { id: string; incident_key: string; warehouse_id: string; warehouse_name: string | null; reason_code: string; reason_name: string; priority_score: number; first_detected_at: string; last_detected_at: string };
 type History = { sample_order_codes?: unknown; maximum_age_hours?: number | null };
@@ -65,9 +71,9 @@ export async function runTelegramFollowupPilotDispatch(client: SupabaseClient, a
   // The queue is global while this pilot is deliberately scoped to Miền Bắc 3.
   // Read a bounded wider window so non-pilot cases cannot starve eligible pilot
   // cases simply because they happen to be older in the global ordering.
-  const { data: pendingRows, error: pendingError } = await client.from("followup_cases").select("id, incident_id, incident_key, current_state, first_detected_at, latest_affected_order_count, last_action_requested_at, operational_cohort").in("current_state", Object.keys(stageByState)).order("last_action_requested_at", { ascending: true }).limit(1000);
+  const { data: pendingRows, error: pendingError } = await client.from("followup_cases").select("id, incident_id, incident_key, current_state, first_detected_at, latest_affected_order_count, last_action_requested_at, operational_cohort, cohort_version, member_generation_id").in("current_state", Object.keys(stageByState)).order("last_action_requested_at", { ascending: true }).limit(1000);
   if (pendingError) throw pendingError;
-  const cases = (pendingRows || []) as PendingCase[];
+  const cases = await hydrateFollowupCaseRows(client, (pendingRows || []) as PendingCase[]);
   if (!cases.length) return result;
 
   const [{ data: incidents, error: incidentError }, { data: members, error: memberError }, { data: groups, error: groupError }, { data: topics, error: topicError }] = await Promise.all([

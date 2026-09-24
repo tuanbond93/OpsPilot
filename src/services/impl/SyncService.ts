@@ -1121,7 +1121,7 @@ export class SyncService implements ISyncService {
             const referenceTimeMs = _options?.referenceTimeMs || startTime;
             const actQueue = this.actionQueue || new ActionQueue(null);
             const followupEngine = new FollowupEngine(this.followupRepo, actQueue);
-            followupResults = await followupEngine.processIncidentFollowups(incidents, historyMap, undefined, referenceTimeMs, snapshotResult.orders);
+            followupResults = await followupEngine.processIncidentFollowups(incidents, historyMap, undefined, referenceTimeMs, snapshotResult.orders, syncRunId);
             const followupMetrics = followupEngine.getLastRunMetrics();
             followupQueries = followupMetrics ? followupMetrics.caseReads + followupMetrics.caseWrites + followupMetrics.eventWrites : 0;
           }

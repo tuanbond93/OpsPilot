@@ -10,6 +10,7 @@ import { canManageTelegramDecision } from "@/integrations/telegram/decision-auth
 import { DecisionTelegramRequestService, isSyntheticTelegramShadowTest } from "@/services/decision-telegram-shadow";
 import { TelegramDecisionApprovalService } from "@/services/telegram-decision-approval";
 import { ServiceFactory } from "@/services/ServiceFactory";
+import type { OperationalCohort } from "@/domain/operational-learning/checkpoint-policy";
 import { ManagerMirrorService } from "@/notifications/gateway/mirror";
 import { isMirrorEnabled } from "@/config/feature-flags";
 import { resolveProvince } from "@/notifications/gateway/scope-resolver";
@@ -525,9 +526,15 @@ export async function POST(request: NextRequest) {
       if (!isValidFollowupCallbackTarget(representative, message.message_id, member.id)) {
         return NextResponse.json({ method: "answerCallbackQuery", callback_query_id: update.callback_query.id, text: "Phản hồi không hợp lệ hoặc đã hết hiệu lực.", show_alert: true });
       }
-      const { data: related, error: relatedError } = await client.from("telegram_followup_reminders").select("id, followup_case_id, reminder_stage, followup_cases(operational_cohort,last_action_requested_at)").eq("group_id", group.id).eq("status", "SENT").eq("telegram_message_id", message.message_id);
+      const { data: related, error: relatedError } = await client.from("telegram_followup_reminders").select("id, followup_case_id, reminder_stage, followup_cases(id,operational_cohort,cohort_version,member_generation_id,last_action_requested_at)").eq("group_id", group.id).eq("status", "SENT").eq("telegram_message_id", message.message_id);
       if (relatedError) return NextResponse.json({ error: "TELEGRAM_FOLLOWUP_LOOKUP_FAILED", message: relatedError.message }, { status: 503 });
       if (!related?.length) return NextResponse.json({ method: "answerCallbackQuery", callback_query_id: update.callback_query.id, text: "Phản hồi không còn gắn với follow-up đang hoạt động.", show_alert: true });
+      const relatedCases = related.flatMap((row) => {
+        const linked = Array.isArray(row.followup_cases) ? row.followup_cases[0] : row.followup_cases;
+        return linked?.id ? [linked] : [];
+      });
+      const hydratedRelatedCases = await ServiceFactory.getFollowupService(client).hydrateFollowupCaseCohorts(relatedCases as any[]);
+      const hydratedById = new Map(hydratedRelatedCases.map((row) => [row.id, row]));
       const label = followupResponseLabel(followupCallback.signal);
       const { data: claim, error: claimError } = await client.rpc("claim_telegram_followup_response", {
         p_reminder_id: followupCallback.reminderId,
@@ -543,7 +550,7 @@ export async function POST(request: NextRequest) {
       if (claim !== "ACCEPTED") return NextResponse.json({ method: "answerCallbackQuery", callback_query_id: update.callback_query.id, text: claim === "ALREADY_RESPONDED" ? ALREADY_RESPONDED_USER_MESSAGE : "Phản hồi không hợp lệ hoặc đã hết hiệu lực.", show_alert: claim !== "ALREADY_RESPONDED" });
       const orderCodes = related.flatMap((row) => {
         const linked = Array.isArray(row.followup_cases) ? row.followup_cases[0] : row.followup_cases;
-        const cohort = linked?.operational_cohort as { members?: Array<{ orderCode?: string; lastReminderAt?: string }> } | null | undefined;
+        const cohort = (linked?.id ? hydratedById.get(linked.id)?.operational_cohort : null) as OperationalCohort | null | undefined;
         return (cohort?.members || []).filter((item) => item.lastReminderAt === linked?.last_action_requested_at).map((item) => String(item.orderCode || "")).filter(Boolean);
       });
       const text = followupCallback.signal === "OTHER" ? formatOtherPrompt(orderCodes) : formatRecordedResponse(orderCodes, label);
@@ -571,15 +578,21 @@ export async function POST(request: NextRequest) {
       if (feedbackError && feedbackError.code !== "23505") return NextResponse.json({ error: "TELEGRAM_FEEDBACK_WRITE_FAILED", message: feedbackError.message }, { status: 503 });
       return NextResponse.json({ method: "sendMessage", chat_id: chat.id, reply_to_message_id: message.message_id, text: "OpsPilot đã ghi nhận phản hồi. Manager sẽ xem và xác nhận trạng thái work order trên OpsPilot." });
     }
-    const { data: reminders, error: reminderError } = await client.from("telegram_followup_reminders").select("id, recipient_member_ids, response_code, followup_cases(operational_cohort,last_action_requested_at)").eq("group_id", group.id).eq("status", "SENT").eq("telegram_message_id", message.reply_to_message.message_id);
+    const { data: reminders, error: reminderError } = await client.from("telegram_followup_reminders").select("id, recipient_member_ids, response_code, followup_cases(id,operational_cohort,cohort_version,member_generation_id,last_action_requested_at)").eq("group_id", group.id).eq("status", "SENT").eq("telegram_message_id", message.reply_to_message.message_id);
     if (reminderError) return NextResponse.json({ error: "TELEGRAM_FOLLOWUP_LOOKUP_FAILED", message: reminderError.message }, { status: 503 });
     const related = (reminders || []).filter((reminder) => reminder.response_code === "OTHER" && Array.isArray(reminder.recipient_member_ids) && reminder.recipient_member_ids.includes(member.id));
     if (related.length) {
+      const relatedCases = related.flatMap((row) => {
+        const linked = Array.isArray(row.followup_cases) ? row.followup_cases[0] : row.followup_cases;
+        return linked?.id ? [linked] : [];
+      });
+      const hydratedRelatedCases = await ServiceFactory.getFollowupService(client).hydrateFollowupCaseCohorts(relatedCases as any[]);
+      const hydratedById = new Map(hydratedRelatedCases.map((row) => [row.id, row]));
       const { error: feedbackError } = await client.from("telegram_followup_reminder_events").insert(related.map((reminder) => ({ reminder_id: reminder.id, event_type: "FEEDBACK_RECEIVED", actor: `telegram:${member.id}`, metadata: { feedbackText: text.slice(0, 4000), telegramUpdateId: update.update_id, telegramUserId: member.telegram_user_id, telegramMessageId: message.message_id } })));
       if (feedbackError) return NextResponse.json({ error: "TELEGRAM_FOLLOWUP_FEEDBACK_WRITE_FAILED", message: feedbackError.message }, { status: 503 });
       const orderCodes = related.flatMap((row) => {
         const linked = Array.isArray(row.followup_cases) ? row.followup_cases[0] : row.followup_cases;
-        const cohort = linked?.operational_cohort as { members?: Array<{ orderCode?: string; lastReminderAt?: string }> } | null | undefined;
+        const cohort = (linked?.id ? hydratedById.get(linked.id)?.operational_cohort : null) as OperationalCohort | null | undefined;
         return (cohort?.members || []).filter((item) => item.lastReminderAt === linked?.last_action_requested_at).map((item) => String(item.orderCode || "")).filter(Boolean);
       });
       return NextResponse.json({ method: "sendMessage", chat_id: chat.id, reply_to_message_id: message.message_id, text: `OpsPilot đã ghi nhận tình trạng thực tế của đơn ${formatLogicalTarget(orderCodes)}. Hệ thống sẽ tiếp tục theo dõi ở checkpoint tiếp theo.` });

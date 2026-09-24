@@ -151,6 +151,8 @@ export type FollowupEventType =
 
 export interface FollowupCaseRow {
   operational_cohort?: import("@/domain/operational-learning/checkpoint-policy").OperationalCohort | null;
+  cohort_version?: number | null;
+  member_generation_id?: string | null;
   id: string;
   incident_id: string; // UUID FK referencing incidents(id)
   incident_key: string;

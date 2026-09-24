@@ -60,6 +60,13 @@ export class FollowupService implements IFollowupService {
     };
   }
 
+  async hydrateFollowupCaseCohorts<T extends import("@/repositories/interfaces/IFollowupRepository").FollowupCaseCohortReference>(
+    cases: T[],
+  ): Promise<Array<T & { operational_cohort?: import("@/domain/operational-learning/checkpoint-policy").OperationalCohort | null }>> {
+    if (!this.followupRepo) throw new Error("FOLLOWUP_REPOSITORY_UNAVAILABLE_FOR_COHORT_HYDRATION");
+    return this.followupRepo.hydrateFollowupCaseCohorts(cases);
+  }
+
   async confirmFollowupAction(
     id: string,
     action: string,

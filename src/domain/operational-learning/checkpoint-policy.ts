@@ -47,7 +47,7 @@ export function isOrderEvidence(value: unknown): value is OrderEvidence {
     && (order.readyAt === null || typeof order.readyAt === "string" && Number.isFinite(Date.parse(order.readyAt)));
 }
 export type CohortMember = OrderEvidence & {
-  firstSeenAt: string; dueAt: string | null; baselineStatus: string;
+  firstSeenAt?: string; dueAt: string | null; baselineStatus: string;
   lastReminderAt?: string; lastReminderStatus?: string;
   completedAt?: string;
 };
