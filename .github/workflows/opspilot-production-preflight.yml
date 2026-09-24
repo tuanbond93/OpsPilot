@@ -25,9 +25,9 @@ jobs:
         id: identity
         shell: bash
         env:
-          PROD_SUPABASE_URL: __GITHUB_EXPR_OPEN__ secrets.PROD_SUPABASE_URL __GITHUB_EXPR_CLOSE__
-          PROD_SERVICE_ROLE_KEY: __GITHUB_EXPR_OPEN__ secrets.PROD_SERVICE_ROLE_KEY __GITHUB_EXPR_CLOSE__
-          PROD_DATABASE_URL: __GITHUB_EXPR_OPEN__ secrets.PROD_DATABASE_URL __GITHUB_EXPR_CLOSE__
+          PROD_SUPABASE_URL: ${{ secrets.PROD_SUPABASE_URL }}
+          PROD_SERVICE_ROLE_KEY: ${{ secrets.PROD_SERVICE_ROLE_KEY }}
+          PROD_DATABASE_URL: ${{ secrets.PROD_DATABASE_URL }}
         run: |
           python - <<'PY'
           import os,sys
@@ -114,7 +114,7 @@ jobs:
               FROM public.followup_cases""")
             cases=cur.fetchone()
             cur.execute("""WITH v AS (
-              SELECT operational_cohort,octet_length(operational_cohort::text) AS bytes
+              SELECT id,operational_cohort,octet_length(operational_cohort::text) AS bytes
               FROM public.followup_cases
               WHERE current_state<>'CLOSED' AND operational_cohort->>'version'='1'
             ), m AS (
@@ -211,13 +211,13 @@ jobs:
         id: preflight
         if: steps.identity.outputs.identity_ok == 'true'
         env:
-          PROD_DATABASE_URL: __GITHUB_EXPR_OPEN__ secrets.PROD_DATABASE_URL __GITHUB_EXPR_CLOSE__
+          PROD_DATABASE_URL: ${{ secrets.PROD_DATABASE_URL }}
         run: python "$RUNNER_TEMP/preflight.py" pre
 
       - name: Final read-only no-mutation assertion
         if: always() && steps.identity.outputs.identity_ok == 'true'
         env:
-          PROD_DATABASE_URL: __GITHUB_EXPR_OPEN__ secrets.PROD_DATABASE_URL __GITHUB_EXPR_CLOSE__
+          PROD_DATABASE_URL: ${{ secrets.PROD_DATABASE_URL }}
         run: python "$RUNNER_TEMP/preflight.py" post
 
       - name: Report unavailable deployment metadata
