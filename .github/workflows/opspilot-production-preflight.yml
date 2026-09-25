@@ -103,8 +103,9 @@ jobs:
       - name: Install candidate dependencies
         shell: bash
         run: |
+          npm install -g npm@11
           cd candidate
-          npm install --ignore-scripts --no-audit --no-fund --package-lock=false
+          npm install --ignore-scripts --no-audit --no-fund --package-lock=false --legacy-peer-deps
 
       - name: Install PostgreSQL client
         shell: bash
