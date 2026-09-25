@@ -55,14 +55,8 @@ jobs:
         with:
           node-version: "20"
 
-      - name: Install PostgreSQL client
-        run: |
-          sudo apt-get update
-          sudo apt-get install --yes postgresql-client
-
       - name: Verify production data without writes
         env:
           SUPABASE_URL: ${{ secrets.PROD_SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.PROD_SERVICE_ROLE_KEY }}
-          SUPABASE_DATABASE_URL: ${{ secrets.PROD_DATABASE_URL }}
         run: node .github/scripts/opspilot-prod-followup-forensic.mjs
