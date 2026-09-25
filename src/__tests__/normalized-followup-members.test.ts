@@ -15,6 +15,7 @@ import {
   serializedFollowupMemberBytes,
 } from "@/domain/operational-learning/normalized-followup-members";
 import { runFollowupCohortBackfillBatch } from "@/services/followup-cohort-backfill";
+import { hasVerifiedReminderEvidence } from "@/services/ghn-checkpoint-observations";
 
 const CASE_ID = "11111111-1111-4111-8111-111111111111";
 const RUN_ID = "22222222-2222-4222-8222-222222222222";
@@ -114,6 +115,72 @@ describe("normalized follow-up member generations", () => {
     expect(normalized.progressPercent).toBe(legacy.progressPercent);
     expect(normalized.assessment).toBe(legacy.assessment);
     expect(normalized.cohort.members.map((member) => member.orderCode)).toEqual(legacy.cohort.members.map((member) => member.orderCode));
+  });
+
+  it("preserves current-member verification failures in V2", () => {
+    const cohort = fixture(2, 2);
+    const currentCode = cohort.members[0].orderCode;
+    cohort.verification!.failures = { [currentCode]: "INCOMPLETE_OR_MISMATCHED_EVIDENCE" };
+
+    const { metadata, rows, hydrated } = normalizedRoundTrip(cohort);
+
+    expect(rows.find((row) => row.order_code === currentCode)?.verification_failure)
+      .toBe("INCOMPLETE_OR_MISMATCHED_EVIDENCE");
+    expect(metadata.verification?.failureCount).toBe(1);
+    expect(hydrated.verification?.failures).toEqual({ [currentCode]: "INCOMPLETE_OR_MISMATCHED_EVIDENCE" });
+  });
+
+  it("filters orphan-only verification failures without mutating the archived V1 source", () => {
+    const cohort = fixture(2, 2);
+    cohort.verification!.failures = { "PRUNED-ORDER": "BUDGET_DEFERRED" };
+    const originalForArchive = structuredClone(cohort);
+    const sourceBeforeConversion = structuredClone(cohort);
+
+    const { metadata, rows, hydrated } = normalizedRoundTrip(cohort);
+
+    expect(rows.every((row) => row.verification_failure === null)).toBe(true);
+    expect(metadata.verification?.failureCount).toBe(0);
+    expect(hydrated.verification?.failures).toEqual({});
+    expect(cohort).toEqual(sourceBeforeConversion);
+    expect(originalForArchive.verification?.failures).toEqual({ "PRUNED-ORDER": "BUDGET_DEFERRED" });
+  });
+
+  it("persists only current-member failures from mixed current and orphan failures", () => {
+    const cohort = fixture(3, 3);
+    const currentCode = cohort.members[1].orderCode;
+    cohort.verification!.failures = {
+      [currentCode]: "TRACKING_UNAVAILABLE",
+      "PRUNED-ORDER-A": "BUDGET_DEFERRED",
+      "PRUNED-ORDER-B": "INCOMPLETE_OR_MISMATCHED_EVIDENCE",
+    };
+
+    const { metadata, rows, hydrated } = normalizedRoundTrip(cohort);
+    const persistedFailures = rows.filter((row) => row.verification_failure !== null);
+
+    expect(persistedFailures.map((row) => [row.order_code, row.verification_failure]))
+      .toEqual([[currentCode, "TRACKING_UNAVAILABLE"]]);
+    expect(metadata.verification?.failureCount).toBe(persistedFailures.length);
+    expect(hydrated.verification?.failures).toEqual({ [currentCode]: "TRACKING_UNAVAILABLE" });
+  });
+
+  it("keeps GHN reminder verification scoped to current member codes", () => {
+    const now = Date.parse("2026-09-24T03:00:00.000Z");
+    const cohort = fixture(2, 2);
+    const [current, other] = cohort.members;
+    current.source = "ghn_internal_order_logs";
+    other.source = "rillnet";
+    current.observedAt = "2026-09-24T03:00:00.000Z";
+    cohort.verification = {
+      source: "ghn_internal_order_logs",
+      checkedAt: "2026-09-24T03:01:00.000Z",
+      snapshotAt: "2026-09-24T03:00:00.000Z",
+      failures: { "PRUNED-ORDER": "BUDGET_DEFERRED" },
+    };
+
+    expect(hasVerifiedReminderEvidence(cohort, [current.orderCode], now)).toBe(true);
+    cohort.verification.failures[current.orderCode] = "TRACKING_UNAVAILABLE";
+    expect(hasVerifiedReminderEvidence(cohort, [current.orderCode], now)).toBe(false);
+    expect(hasVerifiedReminderEvidence(cohort, [other.orderCode], now)).toBe(false);
   });
 
   it("rejects missing members, foreign generations, bad baseline keys, and field drift", () => {

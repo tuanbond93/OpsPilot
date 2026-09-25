@@ -3,6 +3,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import type { FollowupCaseRow } from "@/connectors/supabase/types";
 import type { OperationalCohort } from "@/domain/operational-learning/checkpoint-policy";
 import { SupabaseFollowupRepository } from "@/repositories/supabase/SupabaseFollowupRepository";
+import { runFollowupCohortBackfillBatch } from "@/services/followup-cohort-backfill";
 
 const CASE_ID = "11111111-1111-4111-8111-111111111111";
 const RUN_ID = "22222222-2222-4222-8222-222222222222";
@@ -27,6 +28,7 @@ class MemoryQuery {
   in(key: string, values: any[]) { this.filters.push((row) => values.includes(row[key])); return this; }
   is(key: string, value: any) { this.filters.push((row) => row[key] === value); return this; }
   neq(key: string, value: any) { this.filters.push((row) => row[key] !== value); return this; }
+  not(_key: string, _operator: string, _value: any) { return this; }
   gt(key: string, value: any) { this.filters.push((row) => row[key] > value); return this; }
   or(_filter: string) { return this; }
   order(_key: string, _options?: any) { return this; }
@@ -134,6 +136,31 @@ function parentRow(): FollowupCaseRow {
 }
 
 describe("normalized follow-up repository write path", () => {
+  it("archives the complete legacy verification map before filtering active V2 members", async () => {
+    const client = new MemorySupabase();
+    const legacy = cohort();
+    legacy.verification = {
+      source: "ghn_internal_order_logs",
+      checkedAt: UPDATED_AT,
+      failures: {
+        "ORDER-A": "TRACKING_UNAVAILABLE",
+        "PRUNED-ORDER": "BUDGET_DEFERRED",
+      },
+    };
+    const original = structuredClone(legacy);
+    client.tables.set("followup_cases", [{ ...parentRow(), cohort_version: 1, member_generation_id: null, operational_cohort: legacy }]);
+
+    const result = await runFollowupCohortBackfillBatch(client as unknown as SupabaseClient, { apply: true, limit: 1 });
+
+    expect(result).toMatchObject({ backfilled: 1, failed: 0 });
+    expect(client.tables.get("followup_case_cohort_archive")?.[0].original_operational_cohort)
+      .toEqual(original);
+    expect(client.tables.get("followup_cases")?.[0].operational_cohort.verification.failureCount).toBe(1);
+    expect(client.tables.get("followup_case_members")?.map((row) => [row.order_code, row.verification_failure]))
+      .toEqual([["ORDER-A", "TRACKING_UNAVAILABLE"], ["ORDER-B", null]]);
+    expect(legacy).toEqual(original);
+  });
+
   it("leaves the old pointer authoritative on a partial write and safely resumes the same generation", async () => {
     const client = new MemorySupabase();
     client.tables.set("followup_cases", [parentRow()]);

@@ -43,6 +43,13 @@ export type OperationalCohortV2Metadata = {
   };
 };
 
+function memberBoundVerificationFailures(cohort: OperationalCohort): Record<string, string> {
+  const memberCodes = new Set(cohort.members.map((member) => member.orderCode));
+  return Object.fromEntries(
+    Object.entries(cohort.verification?.failures || {}).filter(([orderCode]) => memberCodes.has(orderCode)),
+  );
+}
+
 export function isOperationalCohortV2Metadata(value: unknown): value is OperationalCohortV2Metadata {
   if (!value || typeof value !== "object") return false;
   const metadata = value as Record<string, unknown>;
@@ -66,11 +73,12 @@ export function operationalCohortV2Metadata(cohort: OperationalCohort): Operatio
   };
   if (cohort.lastCheckpoint) metadata.lastCheckpoint = cohort.lastCheckpoint;
   if (cohort.verification) {
+    const activeFailures = memberBoundVerificationFailures(cohort);
     metadata.verification = {
       source: cohort.verification.source,
       checkedAt: cohort.verification.checkedAt,
       ...(cohort.verification.snapshotAt ? { snapshotAt: cohort.verification.snapshotAt } : {}),
-      failureCount: Object.keys(cohort.verification.failures || {}).length,
+      failureCount: Object.keys(activeFailures).length,
     };
   }
   return metadata;
@@ -87,9 +95,7 @@ export function operationalCohortMemberRows(
   if (cohort.baselineCodes.some((orderCode) => !memberCodes.has(orderCode))) {
     throw new Error("FOLLOWUP_COHORT_V1_BASELINE_KEY_WITHOUT_MEMBER");
   }
-  if (Object.keys(cohort.verification?.failures || {}).some((orderCode) => !memberCodes.has(orderCode))) {
-    throw new Error("FOLLOWUP_COHORT_V1_VERIFICATION_KEY_WITHOUT_MEMBER");
-  }
+  const activeFailures = memberBoundVerificationFailures(cohort);
   const baselineCodes = new Set(cohort.baselineCodes);
   return cohort.members.map((member) => ({
     followup_case_id: followupCaseId,
@@ -110,7 +116,7 @@ export function operationalCohortMemberRows(
     last_reminder_status: member.lastReminderStatus || null,
     completed_at: member.completedAt || null,
     member_active: !member.completedAt,
-    verification_failure: cohort.verification?.failures?.[member.orderCode] || null,
+    verification_failure: activeFailures[member.orderCode] || null,
   }));
 }
 
