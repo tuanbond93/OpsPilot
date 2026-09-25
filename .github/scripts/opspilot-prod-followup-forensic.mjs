@@ -1,10 +1,6 @@
 import { appendFileSync } from "node:fs";
 import { createHash } from "node:crypto";
-import { createRequire } from "node:module";
 import { spawnSync } from "node:child_process";
-
-const require = createRequire(`${process.cwd()}/package.json`);
-const { createClient } = require("@supabase/supabase-js");
 
 const GENERATION_ID = "9761bdc2-baff-46f1-9456-f881284663fb";
 const BATCH_SIZE = 100;
@@ -20,8 +16,12 @@ function check(condition, code, detail = "") {
   console.log(`${code}=PASS${detail ? ` (${detail})` : ""}`);
 }
 
-function scrub(value) {
-  return String(value ?? "")
+function scrub(value, secrets = []) {
+  let text = String(value ?? "");
+  for (const secret of secrets) {
+    if (secret) text = text.replaceAll(secret, "[REDACTED]");
+  }
+  return text
     .replace(/https?:\/\/\S+/gi, "[REDACTED_URL]")
     .replace(/\bBearer\s+\S+/gi, "Bearer [REDACTED]")
     .replace(/\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g, "[REDACTED_JWT]")
@@ -209,50 +209,106 @@ function manifestSummary(stats, ids) {
   };
 }
 
-function supabaseReadClient() {
-  const baseUrl = process.env.SUPABASE_URL;
-  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-  return createClient(baseUrl, serviceKey, {
-    auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
-    global: {
-      fetch: async (input, init = {}) => {
-        const method = String(init.method || input?.method || "GET").toUpperCase();
-        if (method !== "GET" && method !== "HEAD") fail("REST_NON_READ_METHOD_BLOCKED", method);
-        return fetch(input, { ...init, redirect: "error" });
-      },
-    },
-  });
+function buildManifestUrl(baseUrl, ids) {
+  const normalizedBase = String(baseUrl).replace(/\/+$/, "");
+  const url = new URL(`${normalizedBase}/rest/v1/${MEMBER_GENERATION_TABLE}`);
+  url.searchParams.set("select", SELECT_COLUMNS);
+  url.searchParams.set("generation_id", `eq.${GENERATION_ID}`);
+  url.searchParams.set("followup_case_id", `in.(${ids.join(",")})`);
+  return url;
 }
 
-async function verifyManifestQuery(client, ids, label) {
-  let request;
+function postgrestErrorFromBody(body, secrets) {
+  let parsed;
   try {
-    request = client.from(MEMBER_GENERATION_TABLE)
-      .select(SELECT_COLUMNS)
-      .eq("generation_id", GENERATION_ID)
-      .in("followup_case_id", ids)
-      .retry(false);
-  } catch (error) {
-    return { label, httpStatus: null, statusText: null, requestUrlLength: null, rows: 0, error: { message: scrub(error?.message || error) } };
+    parsed = JSON.parse(body);
+  } catch {
+    return { code: null, message: scrub(body, secrets), details: null, hint: null };
   }
 
-  const requestUrlLength = Buffer.byteLength(String(request.url), "utf8");
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return { code: null, message: "Unexpected JSON error response shape", details: null, hint: null };
+  }
+  return {
+    code: parsed.code == null ? null : scrub(parsed.code, secrets),
+    message: parsed.message == null ? "PostgREST error response omitted message" : scrub(parsed.message, secrets),
+    details: parsed.details == null ? null : scrub(parsed.details, secrets),
+    hint: parsed.hint == null ? null : scrub(parsed.hint, secrets),
+  };
+}
+
+async function verifyManifestQuery(baseUrl, serviceKey, ids, label) {
+  let url;
+  let requestUrlLength = null;
+  const secrets = [serviceKey, baseUrl];
   try {
-    const result = await request;
-    const error = result.error ? {
-      code: result.error.code ?? null,
-      message: scrub(result.error.message),
-      details: scrub(result.error.details),
-      hint: scrub(result.error.hint),
-    } : null;
-    return {
-      label,
-      httpStatus: result.status ?? null,
-      statusText: result.statusText ?? null,
-      requestUrlLength,
-      rows: Array.isArray(result.data) ? result.data.length : 0,
-      error,
-    };
+    url = buildManifestUrl(baseUrl, ids);
+    requestUrlLength = Buffer.byteLength(url.toString(), "utf8");
+    const response = await fetch(url, {
+      method: "GET",
+      headers: {
+        apikey: serviceKey,
+        Authorization: `Bearer ${serviceKey}`,
+        Accept: "application/json",
+      },
+      redirect: "error",
+    });
+
+    let body;
+    try {
+      body = await response.text();
+    } catch (error) {
+      return {
+        label,
+        httpStatus: response.status,
+        statusText: scrub(response.statusText, secrets),
+        requestUrlLength,
+        rows: 0,
+        error: { code: null, message: scrub(error?.message || error, secrets), details: null, hint: null },
+      };
+    }
+
+    if (!response.ok) {
+      return {
+        label,
+        httpStatus: response.status,
+        statusText: scrub(response.statusText, secrets),
+        requestUrlLength,
+        rows: 0,
+        error: postgrestErrorFromBody(body, secrets),
+      };
+    }
+
+    try {
+      const rows = JSON.parse(body);
+      if (!Array.isArray(rows)) {
+        return {
+          label,
+          httpStatus: response.status,
+          statusText: scrub(response.statusText, secrets),
+          requestUrlLength,
+          rows: 0,
+          error: { code: null, message: "Expected a JSON array response", details: null, hint: null },
+        };
+      }
+      return {
+        label,
+        httpStatus: response.status,
+        statusText: scrub(response.statusText, secrets),
+        requestUrlLength,
+        rows: rows.length,
+        error: null,
+      };
+    } catch {
+      return {
+        label,
+        httpStatus: response.status,
+        statusText: scrub(response.statusText, secrets),
+        requestUrlLength,
+        rows: 0,
+        error: { code: null, message: "Response was not valid JSON", details: null, hint: null },
+      };
+    }
   } catch (error) {
     return {
       label,
@@ -260,7 +316,7 @@ async function verifyManifestQuery(client, ids, label) {
       statusText: null,
       requestUrlLength,
       rows: 0,
-      error: { message: scrub(error?.message || error) },
+      error: { code: null, message: scrub(error?.message || error, secrets), details: null, hint: null },
     };
   }
 }
@@ -294,11 +350,12 @@ async function main() {
   console.log(`APPROX_RAW_ID_LIST_BYTES=${manifestIdSummary.approximateRawIdListBytes}`);
   console.log(`DATABASE_ROW_COUNTS=${JSON.stringify(relatedCounts)}`);
 
-  const client = supabaseReadClient();
-  const unbatched = ids.length ? await verifyManifestQuery(client, ids, "unbatched") : null;
+  const baseUrl = process.env.SUPABASE_URL;
+  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  const unbatched = ids.length ? await verifyManifestQuery(baseUrl, serviceKey, ids, "unbatched") : null;
   const batches = [];
   for (let start = 0; start < ids.length; start += BATCH_SIZE) {
-    batches.push(await verifyManifestQuery(client, ids.slice(start, start + BATCH_SIZE), `batch-${batches.length}`));
+    batches.push(await verifyManifestQuery(baseUrl, serviceKey, ids.slice(start, start + BATCH_SIZE), `batch-${batches.length}`));
   }
 
   const batchRows = batches.reduce((sum, batch) => sum + batch.rows, 0);

@@ -60,9 +60,6 @@ jobs:
           sudo apt-get update
           sudo apt-get install --yes postgresql-client
 
-      - name: Install production Supabase client dependency
-        run: npm ci --ignore-scripts --omit=dev
-
       - name: Verify production data without writes
         env:
           SUPABASE_URL: ${{ secrets.PROD_SUPABASE_URL }}
