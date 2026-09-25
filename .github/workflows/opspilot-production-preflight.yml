@@ -15,6 +15,15 @@ on:
         options:
           - "NO"
           - "YES"
+      execution_mode:
+        description: "AUDIT_ONLY and DRY_RUN_ONLY are read-only; APPLY_BACKFILL requires explicit YES"
+        required: true
+        default: "AUDIT_ONLY"
+        type: choice
+        options:
+          - "AUDIT_ONLY"
+          - "DRY_RUN_ONLY"
+          - "APPLY_BACKFILL"
 
 permissions:
   contents: read
@@ -35,6 +44,7 @@ jobs:
       TESTED_CANDIDATE_SHA: aab4126d052c10091e125cfa7cc50dcf0247a068
       CONFIRM_PRODUCTION_REF: ${{ inputs.confirm_production_ref }}
       APPROVE_DATABASE_MUTATIONS: ${{ inputs.approve_database_mutations }}
+      PROD_EXECUTION_MODE: ${{ inputs.execution_mode }}
       PROD_V3_FLAG: ${{ vars.SNAPSHOT_V3_SHADOW_ENABLED }}
 
     steps:
@@ -58,14 +68,23 @@ jobs:
           if url.scheme.lower() != "https" or host != expected + ".supabase.co" or ref != expected or ref == shadow:
               print("PRODUCTION_IDENTITY=FAIL; URL_REF_MISMATCH")
               sys.exit(1)
-          if os.environ.get("APPROVE_DATABASE_MUTATIONS") != "YES":
+          mode = os.environ.get("PROD_EXECUTION_MODE")
+          if mode not in ("AUDIT_ONLY", "DRY_RUN_ONLY", "APPLY_BACKFILL"):
+              print("EXECUTION_MODE=FAIL")
+              sys.exit(1)
+          approval = os.environ.get("APPROVE_DATABASE_MUTATIONS")
+          if mode == "APPLY_BACKFILL" and approval != "YES":
               print("DATABASE_MUTATION_APPROVAL=FAIL")
+              sys.exit(1)
+          if mode != "APPLY_BACKFILL" and approval == "YES":
+              print("READ_ONLY_MODE_REQUIRES_APPROVAL_NO")
               sys.exit(1)
           if os.environ.get("PROD_V3_FLAG", "").strip().lower() != "false":
               print("V3=UNKNOWN_OR_ON; EXPECT_GITHUB_ENVIRONMENT_VARIABLE_SNAPSHOT_V3_SHADOW_ENABLED_FALSE")
               sys.exit(1)
           print("PRODUCTION_IDENTITY=PASS; PROJECT_REF=" + expected)
-          print("DATABASE_MUTATION_APPROVAL=PASS")
+          print("EXECUTION_MODE=" + mode)
+          print("DATABASE_MUTATION_APPROVAL=" + ("PASS" if mode == "APPLY_BACKFILL" else "NOT_REQUIRED_READ_ONLY"))
           print("V3=OFF; SOURCE=GITHUB_ENVIRONMENT_VARIABLE")
           PY
 
@@ -133,8 +152,16 @@ jobs:
           if os.environ.get("CONFIRM_PRODUCTION_REF") != expected or url.scheme.lower() != "https" or host != expected + ".supabase.co" or ref != expected or ref == shadow:
               print("PRODUCTION_IDENTITY=FAIL")
               sys.exit(1)
-          if os.environ.get("APPROVE_DATABASE_MUTATIONS") != "YES":
+          mode = os.environ.get("PROD_EXECUTION_MODE")
+          if mode not in ("AUDIT_ONLY", "DRY_RUN_ONLY", "APPLY_BACKFILL"):
+              print("EXECUTION_MODE=FAIL")
+              sys.exit(1)
+          approval = os.environ.get("APPROVE_DATABASE_MUTATIONS")
+          if mode == "APPLY_BACKFILL" and approval != "YES":
               print("DATABASE_MUTATION_APPROVAL=FAIL")
+              sys.exit(1)
+          if mode != "APPLY_BACKFILL" and approval == "YES":
+              print("READ_ONLY_MODE_REQUIRES_APPROVAL_NO")
               sys.exit(1)
           if os.environ.get("PROD_V3_FLAG", "").strip().lower() != "false":
               print("V3=UNKNOWN_OR_ON")
@@ -314,6 +341,24 @@ jobs:
             if (value === null || value === undefined) return nullable;
             return typeof value === "string" && Number.isFinite(Date.parse(value));
           }
+          function isCheckpointKey(value: unknown): boolean {
+            return typeof value === "string" && /^\d{4}-\d{2}-\d{2}:(8|10|14|18|20)$/.test(value);
+          }
+          function isValidDay(value: unknown): boolean {
+            if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+            const parsed = new Date(value + "T00:00:00.000Z");
+            return Number.isFinite(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value;
+          }
+          function isVerificationMetadataValid(value: any): boolean {
+            if (value === undefined) return true;
+            return Boolean(value && typeof value === "object"
+              && value.source === "ghn_internal_order_logs"
+              && isDate(value.checkedAt, false)
+              && (value.snapshotAt === undefined || isDate(value.snapshotAt, false))
+              && value.failures && typeof value.failures === "object"
+              && !Array.isArray(value.failures)
+              && Object.values(value.failures).every((failure) => typeof failure === "string"));
+          }
           function text(value: unknown): value is string {
             return typeof value === "string" && value.trim().length > 0;
           }
@@ -436,6 +481,50 @@ jobs:
               console.log("FAILURE_CATEGORIES=" + Array.from(reasons.entries()).map(([key,value]) => key + ":" + value).join(","));
             }
             if (wouldFail !== 0) throw new Error("BACKFILL_WOULD_FAIL_MUST_BE_ZERO");
+          }
+          async function auditMetadata(): Promise<void> {
+            const counts = {
+              VERSION_INVALID: 0,
+              DAY_MISSING_OR_INVALID: 0,
+              CAPTURED_AT_MISSING_OR_INVALID_TIMESTAMP: 0,
+              LAST_CHECKPOINT_MISSING: 0,
+              LAST_CHECKPOINT_VALID_CHECKPOINT_KEY: 0,
+              LAST_CHECKPOINT_INVALID_KEY: 0,
+              VERIFICATION_METADATA_INVALID: 0,
+            };
+            const examples = new Set<string>();
+            let cursor: string | null = null;
+            let eligible = 0;
+            for (;;) {
+              const cases = await eligiblePage(cursor);
+              if (!cases.length) break;
+              for (const row of cases) {
+                eligible++;
+                const cohort = row.operational_cohort;
+                if (!cohort || typeof cohort !== "object" || cohort.version !== 1) counts.VERSION_INVALID++;
+                if (!cohort || typeof cohort !== "object" || !isValidDay(cohort.day)) counts.DAY_MISSING_OR_INVALID++;
+                if (!cohort || typeof cohort !== "object" || !isDate(cohort.capturedAt, false)) counts.CAPTURED_AT_MISSING_OR_INVALID_TIMESTAMP++;
+                const checkpoint = cohort && typeof cohort === "object" ? cohort.lastCheckpoint : undefined;
+                if (checkpoint === undefined) counts.LAST_CHECKPOINT_MISSING++;
+                else if (isCheckpointKey(checkpoint)) counts.LAST_CHECKPOINT_VALID_CHECKPOINT_KEY++;
+                else counts.LAST_CHECKPOINT_INVALID_KEY++;
+                if (!cohort || typeof cohort !== "object" || !isVerificationMetadataValid(cohort.verification)) {
+                  counts.VERIFICATION_METADATA_INVALID++;
+                }
+                if (examples.size < 5) {
+                  const safe = checkpoint === undefined ? "<missing>"
+                    : checkpoint === null ? "<null>"
+                    : typeof checkpoint === "string" ? checkpoint.replace(/[^0-9:-]/g, "?").slice(0, 40)
+                    : `<${typeof checkpoint}>`;
+                  examples.add(safe);
+                }
+              }
+              cursor = cases[cases.length - 1].id;
+              if (cases.length < PAGE_CASES) break;
+            }
+            console.log("METADATA_AUDIT_ELIGIBLE=" + eligible);
+            for (const [name, count] of Object.entries(counts)) console.log(name + "=" + count);
+            console.log("LAST_CHECKPOINT_EXAMPLES=" + JSON.stringify([...examples]));
           }
           async function applyBackfill(): Promise<void> {
             requireEnv("APPROVE_DATABASE_MUTATIONS");
@@ -570,7 +659,8 @@ jobs:
             const url = new URL(process.env.PROD_SUPABASE_URL!);
             if (url.hostname !== "elwnbwimgzijuelfjdsq.supabase.co") throw new Error("PRODUCTION_IDENTITY_MISMATCH");
             const mode = process.argv[2];
-            if (mode === "dry-run") await dryRun();
+            if (mode === "metadata-audit") await auditMetadata();
+            else if (mode === "dry-run") await dryRun();
             else if (mode === "apply") await applyBackfill();
             else if (mode === "verify") await verifyAll();
             else throw new Error("MODE_INVALID");
@@ -641,7 +731,19 @@ jobs:
           PY
           fi
 
+      - name: Read-only cohort metadata audit
+        if: inputs.execution_mode == 'AUDIT_ONLY'
+        working-directory: candidate
+        shell: bash
+        env:
+          PROD_SUPABASE_URL: ${{ secrets.PROD_SUPABASE_URL }}
+          PROD_SERVICE_ROLE_KEY: ${{ secrets.PROD_SERVICE_ROLE_KEY }}
+        run: |
+          set -euo pipefail
+          npx tsx src/scripts/opspilot-production-094-gate.ts metadata-audit
+
       - name: Read-only full backfill dry-run
+        if: inputs.execution_mode != 'AUDIT_ONLY'
         working-directory: candidate
         shell: bash
         env:
@@ -652,6 +754,7 @@ jobs:
           npx tsx src/scripts/opspilot-production-094-gate.ts dry-run
 
       - name: Recheck Production gates immediately before backfill
+        if: inputs.execution_mode == 'APPLY_BACKFILL'
         shell: bash
         env:
           PROD_SUPABASE_URL: ${{ secrets.PROD_SUPABASE_URL }}
@@ -673,6 +776,7 @@ jobs:
           echo "BACKFILL_PRECONDITIONS=PASS"
 
       - name: Apply bounded, resumable backfill
+        if: inputs.execution_mode == 'APPLY_BACKFILL'
         working-directory: candidate
         shell: bash
         env:
@@ -694,6 +798,7 @@ jobs:
           npx tsx src/scripts/opspilot-production-094-gate.ts apply
 
       - name: Verify every active normalized generation and key set
+        if: inputs.execution_mode == 'APPLY_BACKFILL'
         working-directory: candidate
         shell: bash
         env:
@@ -704,6 +809,7 @@ jobs:
           npx tsx src/scripts/opspilot-production-094-gate.ts verify
 
       - name: Final read-only Production, cron, V3, and pointer verification
+        if: inputs.execution_mode == 'APPLY_BACKFILL'
         shell: bash
         env:
           PROD_SUPABASE_URL: ${{ secrets.PROD_SUPABASE_URL }}
