@@ -1,44 +1,595 @@
-name: OpsPilot Production Read-Only Liveness Check
+name: OpsPilot Production 094 Migration and Backfill
+
 on:
   workflow_dispatch:
+    inputs:
+      confirm_production_ref:
+        description: "Type the exact Primary Production Supabase project ref"
+        required: true
+        type: string
+      approve_database_mutations:
+        description: "Explicitly authorize migration 094 and bounded backfill"
+        required: true
+        default: "NO"
+        type: choice
+        options:
+          - "NO"
+          - "YES"
+
 permissions:
   contents: read
+
 concurrency:
-  group: opspilot-production-read-only-liveness
+  group: opspilot-production-094-rollout
   cancel-in-progress: false
+
 jobs:
-  liveness:
+  migrate-and-backfill:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 300
     environment:
       name: opspilot-production-rollout
+    env:
+      EXPECTED_PRODUCTION_REF: elwnbwimgzijuelfjdsq
+      SHADOW_REF: qkrpbompjwxfpicjfoub
+      TESTED_CANDIDATE_SHA: aab4126d052c10091e125cfa7cc50dcf0247a068
+      CONFIRM_PRODUCTION_REF: ${{ inputs.confirm_production_ref }}
+      APPROVE_DATABASE_MUTATIONS: ${{ inputs.approve_database_mutations }}
+      PROD_V3_FLAG: ${{ vars.SNAPSHOT_V3_SHADOW_ENABLED }}
+
     steps:
-      - name: Verify Production project identity before database access
+      - name: Fail closed on operator inputs, Production identity, and V3 flag
         shell: bash
         env:
           PROD_SUPABASE_URL: ${{ secrets.PROD_SUPABASE_URL }}
         run: |
+          set -euo pipefail
           python - <<'PY'
           import os, sys
           from urllib.parse import urlparse
-          prod = "elwnbwimgzijuelfjdsq"
-          shadow = "qkrpbompjwxfpicjfoub"
-          parsed = urlparse(os.environ.get("PROD_SUPABASE_URL", ""))
-          host = (parsed.hostname or "").lower().rstrip(".")
+          expected = os.environ["EXPECTED_PRODUCTION_REF"]
+          shadow = os.environ["SHADOW_REF"]
+          url = urlparse(os.environ.get("PROD_SUPABASE_URL", ""))
+          host = (url.hostname or "").lower().rstrip(".")
           ref = host[:-len(".supabase.co")] if host.endswith(".supabase.co") else ""
-          if parsed.scheme.lower() != "https" or host != prod + ".supabase.co" or ref != prod or ref == shadow:
-              print("PRODUCTION_IDENTITY=FAIL")
+          if os.environ.get("CONFIRM_PRODUCTION_REF") != expected:
+              print("PRODUCTION_IDENTITY=FAIL; INPUT_REF_MISMATCH")
               sys.exit(1)
-          print("PRODUCTION_IDENTITY=PASS; PROJECT_REF=" + prod)
+          if url.scheme.lower() != "https" or host != expected + ".supabase.co" or ref != expected or ref == shadow:
+              print("PRODUCTION_IDENTITY=FAIL; URL_REF_MISMATCH")
+              sys.exit(1)
+          if os.environ.get("APPROVE_DATABASE_MUTATIONS") != "YES":
+              print("DATABASE_MUTATION_APPROVAL=FAIL")
+              sys.exit(1)
+          if os.environ.get("PROD_V3_FLAG", "").strip().lower() != "false":
+              print("V3=UNKNOWN_OR_ON; EXPECT_GITHUB_ENVIRONMENT_VARIABLE_SNAPSHOT_V3_SHADOW_ENABLED_FALSE")
+              sys.exit(1)
+          print("PRODUCTION_IDENTITY=PASS; PROJECT_REF=" + expected)
+          print("DATABASE_MUTATION_APPROVAL=PASS")
+          print("V3=OFF; SOURCE=GITHUB_ENVIRONMENT_VARIABLE")
           PY
+
+      - name: Checkout operation branch
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Checkout exact tested migration and backfill candidate
+        uses: actions/checkout@v4
+        with:
+          ref: aab4126d052c10091e125cfa7cc50dcf0247a068
+          path: candidate
+          persist-credentials: false
+
+      - name: Verify pinned candidate source
+        shell: bash
+        run: |
+          set -euo pipefail
+          actual="$(git -C candidate rev-parse HEAD)"
+          test "$actual" = "$TESTED_CANDIDATE_SHA"
+          test -s candidate/src/database/migrations/094_normalized_followup_case_members.sql
+          test -s candidate/src/services/followup-cohort-backfill.ts
+          test -s candidate/src/domain/operational-learning/normalized-followup-members.ts
+          echo "TESTED_MIGRATION_SOURCE=PASS"
+          echo "TESTED_BACKFILL_SOURCE=PASS"
+
+      - name: Install candidate Node dependencies
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: candidate/package-lock.json
+
+      - name: Install candidate dependencies
+        working-directory: candidate
+        shell: bash
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
       - name: Install PostgreSQL client
         shell: bash
         run: |
+          set -euo pipefail
           sudo apt-get update -qq
           sudo apt-get install -y -qq postgresql-client
-      - name: Read-only live execution evidence
+
+      - name: Prepare fail-closed read-only preflight and parity verifier
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/opspilot-prod-094-preflight.sh" <<'BASH'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          mode="$1"
+          python - <<'PY'
+          import os, sys
+          from urllib.parse import urlparse
+          expected = "elwnbwimgzijuelfjdsq"
+          shadow = "qkrpbompjwxfpicjfoub"
+          url = urlparse(os.environ.get("PROD_SUPABASE_URL", ""))
+          host = (url.hostname or "").lower().rstrip(".")
+          ref = host[:-len(".supabase.co")] if host.endswith(".supabase.co") else ""
+          if os.environ.get("CONFIRM_PRODUCTION_REF") != expected or url.scheme.lower() != "https" or host != expected + ".supabase.co" or ref != expected or ref == shadow:
+              print("PRODUCTION_IDENTITY=FAIL")
+              sys.exit(1)
+          if os.environ.get("APPROVE_DATABASE_MUTATIONS") != "YES":
+              print("DATABASE_MUTATION_APPROVAL=FAIL")
+              sys.exit(1)
+          if os.environ.get("PROD_V3_FLAG", "").strip().lower() != "false":
+              print("V3=UNKNOWN_OR_ON")
+              sys.exit(1)
+          PY
+          cat > "$RUNNER_TEMP/opspilot-prod-094-preflight.sql" <<'SQL'
+          WITH jobs AS (
+            SELECT jobid, active FROM cron.job WHERE jobid::text IN ('14','15','16','17')
+          ), matching_sessions AS (
+            SELECT a.pid, a.application_name, a.state, a.query,
+                   pg_blocking_pids(a.pid) AS blockers
+            FROM pg_stat_activity AS a
+            WHERE a.pid <> pg_backend_pid()
+              AND a.datname = current_database()
+              AND (
+                lower(coalesce(a.application_name,'')) LIKE '%opspilot%'
+                OR lower(coalesce(a.query,'')) ~ '(sync_runs|sync_locks|followup|checkpoint|enqueue|notification|recovery)'
+              )
+          ), artifacts AS (
+            SELECT
+              (SELECT count(*) FROM (VALUES
+                ('public.followup_case_members'),
+                ('public.followup_case_member_generations'),
+                ('public.followup_case_cohort_archive')
+              ) AS expected(object_name) WHERE to_regclass(expected.object_name) IS NOT NULL) AS table_count,
+              (SELECT count(*) FROM (VALUES
+                ('followup_cases','cohort_version'),
+                ('followup_cases','member_generation_id')
+              ) AS expected(table_name,column_name)
+               WHERE EXISTS (
+                 SELECT 1 FROM information_schema.columns AS c
+                 WHERE c.table_schema='public'
+                   AND c.table_name=expected.table_name
+                   AND c.column_name=expected.column_name
+               )) AS column_count,
+              EXISTS (
+                SELECT 1 FROM pg_constraint
+                WHERE conrelid='public.followup_cases'::regclass
+                  AND conname='followup_cases_cohort_generation_consistency'
+              ) AS consistency_constraint
+          )
+          SELECT jsonb_build_object(
+            'jobs_found',(SELECT count(*) FROM jobs),
+            'all_jobs_off',coalesce((SELECT bool_and(active IS FALSE) FROM jobs),false),
+            'active_matching_sessions',(SELECT count(*) FROM matching_sessions WHERE state='active'),
+            'matching_lock_waiters',(SELECT count(*) FROM matching_sessions WHERE cardinality(blockers)>0),
+            'matching_advisory_locks',(
+              SELECT count(*) FROM pg_locks AS l
+              JOIN matching_sessions AS s ON s.pid=l.pid
+              WHERE l.locktype='advisory' AND l.granted
+            ),
+            'unexpired_sync_lease',EXISTS (
+              SELECT 1 FROM public.sync_locks
+              WHERE lock_key='global:rillnet-sync' AND expires_at>statement_timestamp()
+            ),
+            'nonterminal_recoveries',(
+              SELECT count(*) FROM public.checkpoint_recoveries
+              WHERE upper(status::text) IN ('PENDING','DISPATCHING','RUNNING')
+            ),
+            'recent_running_runs',(
+              SELECT count(*) FROM public.sync_runs
+              WHERE lower(status::text) IN ('running','dispatching')
+                AND started_at >= statement_timestamp()-interval '6 minutes'
+            ),
+            'migration_table_count',(SELECT table_count FROM artifacts),
+            'migration_column_count',(SELECT column_count FROM artifacts),
+            'migration_constraint_present',(SELECT consistency_constraint FROM artifacts),
+            'followup_cases_total',(SELECT count(*) FROM public.followup_cases),
+            'active_v1_nonnull_cohorts',(
+              SELECT count(*) FROM public.followup_cases
+              WHERE coalesce(current_state::text,'') <> 'CLOSED'
+                AND operational_cohort IS NOT NULL
+            ),
+            'active_v1_null_cohorts',(
+              SELECT count(*) FROM public.followup_cases
+              WHERE coalesce(current_state::text,'') <> 'CLOSED'
+                AND operational_cohort IS NULL
+            )
+          )::text;
+          SQL
+          mode="$mode"
+          if ! gate="$(psql -X -qAt -v ON_ERROR_STOP=1 -f "$RUNNER_TEMP/opspilot-prod-094-preflight.sql" 2>"$RUNNER_TEMP/opspilot-prod-094-psql.err")"; then
+            state="$(grep -Eo '[0-9A-Z]{5}' "$RUNNER_TEMP/opspilot-prod-094-psql.err" | tail -n 1 || true)"
+            echo "READ_ONLY_PREFLIGHT=FAIL; SQLSTATE=${state:-UNKNOWN}"
+            exit 1
+          fi
+          cohort_digest=""
+          if [[ "$mode" == "ABSENT" ]]; then
+            cat > "$RUNNER_TEMP/opspilot-prod-094-digest.sql" <<'SQL'
+          SELECT md5(coalesce((
+            SELECT string_agg(
+              fc.id::text || ':' || coalesce(fc.current_state::text,'NULL') || ':'
+                || coalesce(fc.updated_at::text,'NULL') || ':'
+                || coalesce(md5(fc.operational_cohort::text),'NULL'),
+              '|' ORDER BY fc.id
+            ) FROM public.followup_cases AS fc
+          ),''));
+          SQL
+            cohort_digest="$(psql -X -qAt -v ON_ERROR_STOP=1 -f "$RUNNER_TEMP/opspilot-prod-094-digest.sql" 2>"$RUNNER_TEMP/opspilot-prod-094-digest.err")"
+          fi
+          GATE_JSON="$gate" COHORT_DIGEST="$cohort_digest" PREFLIGHT_MODE="$mode" python - <<'PY'
+          import json, os, sys
+          try:
+              g=json.loads(os.environ["GATE_JSON"])
+          except Exception:
+              print("READ_ONLY_PREFLIGHT=FAIL; RESULT_PARSE")
+              sys.exit(1)
+          mode=os.environ["PREFLIGHT_MODE"]
+          checks = {
+              "cron_14_17_off": g["jobs_found"] == 4 and g["all_jobs_off"],
+              "no_active_matching_sessions": g["active_matching_sessions"] == 0,
+              "no_lock_waiters": g["matching_lock_waiters"] == 0,
+              "no_matching_advisory_locks": g["matching_advisory_locks"] == 0,
+              "no_unexpired_sync_lease": not g["unexpired_sync_lease"],
+              "no_nonterminal_recovery": g["nonterminal_recoveries"] == 0,
+              "no_recent_running_checkpoint": g["recent_running_runs"] == 0,
+          }
+          artifacts=g["migration_table_count"] + g["migration_column_count"] + int(g["migration_constraint_present"])
+          if mode == "ABSENT":
+              checks["migration_094_absent"] = artifacts == 0
+          elif mode == "PRESENT":
+              checks["migration_094_complete"] = (
+                  g["migration_table_count"] == 3
+                  and g["migration_column_count"] == 2
+                  and g["migration_constraint_present"]
+              )
+          else:
+              checks["mode_valid"] = False
+          failed=[name for name,ok in checks.items() if not ok]
+          if failed:
+              print("READ_ONLY_PREFLIGHT=FAIL; GATES=" + ",".join(failed))
+              sys.exit(1)
+          if mode == "ABSENT":
+              with open(os.environ["GITHUB_ENV"],"a",encoding="utf-8") as env:
+                  env.write("BASE_FOLLOWUP_CASES=" + str(g["followup_cases_total"]) + "\n")
+                  env.write("BASE_ACTIVE_V1_NONNULL=" + str(g["active_v1_nonnull_cohorts"]) + "\n")
+                  env.write("BASE_ACTIVE_V1_NULL=" + str(g["active_v1_null_cohorts"]) + "\n")
+                  env.write("BASE_COHORT_DIGEST=" + os.environ["COHORT_DIGEST"] + "\n")
+          print("READ_ONLY_PREFLIGHT=PASS; MODE=" + mode)
+          print("CRON_14_17=OFF")
+          print("LIVE_SYNC_EXECUTION=NONE")
+          print("RECOVERY_OR_LEASE=NONE")
+          print("MIGRATION_ARTIFACTS=" + str(artifacts))
+          PY
+          BASH
+          chmod +x "$RUNNER_TEMP/opspilot-prod-094-preflight.sh"
+          cat > candidate/src/scripts/opspilot-production-094-gate.ts <<'TS'
+          import { createHash } from "node:crypto";
+          import { appendFileSync } from "node:fs";
+          import { createClient } from "@supabase/supabase-js";
+          import {
+            assertFollowupMemberGenerationParity,
+            isOperationalCohortV2Metadata,
+            operationalCohortMemberRows,
+            operationalCohortV2Metadata,
+            planFollowupMemberWriteChunks,
+          } from "../domain/operational-learning/normalized-followup-members";
+          import { runFollowupCohortBackfillBatch } from "../services/followup-cohort-backfill";
+
+          const PAGE_CASES = 5;
+          const MEMBER_PAGE = 500;
+          const V1_FIELDS = "id,incident_key,current_state,updated_at,cohort_version,member_generation_id,operational_cohort";
+          const MEMBER_FIELDS = "followup_case_id,generation_id,source_sync_run_id,order_code,customer_id,warehouse_id,stage,status,observed_at,ready_at,source,baseline_status,is_baseline,due_at,last_reminder_at,last_reminder_status,completed_at,member_active,verification_failure";
+          const client = createClient(
+            process.env.PROD_SUPABASE_URL || "",
+            process.env.PROD_SERVICE_ROLE_KEY || "",
+            { auth: { autoRefreshToken: false, persistSession: false } },
+          );
+          const allowedStages = new Set(["DELIVERY", "TRANSIT", "OUTBOUND", "UNKNOWN"]);
+          const allowedSources = new Set(["rillnet", "ghn_internal_order_logs"]);
+          const dryGeneration = "00000000-0000-4000-8000-000000000000";
+
+          function requireEnv(name: string): string {
+            const value = process.env[name];
+            if (!value) throw new Error("REQUIRED_ENV_MISSING:" + name);
+            return value;
+          }
+          function sha(value: unknown): string {
+            return createHash("sha256").update(JSON.stringify(value) ?? "undefined").digest("hex");
+          }
+          function isDate(value: unknown, nullable: boolean): boolean {
+            if (value === null || value === undefined) return nullable;
+            return typeof value === "string" && Number.isFinite(Date.parse(value));
+          }
+          function text(value: unknown): value is string {
+            return typeof value === "string" && value.trim().length > 0;
+          }
+          function validateCase(row: any, archive: any | undefined): number {
+            const cohort = row.operational_cohort;
+            if (!row.updated_at || !cohort || cohort.version !== 1
+                || !Array.isArray(cohort.members) || !Array.isArray(cohort.baselineCodes)) {
+              throw new Error("V1_COHORT_SHAPE_INVALID");
+            }
+          if (new Set(cohort.baselineCodes).size !== cohort.baselineCodes.length
+                || cohort.baselineCodes.some((code: unknown) => !text(code))) {
+              throw new Error("BASELINE_KEY_INVALID");
+            }
+            if (!text(cohort.day) || !isDate(cohort.capturedAt, false)
+                || (cohort.lastCheckpoint !== undefined && !isDate(cohort.lastCheckpoint, false))) {
+              throw new Error("COHORT_METADATA_INVALID");
+            }
+            if (cohort.verification !== undefined) {
+              const verification = cohort.verification;
+              if (!verification || typeof verification !== "object"
+                  || verification.source !== "ghn_internal_order_logs"
+                  || !isDate(verification.checkedAt, false)
+                  || (verification.snapshotAt !== undefined && !isDate(verification.snapshotAt, false))
+                  || !verification.failures || typeof verification.failures !== "object"
+                  || Array.isArray(verification.failures)
+                  || Object.values(verification.failures).some((value) => typeof value !== "string")) {
+                throw new Error("VERIFICATION_DATA_INVALID");
+              }
+            }
+            for (const member of cohort.members) {
+              if (!member || !text(member.orderCode) || !text(member.customerId) || !text(member.warehouseId)
+                  || !allowedStages.has(member.stage) || !text(member.status) || !isDate(member.observedAt, false)
+                  || !text(member.baselineStatus)
+                  || (member.source !== undefined && member.source !== null && !allowedSources.has(member.source))
+                  || !isDate(member.readyAt, true) || !isDate(member.dueAt, true)
+                  || !isDate(member.lastReminderAt, true) || !isDate(member.completedAt, true)
+                  || (member.lastReminderStatus !== undefined && member.lastReminderStatus !== null && typeof member.lastReminderStatus !== "string")) {
+                throw new Error("MEMBER_FIELD_INVALID");
+              }
+            }
+            const expected = operationalCohortMemberRows(row.id, dryGeneration, null, cohort);
+            planFollowupMemberWriteChunks(expected);
+            const metadata = operationalCohortV2Metadata(cohort);
+            if (Buffer.byteLength(JSON.stringify(metadata), "utf8") > 131072) {
+              throw new Error("V2_METADATA_LIMIT_EXCEEDED");
+            }
+            if (archive && (
+                archive.source_cohort_sha256 !== sha(cohort)
+                || archive.source_case_updated_at !== row.updated_at
+              )) {
+              throw new Error("IMMUTABLE_ARCHIVE_SOURCE_MISMATCH");
+            }
+            return cohort.members.length;
+          }
+          async function eligiblePage(afterId: string | null): Promise<any[]> {
+            let q = (client.from("followup_cases") as any)
+              .select(V1_FIELDS)
+              .neq("current_state", "CLOSED")
+              .is("member_generation_id", null)
+              .or("cohort_version.is.null,cohort_version.eq.1")
+              .not("operational_cohort", "is", null)
+              .order("id", { ascending: true })
+              .limit(PAGE_CASES);
+            if (afterId) q = q.gt("id", afterId);
+            const { data, error } = await q;
+            if (error) throw new Error("ELIGIBLE_CASE_READ_FAILED");
+            return data || [];
+          }
+          async function countNullCohortV1(): Promise<number> {
+            const { count, error } = await (client.from("followup_cases") as any)
+              .select("id", { count: "exact", head: true })
+              .neq("current_state", "CLOSED")
+              .is("member_generation_id", null)
+              .or("cohort_version.is.null,cohort_version.eq.1")
+              .is("operational_cohort", null);
+            if (error) throw new Error("NULL_COHORT_COUNT_FAILED");
+            return count || 0;
+          }
+          async function dryRun(): Promise<void> {
+            let cursor: string | null = null;
+            let wouldMigrate = 0;
+            let wouldFail = 0;
+            let memberTotal = 0;
+            const reasons = new Map<string, number>();
+            for (;;) {
+              const cases = await eligiblePage(cursor);
+              if (!cases.length) break;
+              const ids = cases.map((row: any) => row.id);
+              const { data: archives, error: archiveError } = await (client.from("followup_case_cohort_archive") as any)
+                .select("followup_case_id,source_case_updated_at,source_cohort_sha256")
+                .in("followup_case_id", ids);
+              if (archiveError) throw new Error("ARCHIVE_READ_FAILED");
+              const archiveByCase = new Map((archives || []).map((row: any) => [row.followup_case_id, row]));
+              for (const row of cases) {
+                try {
+                  const count = validateCase(row, archiveByCase.get(row.id));
+                  memberTotal += count;
+                  wouldMigrate++;
+                } catch (error) {
+                  wouldFail++;
+                  const message = error instanceof Error ? error.message : "UNKNOWN";
+                  reasons.set(message, (reasons.get(message) || 0) + 1);
+                }
+              }
+              cursor = cases[cases.length - 1].id;
+              if (cases.length < PAGE_CASES) break;
+            }
+            const wouldSkip = await countNullCohortV1();
+            const env = requireEnv("GITHUB_ENV");
+            appendFileSync(env,
+              "BACKFILL_WOULD_MIGRATE=" + wouldMigrate + "\n"
+              + "BACKFILL_WOULD_SKIP=" + wouldSkip + "\n"
+              + "BACKFILL_WOULD_FAIL=" + wouldFail + "\n");
+            console.log("BACKFILL_DRY_RUN=PASS");
+            console.log("BACKFILL_WOULD_MIGRATE=" + wouldMigrate);
+            console.log("BACKFILL_WOULD_SKIP_NULL_COHORT=" + wouldSkip);
+            console.log("BACKFILL_WOULD_FAIL=" + wouldFail);
+            console.log("ELIGIBLE_MEMBER_ROWS=" + memberTotal);
+            if (reasons.size) {
+              console.log("FAILURE_CATEGORIES=" + Array.from(reasons.entries()).map(([key,value]) => key + ":" + value).join(","));
+            }
+            if (wouldFail !== 0) throw new Error("BACKFILL_WOULD_FAIL_MUST_BE_ZERO");
+          }
+          async function applyBackfill(): Promise<void> {
+            requireEnv("APPROVE_DATABASE_MUTATIONS");
+            if (process.env.APPROVE_DATABASE_MUTATIONS !== "YES") throw new Error("DATABASE_MUTATION_APPROVAL_REQUIRED");
+            let cursor: string | null = null;
+            let completed = 0;
+            const expected = Number(requireEnv("BACKFILL_WOULD_MIGRATE"));
+            for (;;) {
+              const result = await runFollowupCohortBackfillBatch(client, {
+                apply: true,
+                afterId: cursor,
+                limit: 1,
+              });
+              if (result.selected === 0) break;
+              if (result.failed !== 0 || result.skipped !== 0 || result.backfilled !== 1 || !result.nextCursor) {
+                console.log("BACKFILL_APPLY=STOPPED_ON_FIRST_NON_SUCCESS");
+                console.log("BACKFILL_CASES_COMPLETED=" + completed);
+                throw new Error("BACKFILL_CASE_FAILED_OR_SKIPPED");
+              }
+              cursor = result.nextCursor;
+              completed++;
+            }
+            console.log("BACKFILL_APPLY=PASS");
+            console.log("BACKFILL_CASES_COMPLETED=" + completed);
+            if (completed !== expected) throw new Error("BACKFILL_COUNT_DIFFERS_FROM_DRY_RUN");
+          }
+          function stable(value: any): any {
+            if (Array.isArray(value)) return value.map(stable);
+            if (value && typeof value === "object") {
+              return Object.fromEntries(Object.keys(value).sort().map((key) => [key, stable(value[key])]));
+            }
+            return value;
+          }
+          async function allActiveCohortCases(afterId: string | null): Promise<any[]> {
+            let q = (client.from("followup_cases") as any)
+              .select(V1_FIELDS)
+              .neq("current_state", "CLOSED")
+              .not("operational_cohort", "is", null)
+              .order("id", { ascending: true })
+              .limit(PAGE_CASES);
+            if (afterId) q = q.gt("id", afterId);
+            const { data, error } = await q;
+            if (error) throw new Error("ACTIVE_COHORT_VERIFY_READ_FAILED");
+            return data || [];
+          }
+          async function readMembers(caseId: string, generationId: string): Promise<any[]> {
+            const rows: any[] = [];
+            for (let offset = 0; ; offset += MEMBER_PAGE) {
+              const { data, error } = await (client.from("followup_case_members") as any)
+                .select(MEMBER_FIELDS)
+                .eq("followup_case_id", caseId)
+                .eq("generation_id", generationId)
+                .order("order_code", { ascending: true })
+                .range(offset, offset + MEMBER_PAGE - 1);
+              if (error) throw new Error("MEMBER_GENERATION_READ_FAILED");
+              const page = data || [];
+              rows.push(...page);
+              if (page.length < MEMBER_PAGE) return rows;
+            }
+          }
+          async function verifyAll(): Promise<void> {
+            let cursor: string | null = null;
+            let verified = 0;
+            let invalidParents = 0;
+            for (;;) {
+              const cases = await allActiveCohortCases(cursor);
+              if (!cases.length) break;
+              const ids = cases.map((row: any) => row.id);
+              const { data: archives, error: archiveError } = await (client.from("followup_case_cohort_archive") as any)
+                .select("followup_case_id,original_operational_cohort,source_case_updated_at,source_cohort_sha256")
+                .in("followup_case_id", ids);
+              if (archiveError) throw new Error("ARCHIVE_PARITY_READ_FAILED");
+              const archiveByCase = new Map((archives || []).map((row: any) => [row.followup_case_id, row]));
+              for (const row of cases) {
+                const pointer = row.member_generation_id;
+                const metadata = row.operational_cohort;
+                const archive: any = archiveByCase.get(row.id);
+                if (row.cohort_version !== 2 || !pointer || !isOperationalCohortV2Metadata(metadata) || !archive) {
+                  invalidParents++;
+                  continue;
+                }
+                const legacy = archive.original_operational_cohort;
+                if (!legacy || legacy.version !== 1 || archive.source_cohort_sha256 !== sha(legacy)) {
+                  throw new Error("LEGACY_ARCHIVE_INVALID");
+                }
+                const expectedMetadata = operationalCohortV2Metadata(legacy);
+                if (JSON.stringify(stable(metadata)) !== JSON.stringify(stable(expectedMetadata))) {
+                  throw new Error("PARENT_METADATA_PARITY_MISMATCH");
+                }
+                const { data: generations, error: generationError } = await (client.from("followup_case_member_generations") as any)
+                  .select("followup_case_id,generation_id,source_sync_run_id,expected_member_count,generation_status,committed_at")
+                  .eq("followup_case_id", row.id)
+                  .eq("generation_id", pointer);
+                if (generationError) throw new Error("GENERATION_MANIFEST_READ_FAILED");
+                const generation = generations?.[0];
+                if (!generation || generation.generation_status !== "COMMITTED" || !generation.committed_at
+                    || generation.expected_member_count !== legacy.members.length) {
+                  throw new Error("GENERATION_MANIFEST_INVALID");
+                }
+                const expectedRows = operationalCohortMemberRows(row.id, pointer, null, legacy);
+                const actualRows = await readMembers(row.id, pointer);
+                assertFollowupMemberGenerationParity(expectedRows, actualRows);
+                if (actualRows.length !== metadata.memberCount) throw new Error("METADATA_MEMBER_COUNT_MISMATCH");
+                verified++;
+              }
+              cursor = cases[cases.length - 1].id;
+              if (cases.length < PAGE_CASES) break;
+            }
+            const { count: remaining, error: remainingError } = await (client.from("followup_cases") as any)
+              .select("id", { count: "exact", head: true })
+              .neq("current_state", "CLOSED")
+              .not("operational_cohort", "is", null)
+              .is("member_generation_id", null)
+              .or("cohort_version.is.null,cohort_version.eq.1");
+            if (remainingError) throw new Error("REMAINING_V1_COUNT_FAILED");
+            const nullCases = await countNullCohortV1();
+            const expected = Number(requireEnv("BACKFILL_WOULD_MIGRATE"));
+            if (invalidParents !== 0 || (remaining || 0) !== 0 || verified !== expected) {
+              throw new Error("POINTER_OR_BACKFILL_COUNT_MISMATCH");
+            }
+            appendFileSync(requireEnv("GITHUB_ENV"), "BACKFILL_NULL_CASES_FINAL=" + nullCases + "\n");
+            console.log("BACKFILL_PARITY=PASS");
+            console.log("V2_CASES_VERIFIED=" + verified);
+            console.log("NULL_COHORT_V1_CASES_REMAINING=" + nullCases);
+            console.log("INVALID_POINTERS=0");
+            console.log("MISSING_GENERATIONS=0");
+            console.log("KEYSET_OR_FIELD_MISMATCHES=0");
+          }
+          async function main(): Promise<void> {
+            requireEnv("PROD_SUPABASE_URL");
+            requireEnv("PROD_SERVICE_ROLE_KEY");
+            const url = new URL(process.env.PROD_SUPABASE_URL!);
+            if (url.hostname !== "elwnbwimgzijuelfjdsq.supabase.co") throw new Error("PRODUCTION_IDENTITY_MISMATCH");
+            const mode = process.argv[2];
+            if (mode === "dry-run") await dryRun();
+            else if (mode === "apply") await applyBackfill();
+            else if (mode === "verify") await verifyAll();
+            else throw new Error("MODE_INVALID");
+          }
+          main().catch((error) => {
+            const code = error instanceof Error ? error.message.split(":")[0] : "UNKNOWN";
+            console.error("PRODUCTION_094_GATE=FAIL; CATEGORY=" + code);
+            process.exitCode = 1;
+          });
+          TS
+
+      - name: Read-only pre-migration Production gate
         shell: bash
         env:
+          PROD_SUPABASE_URL: ${{ secrets.PROD_SUPABASE_URL }}
+          PROD_DB_HOST: ${{ secrets.PROD_DB_HOST }}
           PGHOST: ${{ secrets.PROD_DB_HOST }}
           PGPORT: ${{ secrets.PROD_DB_PORT }}
           PGUSER: ${{ secrets.PROD_DB_USER }}
@@ -49,112 +600,176 @@ jobs:
           PGOPTIONS: "-c default_transaction_read_only=on -c statement_timeout=8000"
         run: |
           set -euo pipefail
-          psql -X -qAt -v ON_ERROR_STOP=1 -c "select current_database(), current_user, version();" >/dev/null
-          echo "DB_CONNECTION=PASS"
-          cat > "$RUNNER_TEMP/liveness.sql" <<'SQL'
-          WITH runs AS MATERIALIZED (
-            SELECT id, status, current_phase, checkpoint_at, started_at, completed_at,
-                   completed_phases,
-                   round((extract(epoch FROM statement_timestamp() - checkpoint_at) / 60)::numeric, 2) AS age_from_checkpoint_minutes,
-                   round((extract(epoch FROM statement_timestamp() - started_at) / 60)::numeric, 2) AS age_from_started_minutes
-            FROM public.sync_runs
-            WHERE lower(status::text) IN ('running','failed')
-              AND COALESCE(current_phase::text,'') <> 'COMPLETED'
-          ), activity AS (
-            SELECT a.pid, a.application_name, a.state, a.query_start,
-                   round(extract(epoch FROM statement_timestamp() - a.query_start)::numeric,2) AS query_age_seconds,
-                   a.wait_event_type, a.wait_event, pg_blocking_pids(a.pid) AS blocking_pids,
-                   ARRAY(SELECT r.id::text FROM runs r WHERE COALESCE(a.query,'') ILIKE '%' || r.id::text || '%') AS target_run_ids,
-                   md5(COALESCE(a.query,'')) AS query_fingerprint
-            FROM pg_stat_activity a
-            WHERE a.pid <> pg_backend_pid()
-              AND a.datname = current_database()
-              AND a.state = 'active'
-              AND (
-                lower(COALESCE(a.application_name,'')) LIKE '%opspilot%'
-                OR lower(COALESCE(a.query,'')) ~ '(opspilot|followup|sync_runs|sync_locks|checkpoint|enqueue_ai|enqueue_notifications)'
-                OR EXISTS (SELECT 1 FROM runs r WHERE COALESCE(a.query,'') ILIKE '%' || r.id::text || '%')
-              )
-          ), lease AS (
-            SELECT COALESCE(jsonb_agg(jsonb_build_object(
-                     'lock_key',lock_key,'acquired_at',acquired_at,'heartbeat_at',heartbeat_at,
-                     'heartbeat_age_seconds',round(extract(epoch FROM statement_timestamp()-heartbeat_at)::numeric,2),
-                     'expires_at',expires_at,'unexpired',expires_at>statement_timestamp()
-                   )),'[]'::jsonb) AS rows,
-                   COALESCE(bool_or(expires_at>statement_timestamp()),false) AS unexpired
-            FROM public.sync_locks
-            WHERE lock_key='global:rillnet-sync'
-          ), recovery AS (
-            SELECT COALESCE(jsonb_agg(jsonb_build_object(
-                     'checkpoint_at',c.checkpoint_at,'sync_run_id',c.sync_run_id,'status',c.status,
-                     'recovery_attempt',c.recovery_attempt,'scheduled_for',c.scheduled_for,
-                     'next_attempt_at',c.next_attempt_at,'dispatch_started_at',c.dispatch_started_at,
-                     'last_http_status',c.last_http_status,'failure_stage',c.failure_stage
-                   ) ORDER BY c.created_at),'[]'::jsonb) AS rows,
-                   COALESCE(bool_or(upper(c.status::text) IN ('DISPATCHING','RUNNING')),false) AS active
-            FROM public.checkpoint_recoveries c
-            WHERE EXISTS (
-              SELECT 1 FROM runs r
-              WHERE r.id=c.sync_run_id OR (r.checkpoint_at IS NOT NULL AND r.checkpoint_at=c.checkpoint_at)
-            )
-          ), cron_state AS (
-            SELECT count(*) AS jobs_found,
-                   COALESCE(bool_and(j.active IS FALSE),false) AS all_off,
-                   COALESCE(jsonb_agg(jsonb_build_object('jobid',j.jobid,'jobname',j.jobname,'schedule',j.schedule,'active',j.active) ORDER BY j.jobid),'[]'::jsonb) AS rows
-            FROM cron.job j
-            WHERE j.jobid::text IN ('14','15','16','17')
-          ), phase_sources AS (
-            SELECT count(*) AS candidate_sources
-            FROM (
-              SELECT table_name
-              FROM information_schema.columns
-              WHERE table_schema='public'
-              GROUP BY table_name
-              HAVING bool_or(column_name='sync_run_id')
-                 AND bool_or(column_name IN ('phase','phase_name','current_phase'))
-                 AND bool_or(column_name IN ('created_at','started_at','event_at','occurred_at','finished_at'))
-            ) s
-          )
-          SELECT jsonb_build_object(
-            'observed_at',statement_timestamp(),
-            'nonterminal_db_rows',(SELECT count(*) FROM runs),
-            'runs',COALESCE((SELECT jsonb_agg(jsonb_build_object(
-              'run_id',r.id,'status',r.status,'current_phase',r.current_phase,'checkpoint_at',r.checkpoint_at,
-              'started_at',r.started_at,'completed_at',r.completed_at,
-              'last_completed_phase',r.completed_phases ->> -1,
-              'age_from_checkpoint_minutes',r.age_from_checkpoint_minutes,
-              'age_from_last_phase_event_minutes',NULL,
-              'last_phase_event_at','NOT_AVAILABLE_IN_REPO_SCHEMA'
-            ) ORDER BY r.checkpoint_at) FROM runs r),'[]'::jsonb),
-            'phase_event_candidate_sources',(SELECT candidate_sources FROM phase_sources),
-            'active_db_session_matches',COALESCE((SELECT jsonb_agg(jsonb_build_object(
-              'pid',a.pid,'application_name',a.application_name,'state',a.state,'query_start',a.query_start,
-              'query_age_seconds',a.query_age_seconds,'wait_event_type',a.wait_event_type,'wait_event',a.wait_event,
-              'blocking_pids',a.blocking_pids,'target_run_ids',a.target_run_ids,'query_fingerprint',a.query_fingerprint
-            ) ORDER BY a.query_start) FROM activity a),'[]'::jsonb),
-            'exact_target_run_query_found',EXISTS(SELECT 1 FROM activity a WHERE cardinality(a.target_run_ids)>0),
-            'generic_matching_active_query_found',EXISTS(SELECT 1 FROM activity),
-            'matching_lock_waiters',COALESCE((SELECT jsonb_agg(jsonb_build_object('pid',a.pid,'blocking_pids',a.blocking_pids,'query_start',a.query_start)) FROM activity a WHERE cardinality(a.blocking_pids)>0),'[]'::jsonb),
-            'matching_advisory_locks',COALESCE((SELECT jsonb_agg(jsonb_build_object('pid',l.pid,'mode',l.mode,'granted',l.granted,'classid',l.classid::text,'objid',l.objid::text,'objsubid',l.objsubid)) FROM pg_locks l JOIN activity a ON a.pid=l.pid WHERE l.locktype='advisory'),'[]'::jsonb),
-            'sync_lease',(SELECT rows FROM lease),
-            'sync_lease_unexpired',(SELECT unexpired FROM lease),
-            'checkpoint_recoveries',(SELECT rows FROM recovery),
-            'active_checkpoint_recovery',(SELECT active FROM recovery),
-            'cron_jobs',(SELECT rows FROM cron_state),
-            'cron_14_to_17_all_off',(SELECT jobs_found=4 AND all_off FROM cron_state),
-            'route_max_duration_seconds',300,
-            'live_sync_execution_found',CASE
-              WHEN EXISTS(SELECT 1 FROM activity a WHERE cardinality(a.target_run_ids)>0) THEN 'YES'
-              WHEN EXISTS(SELECT 1 FROM activity)
-                OR (SELECT unexpired FROM lease)
-                OR (SELECT active FROM recovery)
-                OR EXISTS(SELECT 1 FROM activity a WHERE cardinality(a.blocking_pids)>0) THEN 'UNKNOWN'
-              WHEN (SELECT count(*) FROM runs)=0 THEN 'NO'
-              WHEN (SELECT max(started_at) FROM runs)<statement_timestamp()-interval '6 minutes'
-                AND (SELECT jobs_found=4 AND all_off FROM cron_state) THEN 'NO'
-              ELSE 'UNKNOWN'
-            END
-          )::text;
-          SQL
-          psql -X -qAt -v ON_ERROR_STOP=1 -v VERBOSITY=verbose -f "$RUNNER_TEMP/liveness.sql"
-          echo "NARROW_READ_ONLY_LIVENESS_QUERY=PASS"
+          export CONFIRM_PRODUCTION_REF APPROVE_DATABASE_MUTATIONS PROD_V3_FLAG
+          bash "$RUNNER_TEMP/opspilot-prod-094-preflight.sh" ABSENT
+
+      - name: Recheck immediately and apply exact migration 094
+        shell: bash
+        env:
+          PROD_SUPABASE_URL: ${{ secrets.PROD_SUPABASE_URL }}
+          PROD_DB_HOST: ${{ secrets.PROD_DB_HOST }}
+          PGHOST: ${{ secrets.PROD_DB_HOST }}
+          PGPORT: ${{ secrets.PROD_DB_PORT }}
+          PGUSER: ${{ secrets.PROD_DB_USER }}
+          PGDATABASE: ${{ secrets.PROD_DB_NAME }}
+          PGPASSWORD: ${{ secrets.PROD_DB_PASSWORD }}
+          PGSSLMODE: require
+          PGCONNECT_TIMEOUT: "10"
+          PGOPTIONS: "-c default_transaction_read_only=on -c statement_timeout=8000"
+        run: |
+          set -euo pipefail
+          export CONFIRM_PRODUCTION_REF APPROVE_DATABASE_MUTATIONS PROD_V3_FLAG
+          bash "$RUNNER_TEMP/opspilot-prod-094-preflight.sh" ABSENT
+          unset PGOPTIONS
+          export PGOPTIONS="-c statement_timeout=8000 -c lock_timeout=3000"
+          started=$SECONDS
+          if ! psql -X -v ON_ERROR_STOP=1 -f candidate/src/database/migrations/094_normalized_followup_case_members.sql >"$RUNNER_TEMP/migration.out" 2>"$RUNNER_TEMP/migration.err"; then
+            state="$(grep -Eo '[0-9A-Z]{5}' "$RUNNER_TEMP/migration.err" | tail -n 1 || true)"
+            echo "MIGRATION_094=FAIL; SQLSTATE=${state:-UNKNOWN}"
+            exit 1
+          fi
+          echo "MIGRATION_094=PASS; DURATION_SECONDS=$((SECONDS-started))"
+          export PGOPTIONS="-c default_transaction_read_only=on -c statement_timeout=8000"
+          sql="SELECT jsonb_build_object(
+            'objects_ok',
+              to_regclass('public.followup_case_members') IS NOT NULL
+              AND to_regclass('public.followup_case_member_generations') IS NOT NULL
+              AND to_regclass('public.followup_case_cohort_archive') IS NOT NULL
+              AND EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='followup_cases' AND column_name='cohort_version')
+              AND EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='followup_cases' AND column_name='member_generation_id')
+              AND EXISTS(SELECT 1 FROM pg_constraint WHERE conrelid='public.followup_cases'::regclass AND conname='followup_cases_cohort_generation_consistency'),
+            'pointers', (SELECT count(*) FROM public.followup_cases WHERE cohort_version=2 OR member_generation_id IS NOT NULL),
+            'members', (SELECT count(*) FROM public.followup_case_members),
+            'generations', (SELECT count(*) FROM public.followup_case_member_generations),
+            'archives', (SELECT count(*) FROM public.followup_case_cohort_archive),
+            'case_count', (SELECT count(*) FROM public.followup_cases),
+            'cohort_digest', md5(coalesce((SELECT string_agg(
+              fc.id::text || ':' || coalesce(fc.current_state::text,'NULL') || ':'
+                || coalesce(fc.updated_at::text,'NULL') || ':'
+                || coalesce(md5(fc.operational_cohort::text),'NULL'),
+              '|' ORDER BY fc.id
+            ) FROM public.followup_cases fc),'')))::text"
+          result="$(psql -X -qAt -v ON_ERROR_STOP=1 -c "$sql" 2>"$RUNNER_TEMP/schema-verify.err")"
+          RESULT="$result" python - <<'PY'
+          import json, os, sys
+          r=json.loads(os.environ["RESULT"])
+          if not r["objects_ok"] or r["pointers"] != 0 or r["members"] != 0 or r["generations"] != 0 or r["archives"] != 0:
+              print("MIGRATION_SCHEMA_VERIFY=FAIL")
+              sys.exit(1)
+          if str(r["case_count"]) != os.environ.get("BASE_FOLLOWUP_CASES") or r["cohort_digest"] != os.environ.get("BASE_COHORT_DIGEST"):
+              print("MIGRATION_DATA_PRESERVATION=FAIL")
+              sys.exit(1)
+          print("MIGRATION_SCHEMA_VERIFY=PASS")
+          print("MIGRATION_DATA_PRESERVATION=PASS; POINTERS=0")
+          PY
+
+      - name: Read-only full backfill dry-run
+        working-directory: candidate
+        shell: bash
+        env:
+          PROD_SUPABASE_URL: ${{ secrets.PROD_SUPABASE_URL }}
+          PROD_SERVICE_ROLE_KEY: ${{ secrets.PROD_SERVICE_ROLE_KEY }}
+        run: |
+          set -euo pipefail
+          npx tsx src/scripts/opspilot-production-094-gate.ts dry-run
+
+      - name: Recheck Production gates immediately before backfill
+        shell: bash
+        env:
+          PROD_SUPABASE_URL: ${{ secrets.PROD_SUPABASE_URL }}
+          PROD_DB_HOST: ${{ secrets.PROD_DB_HOST }}
+          PGHOST: ${{ secrets.PROD_DB_HOST }}
+          PGPORT: ${{ secrets.PROD_DB_PORT }}
+          PGUSER: ${{ secrets.PROD_DB_USER }}
+          PGDATABASE: ${{ secrets.PROD_DB_NAME }}
+          PGPASSWORD: ${{ secrets.PROD_DB_PASSWORD }}
+          PGSSLMODE: require
+          PGCONNECT_TIMEOUT: "10"
+          PGOPTIONS: "-c default_transaction_read_only=on -c statement_timeout=8000"
+        run: |
+          set -euo pipefail
+          export CONFIRM_PRODUCTION_REF APPROVE_DATABASE_MUTATIONS PROD_V3_FLAG
+          bash "$RUNNER_TEMP/opspilot-prod-094-preflight.sh" PRESENT
+          result="$(psql -X -qAt -v ON_ERROR_STOP=1 -c "SELECT count(*) FROM public.followup_cases WHERE cohort_version=2 OR member_generation_id IS NOT NULL" 2>"$RUNNER_TEMP/pointer-check.err")"
+          test "$result" = "0"
+          echo "BACKFILL_PRECONDITIONS=PASS"
+
+      - name: Apply bounded, resumable backfill
+        working-directory: candidate
+        shell: bash
+        env:
+          PROD_SUPABASE_URL: ${{ secrets.PROD_SUPABASE_URL }}
+          PROD_SERVICE_ROLE_KEY: ${{ secrets.PROD_SERVICE_ROLE_KEY }}
+          APPROVE_DATABASE_MUTATIONS: ${{ inputs.approve_database_mutations }}
+          PROD_DB_HOST: ${{ secrets.PROD_DB_HOST }}
+          PGHOST: ${{ secrets.PROD_DB_HOST }}
+          PGPORT: ${{ secrets.PROD_DB_PORT }}
+          PGUSER: ${{ secrets.PROD_DB_USER }}
+          PGDATABASE: ${{ secrets.PROD_DB_NAME }}
+          PGPASSWORD: ${{ secrets.PROD_DB_PASSWORD }}
+          PGSSLMODE: require
+          PGCONNECT_TIMEOUT: "10"
+          PGOPTIONS: "-c default_transaction_read_only=on -c statement_timeout=8000"
+        run: |
+          set -euo pipefail
+          export CONFIRM_PRODUCTION_REF PROD_V3_FLAG
+          npx tsx src/scripts/opspilot-production-094-gate.ts apply
+
+      - name: Verify every active normalized generation and key set
+        working-directory: candidate
+        shell: bash
+        env:
+          PROD_SUPABASE_URL: ${{ secrets.PROD_SUPABASE_URL }}
+          PROD_SERVICE_ROLE_KEY: ${{ secrets.PROD_SERVICE_ROLE_KEY }}
+        run: |
+          set -euo pipefail
+          npx tsx src/scripts/opspilot-production-094-gate.ts verify
+
+      - name: Final read-only Production, cron, V3, and pointer verification
+        shell: bash
+        env:
+          PROD_SUPABASE_URL: ${{ secrets.PROD_SUPABASE_URL }}
+          PROD_DB_HOST: ${{ secrets.PROD_DB_HOST }}
+          PGHOST: ${{ secrets.PROD_DB_HOST }}
+          PGPORT: ${{ secrets.PROD_DB_PORT }}
+          PGUSER: ${{ secrets.PROD_DB_USER }}
+          PGDATABASE: ${{ secrets.PROD_DB_NAME }}
+          PGPASSWORD: ${{ secrets.PROD_DB_PASSWORD }}
+          PGSSLMODE: require
+          PGCONNECT_TIMEOUT: "10"
+          PGOPTIONS: "-c default_transaction_read_only=on -c statement_timeout=8000"
+        run: |
+          set -euo pipefail
+          export CONFIRM_PRODUCTION_REF APPROVE_DATABASE_MUTATIONS PROD_V3_FLAG
+          bash "$RUNNER_TEMP/opspilot-prod-094-preflight.sh" PRESENT
+          result="$(psql -X -qAt -v ON_ERROR_STOP=1 -c "SELECT jsonb_build_object(
+            'invalid_pointers',(SELECT count(*) FROM public.followup_cases WHERE NOT coalesce((
+              (cohort_version IS NULL AND member_generation_id IS NULL)
+              OR (cohort_version=1 AND member_generation_id IS NULL)
+              OR (cohort_version=2 AND member_generation_id IS NOT NULL)
+            ),false)),
+            'remaining_eligible_v1',(SELECT count(*) FROM public.followup_cases
+              WHERE coalesce(current_state::text,'') <> 'CLOSED'
+                AND operational_cohort IS NOT NULL
+                AND (cohort_version IS NULL OR cohort_version=1 OR member_generation_id IS NULL)),
+            'jobs_found',(SELECT count(*) FROM cron.job WHERE jobid::text IN ('14','15','16','17')),
+            'jobs_off',coalesce((SELECT bool_and(active IS FALSE) FROM cron.job WHERE jobid::text IN ('14','15','16','17')),false),
+            'migration_tables',(SELECT count(*) FROM (VALUES
+              ('public.followup_case_members'),('public.followup_case_member_generations'),('public.followup_case_cohort_archive')
+            ) x(name) WHERE to_regclass(x.name) IS NOT NULL)
+          )::text" 2>"$RUNNER_TEMP/final-verify.err")"
+          RESULT="$result" python - <<'PY'
+          import json, os, sys
+          r=json.loads(os.environ["RESULT"])
+          if r["invalid_pointers"] != 0 or r["remaining_eligible_v1"] != 0 or r["jobs_found"] != 4 or not r["jobs_off"] or r["migration_tables"] != 3:
+              print("FINAL_DATABASE_VERIFICATION=FAIL")
+              sys.exit(1)
+          print("FINAL_DATABASE_VERIFICATION=PASS")
+          print("INVALID_POINTERS=0")
+          print("MISSING_GENERATIONS=0; KEYSET_AND_FIELD_PARITY=PASS (bounded PostgREST verifier)")
+          print("ELIGIBLE_ACTIVE_COHORT_CASES=ALL_BACKFILLED")
+          print("CRON_14_17=OFF")
+          print("V3=OFF; SOURCE=GITHUB_ENVIRONMENT_VARIABLE")
+          print("RUNTIME_DEPLOYED=NO")
+          print("CLEANUP_SCHEDULED=NO")
+          PY
