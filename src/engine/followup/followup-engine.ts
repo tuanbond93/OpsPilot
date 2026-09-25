@@ -37,6 +37,7 @@ import {
 
 const FOLLOWUP_CASE_READ_PAGE_SIZE = 100;
 const FOLLOWUP_LEGACY_READ_BATCH_SIZE = 100;
+const FOLLOWUP_CASE_IDENTITY_READ_BATCH_SIZE = 100;
 
 interface LegacyRecoveryEvidence {
   events: FollowupEventEvidence[] | null;
@@ -266,6 +267,40 @@ export class FollowupEngine {
     // A failed read must abort; replacing an unavailable baseline would erase old work.
     const existing = await this.loadOperationalCases(metrics);
     const byKey = new Map(existing.map(item => [item.incident_key, item]));
+    const incomingByKey = new Map<string, string>();
+    const incomingById = new Map<string, string>();
+    for (const incident of incidents) {
+      const keyOwner = incomingByKey.get(incident.incidentKey);
+      if (keyOwner && keyOwner !== incident.incidentId) {
+        throw new Error(`FOLLOWUP_CASE_INCOMING_KEY_IDENTITY_AMBIGUOUS:${incident.incidentKey}`);
+      }
+      const idOwner = incomingById.get(incident.incidentId);
+      if (idOwner && idOwner !== incident.incidentKey) {
+        throw new Error(`FOLLOWUP_CASE_INCOMING_INCIDENT_ID_IDENTITY_AMBIGUOUS:${incident.incidentId}`);
+      }
+      incomingByKey.set(incident.incidentKey, incident.incidentId);
+      incomingById.set(incident.incidentId, incident.incidentKey);
+    }
+    // The operational page deliberately omits CLOSED cases. Resolve only current
+    // incident keys that were not found there so a recurrence reuses its stable
+    // parent identity instead of attempting a second INSERT for the same incident.
+    const missingIncidentKeys = [...new Set(incidents
+      .map(incident => incident.incidentKey)
+      .filter(incidentKey => !byKey.has(incidentKey)))];
+    for (let start = 0; start < missingIncidentKeys.length; start += FOLLOWUP_CASE_IDENTITY_READ_BATCH_SIZE) {
+      const keys = missingIncidentKeys.slice(start, start + FOLLOWUP_CASE_IDENTITY_READ_BATCH_SIZE);
+      metrics.caseReads++;
+      const matchingCases = await this.timeOperation(metrics, "caseRead", () =>
+        this.followupRepo!.getCasesByIncidentKeys(keys)
+      );
+      for (const matchingCase of matchingCases) {
+        const existingMatch = byKey.get(matchingCase.incident_key);
+        if (existingMatch && existingMatch.id !== matchingCase.id) {
+          throw new Error(`FOLLOWUP_CASE_INCIDENT_KEY_IDENTITY_AMBIGUOUS:${matchingCase.incident_key}`);
+        }
+        byKey.set(matchingCase.incident_key, matchingCase);
+      }
+    }
     const membership = new Map(orders.map(order => [order.orderCode, evidenceFromOrder(order)]));
     // Routine operational checkpoints are Rillnet-first. GHN enrichment is
     // deliberately outside this synchronous checkpoint path.

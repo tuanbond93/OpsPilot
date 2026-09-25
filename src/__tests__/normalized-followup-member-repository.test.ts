@@ -136,6 +136,98 @@ function parentRow(): FollowupCaseRow {
 }
 
 describe("normalized follow-up repository write path", () => {
+  it("reuses an existing CLOSED parent for the same stable key and incident id", async () => {
+    const client = new MemorySupabase();
+    client.tables.set("followup_cases", [{ ...parentRow(), current_state: "CLOSED" }]);
+    const repository = new SupabaseFollowupRepository(client as unknown as SupabaseClient);
+
+    const persisted = await repository.persistOperationalCohortGenerations([{
+      ...parentRow(),
+      current_state: "CLOSED",
+      operational_cohort: cohort(),
+    } as any], RUN_ID);
+
+    expect(persisted).toMatchObject([{ id: CASE_ID, incident_id: "incident-a", incident_key: "warehouse-a:KHO_TON" }]);
+    expect(client.tables.get("followup_cases")).toHaveLength(1);
+    expect(client.tables.get("followup_cases")?.[0].id).toBe(CASE_ID);
+  });
+
+  it("reuses the stable parent when its current source incident id is refreshed", async () => {
+    const client = new MemorySupabase();
+    client.tables.set("followup_cases", [parentRow()]);
+    const repository = new SupabaseFollowupRepository(client as unknown as SupabaseClient);
+
+    const persisted = await repository.persistOperationalCohortGenerations([{
+      ...parentRow(),
+      incident_id: "incident-refreshed",
+      operational_cohort: cohort(),
+    } as any], RUN_ID);
+
+    expect(persisted).toMatchObject([{ id: CASE_ID, incident_id: "incident-refreshed", incident_key: "warehouse-a:KHO_TON" }]);
+    expect(client.tables.get("followup_cases")).toHaveLength(1);
+    expect(client.tables.get("followup_cases")?.[0]).toMatchObject({ id: CASE_ID, incident_id: "incident-refreshed" });
+  });
+
+  it("rejects an incident id owned by another stable key before any write", async () => {
+    const client = new MemorySupabase();
+    client.tables.set("followup_cases", [parentRow()]);
+    const repository = new SupabaseFollowupRepository(client as unknown as SupabaseClient);
+    const before = structuredClone(client.tables.get("followup_cases"));
+
+    await expect(repository.persistOperationalCohortGenerations([{
+      incident_id: "incident-a",
+      incident_key: "warehouse-b:KHO_TON",
+      current_state: "FOLLOWING_UP",
+      first_detected_at: UPDATED_AT,
+      last_checked_at: UPDATED_AT,
+      operational_cohort: cohort(),
+    } as any], RUN_ID)).rejects.toThrow("FOLLOWUP_CASE_INCIDENT_ID_OWNED_BY_DIFFERENT_KEY");
+
+    expect(client.tables.get("followup_cases")).toEqual(before);
+    expect(client.tables.get("followup_case_member_generations") || []).toHaveLength(0);
+    expect(client.tables.get("followup_case_members") || []).toHaveLength(0);
+    expect(client.tables.get("followup_case_cohort_archive") || []).toHaveLength(0);
+  });
+
+  it("rejects a stable-key match without the existing parent id before any write", async () => {
+    const client = new MemorySupabase();
+    client.tables.set("followup_cases", [{ ...parentRow(), current_state: "CLOSED" }]);
+    const repository = new SupabaseFollowupRepository(client as unknown as SupabaseClient);
+
+    await expect(repository.persistOperationalCohortGenerations([{
+      incident_id: "incident-a",
+      incident_key: "warehouse-a:KHO_TON",
+      current_state: "FOLLOWING_UP",
+      first_detected_at: UPDATED_AT,
+      last_checked_at: UPDATED_AT,
+      operational_cohort: cohort(),
+    } as any], RUN_ID)).rejects.toThrow("FOLLOWUP_CASE_STABLE_KEY_MUST_REUSE_EXISTING_ID");
+
+    expect(client.tables.get("followup_cases")).toHaveLength(1);
+    expect(client.tables.get("followup_cases")?.[0].id).toBe(CASE_ID);
+    expect(client.tables.get("followup_case_members") || []).toHaveLength(0);
+    expect(client.tables.get("followup_case_member_generations") || []).toHaveLength(0);
+  });
+
+  it("rejects duplicate candidate identities before any write", async () => {
+    const client = new MemorySupabase();
+    const repository = new SupabaseFollowupRepository(client as unknown as SupabaseClient);
+    const mutation: any = {
+      incident_id: "incident-a",
+      incident_key: "warehouse-a:KHO_TON",
+      current_state: "FOLLOWING_UP",
+      first_detected_at: UPDATED_AT,
+      last_checked_at: UPDATED_AT,
+      operational_cohort: cohort(),
+    };
+
+    await expect(repository.persistOperationalCohortGenerations([mutation, { ...mutation }], RUN_ID))
+      .rejects.toThrow("FOLLOWUP_CASE_DUPLICATE_INCOMING_KEY");
+    expect(client.tables.get("followup_cases") || []).toHaveLength(0);
+    expect(client.tables.get("followup_case_members") || []).toHaveLength(0);
+    expect(client.tables.get("followup_case_member_generations") || []).toHaveLength(0);
+  });
+
   it("archives the complete legacy verification map before filtering active V2 members", async () => {
     const client = new MemorySupabase();
     const legacy = cohort();

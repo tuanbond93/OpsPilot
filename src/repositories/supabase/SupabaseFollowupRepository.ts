@@ -76,6 +76,7 @@ const FOLLOWUP_EVENT_COLUMNS = [
 
 const FOLLOWUP_CASE_PAGE_SIZE = 100;
 const FOLLOWUP_EVIDENCE_BATCH_SIZE = 100;
+const FOLLOWUP_CASE_IDENTITY_BATCH_SIZE = 100;
 const FOLLOWUP_CASE_LINK_COLUMNS = ["id", "incident_id", "incident_key"].join(", ");
 const FOLLOWUP_MEMBER_COLUMNS = [
   "followup_case_id", "generation_id", "source_sync_run_id", "order_code", "customer_id",
@@ -108,6 +109,82 @@ const FOLLOWUP_PROCESSING_CASE_COLUMNS = [
 export class SupabaseFollowupRepository extends BaseRepository implements IFollowupRepository {
   constructor(client: SupabaseClient) {
     super(client);
+  }
+
+  private async readCaseIdentities(
+    column: "id" | "incident_id" | "incident_key",
+    values: string[],
+  ): Promise<FollowupCaseLinkRow[]> {
+    const uniqueValues = [...new Set(values.filter(Boolean))];
+    const rows: FollowupCaseLinkRow[] = [];
+    for (let start = 0; start < uniqueValues.length; start += FOLLOWUP_CASE_IDENTITY_BATCH_SIZE) {
+      const batch = uniqueValues.slice(start, start + FOLLOWUP_CASE_IDENTITY_BATCH_SIZE);
+      const query = this.client
+        .from("followup_cases")
+        .select(FOLLOWUP_CASE_LINK_COLUMNS)
+        .in(column, batch);
+      rows.push(...await this.executeMany<FollowupCaseLinkRow>(query as unknown as Promise<{
+        data: FollowupCaseLinkRow[] | null;
+        error: unknown;
+      }>));
+    }
+    return rows;
+  }
+
+  /**
+   * Fail closed on ambiguous case identity before any generation, archive,
+   * member, or parent-pointer write. incident_key is the stable business key;
+   * incident_id may change when the source incident is refreshed, but it may
+   * never already belong to another stable key.
+   */
+  private async assertCaseIdentityBatch(cases: FollowupCaseUpsert[]): Promise<void> {
+    const incomingByKey = new Map<string, FollowupCaseUpsert>();
+    const incomingByIncidentId = new Map<string, FollowupCaseUpsert>();
+    for (const caseData of cases) {
+      if (incomingByKey.has(caseData.incident_key)) {
+        throw new Error(`FOLLOWUP_CASE_DUPLICATE_INCOMING_KEY:${caseData.incident_key}`);
+      }
+      incomingByKey.set(caseData.incident_key, caseData);
+      const incidentOwner = incomingByIncidentId.get(caseData.incident_id);
+      if (incidentOwner) {
+        throw new Error(`FOLLOWUP_CASE_DUPLICATE_INCOMING_INCIDENT_ID:${caseData.incident_id}`);
+      }
+      incomingByIncidentId.set(caseData.incident_id, caseData);
+    }
+
+    const [keyRows, incidentRows] = await Promise.all([
+      this.readCaseIdentities("incident_key", [...incomingByKey.keys()]),
+      this.readCaseIdentities("incident_id", [...incomingByIncidentId.keys()]),
+    ]);
+    const indexRows = (rows: FollowupCaseLinkRow[], identity: keyof FollowupCaseLinkRow, label: string) => {
+      const indexed = new Map<string, FollowupCaseLinkRow>();
+      for (const row of rows) {
+        const value = row[identity];
+        const previous = indexed.get(value);
+        if (previous && previous.id !== row.id) {
+          throw new Error(`FOLLOWUP_CASE_EXISTING_IDENTITY_AMBIGUOUS:${label}`);
+        }
+        indexed.set(value, row);
+      }
+      return indexed;
+    };
+    const existingByKey = indexRows(keyRows, "incident_key", "incident_key");
+    const existingByIncidentId = indexRows(incidentRows, "incident_id", "incident_id");
+
+    for (const caseData of cases) {
+      const keyOwner = existingByKey.get(caseData.incident_key);
+      const incidentOwner = existingByIncidentId.get(caseData.incident_id);
+
+      if (keyOwner && (!caseData.id || keyOwner.id !== caseData.id)) {
+        throw new Error(`FOLLOWUP_CASE_STABLE_KEY_MUST_REUSE_EXISTING_ID:${caseData.incident_key}`);
+      }
+      if (caseData.id && !keyOwner) {
+        throw new Error(`FOLLOWUP_CASE_STABLE_KEY_LOOKUP_MISMATCH:${caseData.incident_key}`);
+      }
+      if (incidentOwner && incidentOwner.incident_key !== caseData.incident_key) {
+        throw new Error(`FOLLOWUP_CASE_INCIDENT_ID_OWNED_BY_DIFFERENT_KEY:${caseData.incident_id}`);
+      }
+    }
   }
 
   async getCaseById(id: string): Promise<FollowupCaseRow | null> {
@@ -267,6 +344,8 @@ export class SupabaseFollowupRepository extends BaseRepository implements IFollo
       }
       metadataByIncident.set(caseData.incident_key, metadata);
     }
+
+    await this.assertCaseIdentityBatch(cases);
 
     const parentByIncident = new Map<string, { id: string; updated_at: string }>();
     const newCases = cases.filter((caseData) => !caseData.id);
