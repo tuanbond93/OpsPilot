@@ -27,15 +27,25 @@ jobs:
           expected_ref='refs/heads/forensic/prod-followup-20h'
           expected_workflow_ref="${GITHUB_REPOSITORY}/.github/workflows/opspilot-production-preflight.yml@forensic/prod-followup-20h"
           test "$GITHUB_REF" = "$expected_ref"
+          echo "WORKFLOW_BRANCH_GUARD=PASS"
           test "$GITHUB_WORKFLOW_REF" = "$expected_workflow_ref"
-          echo "WORKFLOW_REF_VERIFIED=YES"
-          echo "DISPATCH_REF=forensic/prod-followup-20h"
+          echo "WORKFLOW_REF_GUARD=PASS"
 
       - name: Checkout forensic branch without write credentials
         uses: actions/checkout@v4
         with:
           ref: ${{ github.ref }}
           persist-credentials: false
+
+      - name: Verify checked-out commit before Production access
+        shell: bash
+        run: |
+          set -euo pipefail
+          ACTUAL_SHA="$(git rev-parse HEAD)"
+          test -n "${GITHUB_SHA:-}"
+          test "$ACTUAL_SHA" = "$GITHUB_SHA"
+          echo "CHECKOUT_SHA_GUARD=PASS"
+          echo "CHECKED_OUT_SHA=$ACTUAL_SHA"
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
