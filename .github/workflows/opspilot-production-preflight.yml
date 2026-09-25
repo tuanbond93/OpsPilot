@@ -1,0 +1,58 @@
+name: OpsPilot Production Read-Only 20H Follow-up Forensic
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: opspilot-production-preflight
+  cancel-in-progress: false
+
+jobs:
+  forensic:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: opspilot-production-rollout
+    env:
+      EXPECTED_PRODUCTION_REF: elwnbwimgzijuelfjdsq
+      REJECTED_SHADOW_REF: qkrpbompjwxfpicjfoub
+
+    steps:
+      - name: Verify selected workflow ref before checkout or queries
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected_ref='refs/heads/forensic/prod-followup-20h'
+          expected_workflow_ref="${GITHUB_REPOSITORY}/.github/workflows/opspilot-production-preflight.yml@forensic/prod-followup-20h"
+          test "$GITHUB_REF" = "$expected_ref"
+          test "$GITHUB_WORKFLOW_REF" = "$expected_workflow_ref"
+          echo "WORKFLOW_REF_VERIFIED=YES"
+          echo "DISPATCH_REF=forensic/prod-followup-20h"
+
+      - name: Checkout forensic branch without write credentials
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref }}
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install PostgreSQL client
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes postgresql-client
+
+      - name: Install production Supabase client dependency
+        run: npm ci --ignore-scripts --omit=dev
+
+      - name: Verify production data without writes
+        env:
+          SUPABASE_URL: ${{ secrets.PROD_SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.PROD_SERVICE_ROLE_KEY }}
+          SUPABASE_DATABASE_URL: ${{ secrets.PROD_DATABASE_URL }}
+        run: node .github/scripts/opspilot-prod-followup-forensic.mjs
