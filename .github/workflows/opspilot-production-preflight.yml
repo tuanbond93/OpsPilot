@@ -101,9 +101,10 @@ jobs:
           cache-dependency-path: candidate/package-lock.json
 
       - name: Install candidate dependencies
-        working-directory: candidate
         shell: bash
-        run: npm ci --ignore-scripts --no-audit --no-fund
+        run: |
+          cd candidate
+          npm install --ignore-scripts --no-audit --no-fund --package-lock=false
 
       - name: Install PostgreSQL client
         shell: bash
