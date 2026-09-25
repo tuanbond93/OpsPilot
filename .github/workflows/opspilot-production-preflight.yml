@@ -25,7 +25,10 @@ jobs:
         run: |
           set -euo pipefail
           expected_ref='refs/heads/forensic/prod-followup-20h'
-          expected_workflow_ref="${GITHUB_REPOSITORY}/.github/workflows/opspilot-production-preflight.yml@forensic/prod-followup-20h"
+          expected_workflow_ref="${GITHUB_REPOSITORY}/.github/workflows/opspilot-production-preflight.yml@refs/heads/forensic/prod-followup-20h"
+          echo "ACTUAL_GITHUB_REF=$GITHUB_REF"
+          echo "ACTUAL_GITHUB_WORKFLOW_REF=$GITHUB_WORKFLOW_REF"
+          echo "ACTUAL_GITHUB_SHA=$GITHUB_SHA"
           test "$GITHUB_REF" = "$expected_ref"
           echo "WORKFLOW_BRANCH_GUARD=PASS"
           test "$GITHUB_WORKFLOW_REF" = "$expected_workflow_ref"
