@@ -28,6 +28,7 @@ export interface ISyncRunRepository {
     }
   ): Promise<SyncRunRow>;
   getUnfinishedSyncRun(): Promise<SyncRunRow | null>;
+  getUnfinishedSyncRuns(limit?: number): Promise<SyncRunRow[]>;
   getLatestSyncRun(): Promise<SyncRunRow | null>;
   getLatestSyncRuns(limit?: number): Promise<SyncRunRow[]>;
   getPreviousSuccessfulSyncRun(currentSyncRunId: string): Promise<SyncRunRow | null>;

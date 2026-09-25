@@ -129,6 +129,18 @@ export class SupabaseSyncRunRepository extends BaseRepository implements ISyncRu
     return this.executeOptional<SyncRunRow>(query as any);
   }
 
+  async getUnfinishedSyncRuns(limit: number = 50): Promise<SyncRunRow[]> {
+    const query = this.client
+      .from("sync_runs")
+      .select("*")
+      .or("status.eq.running,status.eq.failed")
+      .neq("current_phase", "COMPLETED")
+      .order("started_at", { ascending: false })
+      .limit(limit);
+
+    return this.executeMany<SyncRunRow>(query as any);
+  }
+
   async getLatestSyncRun(): Promise<SyncRunRow | null> {
     const query = this.client
       .from("sync_runs")
