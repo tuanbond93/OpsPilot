@@ -16,13 +16,14 @@ on:
           - "NO"
           - "YES"
       execution_mode:
-        description: "AUDIT_ONLY and DRY_RUN_ONLY are read-only; APPLY_BACKFILL requires explicit YES"
+        description: "AUDIT_ONLY, DRY_RUN_ONLY, and POST_BACKFILL_VERIFY are read-only; APPLY_BACKFILL requires explicit YES"
         required: true
         default: "AUDIT_ONLY"
         type: choice
         options:
           - "AUDIT_ONLY"
           - "DRY_RUN_ONLY"
+          - "POST_BACKFILL_VERIFY"
           - "APPLY_BACKFILL"
 
 permissions:
@@ -41,7 +42,7 @@ jobs:
     env:
       EXPECTED_PRODUCTION_REF: elwnbwimgzijuelfjdsq
       SHADOW_REF: qkrpbompjwxfpicjfoub
-      TESTED_CANDIDATE_SHA: 37130c5d8c7e003180b53e34b346df984faad205
+      TESTED_CANDIDATE_SHA: f61880ffd6af92a446d35b54b322abe14feac499
       CONFIRM_PRODUCTION_REF: ${{ inputs.confirm_production_ref }}
       APPROVE_DATABASE_MUTATIONS: ${{ inputs.approve_database_mutations }}
       PROD_EXECUTION_MODE: ${{ inputs.execution_mode }}
@@ -69,12 +70,15 @@ jobs:
               print("PRODUCTION_IDENTITY=FAIL; URL_REF_MISMATCH")
               sys.exit(1)
           mode = os.environ.get("PROD_EXECUTION_MODE")
-          if mode not in ("AUDIT_ONLY", "DRY_RUN_ONLY", "APPLY_BACKFILL"):
+          if mode not in ("AUDIT_ONLY", "DRY_RUN_ONLY", "POST_BACKFILL_VERIFY", "APPLY_BACKFILL"):
               print("EXECUTION_MODE=FAIL")
               sys.exit(1)
           approval = os.environ.get("APPROVE_DATABASE_MUTATIONS")
           if mode == "APPLY_BACKFILL" and approval != "YES":
               print("DATABASE_MUTATION_APPROVAL=FAIL")
+              sys.exit(1)
+          if mode == "POST_BACKFILL_VERIFY" and approval != "NO":
+              print("POST_BACKFILL_VERIFY_REQUIRES_APPROVAL_NO")
               sys.exit(1)
           if mode != "APPLY_BACKFILL" and approval == "YES":
               print("READ_ONLY_MODE_REQUIRES_APPROVAL_NO")
@@ -96,7 +100,7 @@ jobs:
       - name: Checkout exact tested migration and backfill candidate
         uses: actions/checkout@v4
         with:
-          ref: 37130c5d8c7e003180b53e34b346df984faad205
+          ref: f61880ffd6af92a446d35b54b322abe14feac499
           path: candidate
           persist-credentials: false
 
@@ -153,12 +157,15 @@ jobs:
               print("PRODUCTION_IDENTITY=FAIL")
               sys.exit(1)
           mode = os.environ.get("PROD_EXECUTION_MODE")
-          if mode not in ("AUDIT_ONLY", "DRY_RUN_ONLY", "APPLY_BACKFILL"):
+          if mode not in ("AUDIT_ONLY", "DRY_RUN_ONLY", "POST_BACKFILL_VERIFY", "APPLY_BACKFILL"):
               print("EXECUTION_MODE=FAIL")
               sys.exit(1)
           approval = os.environ.get("APPROVE_DATABASE_MUTATIONS")
           if mode == "APPLY_BACKFILL" and approval != "YES":
               print("DATABASE_MUTATION_APPROVAL=FAIL")
+              sys.exit(1)
+          if mode == "POST_BACKFILL_VERIFY" and approval != "NO":
+              print("POST_BACKFILL_VERIFY_REQUIRES_APPROVAL_NO")
               sys.exit(1)
           if mode != "APPLY_BACKFILL" and approval == "YES":
               print("READ_ONLY_MODE_REQUIRES_APPROVAL_NO")
@@ -231,10 +238,33 @@ jobs:
             'migration_constraint_present',(SELECT consistency_constraint FROM artifacts),
             'pointer_count',(SELECT count(*) FROM public.followup_cases
               WHERE cohort_version=2 OR member_generation_id IS NOT NULL),
+            'invalid_pointers',(SELECT count(*) FROM public.followup_cases WHERE NOT coalesce((
+              (cohort_version IS NULL AND member_generation_id IS NULL)
+              OR (cohort_version=1 AND member_generation_id IS NULL)
+              OR (cohort_version=2 AND member_generation_id IS NOT NULL)
+            ),false)),
+            'v2_active_cases',(SELECT count(*) FROM public.followup_cases
+              WHERE coalesce(current_state::text,'') <> 'CLOSED'
+                AND cohort_version=2 AND member_generation_id IS NOT NULL),
+            'null_cohort_v1_cases',(SELECT count(*) FROM public.followup_cases
+              WHERE coalesce(current_state::text,'') <> 'CLOSED'
+                AND (cohort_version IS NULL OR cohort_version=1)
+                AND member_generation_id IS NULL AND operational_cohort IS NULL),
+            'remaining_eligible_v1',(SELECT count(*) FROM public.followup_cases
+              WHERE coalesce(current_state::text,'') <> 'CLOSED'
+                AND operational_cohort IS NOT NULL
+                AND (cohort_version IS NULL OR cohort_version=1 OR member_generation_id IS NULL)),
+            'committed_pointer_count',(SELECT count(*) FROM public.followup_cases AS f
+              JOIN public.followup_case_member_generations AS g
+                ON g.followup_case_id=f.id AND g.generation_id=f.member_generation_id
+              WHERE f.member_generation_id IS NOT NULL
+                AND g.generation_status::text='COMMITTED' AND g.committed_at IS NOT NULL),
             'member_count',(SELECT count(*) FROM public.followup_case_members),
             'generation_count',(SELECT count(*) FROM public.followup_case_member_generations),
             'archive_count',(SELECT count(*) FROM public.followup_case_cohort_archive),
             'followup_cases_total',(SELECT count(*) FROM public.followup_cases),
+            'active_cases_total',(SELECT count(*) FROM public.followup_cases
+              WHERE coalesce(current_state::text,'') <> 'CLOSED'),
             'active_v1_nonnull_cohorts',(
               SELECT count(*) FROM public.followup_cases
               WHERE coalesce(current_state::text,'') <> 'CLOSED'
@@ -271,7 +301,7 @@ jobs:
               "no_recent_running_checkpoint": g["recent_running_runs"] == 0,
           }
           artifacts=g["migration_table_count"] + g["migration_column_count"] + int(g["migration_constraint_present"])
-          if mode in ("PRESENT_EMPTY", "PRESENT"):
+          if mode in ("PRESENT_EMPTY", "PRESENT", "POST_BACKFILL_VERIFY"):
               checks["migration_094_complete"] = (
                   g["migration_table_count"] == 3
                   and g["migration_column_count"] == 2
@@ -284,6 +314,14 @@ jobs:
                       and g["generation_count"] == 0
                       and g["archive_count"] == 0
                   )
+              if mode == "POST_BACKFILL_VERIFY":
+                  checks["post_backfill_counts_valid"] = (
+                      g["pointer_count"] > 0
+                      and g["invalid_pointers"] == 0
+                      and g["committed_pointer_count"] == g["pointer_count"]
+                      and g["remaining_eligible_v1"] == 0
+                      and g["v2_active_cases"] > 0
+                  )
           else:
               checks["mode_valid"] = False
           failed=[name for name,ok in checks.items() if not ok]
@@ -293,6 +331,13 @@ jobs:
           print("READ_ONLY_PREFLIGHT=PASS; MODE=" + mode)
           print("MIGRATION_094=APPLIED; TABLES=" + str(g["migration_table_count"]) + "; COLUMNS=" + str(g["migration_column_count"]) + "; CONSTRAINT=" + str(g["migration_constraint_present"]))
           print("V2_POINTERS=" + str(g["pointer_count"]) + "; MEMBERS=" + str(g["member_count"]) + "; GENERATIONS=" + str(g["generation_count"]) + "; ARCHIVES=" + str(g["archive_count"]))
+          if mode == "POST_BACKFILL_VERIFY":
+              print("ACTIVE_CASES_TOTAL=" + str(g["active_cases_total"]))
+              print("V2_ACTIVE_CASES=" + str(g["v2_active_cases"]))
+              print("NULL_COHORT_V1_CASES=" + str(g["null_cohort_v1_cases"]))
+              print("REMAINING_ELIGIBLE_V1_WITH_COHORT=" + str(g["remaining_eligible_v1"]))
+              print("INVALID_POINTERS=" + str(g["invalid_pointers"]))
+              print("MISSING_GENERATIONS=" + str(g["pointer_count"] - g["committed_pointer_count"]))
           print("FOLLOWUP_CASES_TOTAL=" + str(g["followup_cases_total"]))
           print("ACTIVE_V1_NONNULL_COHORTS=" + str(g["active_v1_nonnull_cohorts"]))
           print("ACTIVE_V1_NULL_COHORTS=" + str(g["active_v1_null_cohorts"]))
@@ -597,11 +642,10 @@ jobs:
             }
             return value;
           }
-          async function allActiveCohortCases(afterId: string | null): Promise<any[]> {
+          async function allPointedCohortCases(afterId: string | null): Promise<any[]> {
             let q = (client.from("followup_cases") as any)
               .select(V1_FIELDS)
-              .neq("current_state", "CLOSED")
-              .not("operational_cohort", "is", null)
+              .not("member_generation_id", "is", null)
               .order("id", { ascending: true })
               .limit(PAGE_CASES);
             if (afterId) q = q.gt("id", afterId);
@@ -624,12 +668,20 @@ jobs:
               if (page.length < MEMBER_PAGE) return rows;
             }
           }
-          async function verifyAll(): Promise<void> {
+          async function countPointedV2Cases(): Promise<number> {
+            const { count, error } = await (client.from("followup_cases") as any)
+              .select("id", { count: "exact", head: true })
+              .eq("cohort_version", 2)
+              .not("member_generation_id", "is", null);
+            if (error) throw new Error("POINTED_V2_COUNT_FAILED");
+            return count || 0;
+          }
+          async function verifyAll(expectedOverride?: number): Promise<void> {
             let cursor: string | null = null;
             let verified = 0;
             let invalidParents = 0;
             for (;;) {
-              const cases = await allActiveCohortCases(cursor);
+              const cases = await allPointedCohortCases(cursor);
               if (!cases.length) break;
               const ids = cases.map((row: any) => row.id);
               const { data: archives, error: archiveError } = await (client.from("followup_case_cohort_archive") as any)
@@ -680,17 +732,22 @@ jobs:
               .or("cohort_version.is.null,cohort_version.eq.1");
             if (remainingError) throw new Error("REMAINING_V1_COUNT_FAILED");
             const nullCases = await countNullCohortV1();
-            const expected = Number(requireEnv("BACKFILL_WOULD_MIGRATE"));
+            const expected = expectedOverride ?? Number(requireEnv("BACKFILL_WOULD_MIGRATE"));
             if (invalidParents !== 0 || (remaining || 0) !== 0 || verified !== expected) {
               throw new Error("POINTER_OR_BACKFILL_COUNT_MISMATCH");
             }
             appendFileSync(requireEnv("GITHUB_ENV"), "BACKFILL_NULL_CASES_FINAL=" + nullCases + "\n");
-            console.log("BACKFILL_PARITY=PASS");
+            console.log(expectedOverride === undefined ? "BACKFILL_PARITY=PASS" : "POST_BACKFILL_PARITY=PASS");
             console.log("V2_CASES_VERIFIED=" + verified);
             console.log("NULL_COHORT_V1_CASES_REMAINING=" + nullCases);
             console.log("INVALID_POINTERS=0");
             console.log("MISSING_GENERATIONS=0");
             console.log("KEYSET_OR_FIELD_MISMATCHES=0");
+          }
+          async function verifyPostBackfill(): Promise<void> {
+            const expected = await countPointedV2Cases();
+            if (expected === 0) throw new Error("NO_ACTIVE_V2_CASES_FOUND");
+            await verifyAll(expected);
           }
           async function main(): Promise<void> {
             requireEnv("PROD_SUPABASE_URL");
@@ -700,6 +757,7 @@ jobs:
             const mode = process.argv[2];
             if (mode === "metadata-audit") await auditMetadata();
             else if (mode === "dry-run") await dryRun();
+            else if (mode === "verify-post-backfill") await verifyPostBackfill();
             else if (mode === "apply") await applyBackfill();
             else if (mode === "verify") await verifyAll();
             else throw new Error("MODE_INVALID");
@@ -727,9 +785,14 @@ jobs:
         run: |
           set -euo pipefail
           export CONFIRM_PRODUCTION_REF APPROVE_DATABASE_MUTATIONS PROD_V3_FLAG
-          bash "$RUNNER_TEMP/opspilot-prod-094-preflight.sh" PRESENT_EMPTY
+          preflight_mode="PRESENT_EMPTY"
+          if [[ "$PROD_EXECUTION_MODE" == "POST_BACKFILL_VERIFY" ]]; then
+            preflight_mode="POST_BACKFILL_VERIFY"
+          fi
+          bash "$RUNNER_TEMP/opspilot-prod-094-preflight.sh" "$preflight_mode"
 
       - name: Reload PostgREST schema cache and probe normalized columns
+        if: inputs.execution_mode != 'POST_BACKFILL_VERIFY'
         shell: bash
         env:
           PROD_SUPABASE_URL: ${{ secrets.PROD_SUPABASE_URL }}
@@ -782,7 +845,7 @@ jobs:
           npx tsx src/scripts/opspilot-production-094-gate.ts metadata-audit
 
       - name: Read-only full backfill dry-run
-        if: inputs.execution_mode != 'AUDIT_ONLY'
+        if: inputs.execution_mode == 'DRY_RUN_ONLY' || inputs.execution_mode == 'APPLY_BACKFILL'
         working-directory: candidate
         shell: bash
         env:
@@ -791,6 +854,18 @@ jobs:
         run: |
           set -euo pipefail
           npx tsx src/scripts/opspilot-production-094-gate.ts dry-run
+
+      - name: Read-only post-backfill generation and parity verification
+        if: inputs.execution_mode == 'POST_BACKFILL_VERIFY'
+        working-directory: candidate
+        shell: bash
+        env:
+          PROD_SUPABASE_URL: ${{ secrets.PROD_SUPABASE_URL }}
+          PROD_SERVICE_ROLE_KEY: ${{ secrets.PROD_SERVICE_ROLE_KEY }}
+        run: |
+          set -euo pipefail
+          test "${APPROVE_DATABASE_MUTATIONS}" = "NO"
+          npx tsx src/scripts/opspilot-production-094-gate.ts verify-post-backfill
 
       - name: Recheck Production gates immediately before backfill
         if: inputs.execution_mode == 'APPLY_BACKFILL'
