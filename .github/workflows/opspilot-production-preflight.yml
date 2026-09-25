@@ -373,7 +373,7 @@ jobs:
               throw new Error("BASELINE_KEY_INVALID");
             }
             if (!text(cohort.day) || !isDate(cohort.capturedAt, false)
-                || (cohort.lastCheckpoint !== undefined && !isDate(cohort.lastCheckpoint, false))) {
+                || (cohort.lastCheckpoint !== undefined && !isCheckpointKey(cohort.lastCheckpoint))) {
               throw new Error("COHORT_METADATA_INVALID");
             }
             if (cohort.verification !== undefined) {
