@@ -41,7 +41,7 @@ jobs:
     env:
       EXPECTED_PRODUCTION_REF: elwnbwimgzijuelfjdsq
       SHADOW_REF: qkrpbompjwxfpicjfoub
-      TESTED_CANDIDATE_SHA: aab4126d052c10091e125cfa7cc50dcf0247a068
+      TESTED_CANDIDATE_SHA: 37130c5d8c7e003180b53e34b346df984faad205
       CONFIRM_PRODUCTION_REF: ${{ inputs.confirm_production_ref }}
       APPROVE_DATABASE_MUTATIONS: ${{ inputs.approve_database_mutations }}
       PROD_EXECUTION_MODE: ${{ inputs.execution_mode }}
@@ -96,7 +96,7 @@ jobs:
       - name: Checkout exact tested migration and backfill candidate
         uses: actions/checkout@v4
         with:
-          ref: aab4126d052c10091e125cfa7cc50dcf0247a068
+          ref: 37130c5d8c7e003180b53e34b346df984faad205
           path: candidate
           persist-credentials: false
 
@@ -442,6 +442,12 @@ jobs:
             let wouldMigrate = 0;
             let wouldFail = 0;
             let memberTotal = 0;
+            let verificationFailureKeysTotal = 0;
+            let verificationFailureKeysMatchingMembers = 0;
+            let orphanFailureKeys = 0;
+            let orphanKeysInBaselineCodes = 0;
+            let casesWithOnlyOrphanFailures = 0;
+            let casesWithMixedCurrentAndOrphanFailures = 0;
             const reasons = new Map<string, number>();
             for (;;) {
               const cases = await eligiblePage(cursor);
@@ -453,6 +459,32 @@ jobs:
               if (archiveError) throw new Error("ARCHIVE_READ_FAILED");
               const archiveByCase = new Map((archives || []).map((row: any) => [row.followup_case_id, row]));
               for (const row of cases) {
+                const cohort = row.operational_cohort;
+                const memberCodes = new Set<string>(Array.isArray(cohort?.members)
+                  ? cohort.members.map((member: any) => member?.orderCode).filter((code: unknown): code is string => typeof code === "string")
+                  : []);
+                const baselineCodes = new Set<string>(Array.isArray(cohort?.baselineCodes)
+                  ? cohort.baselineCodes.filter((code: unknown): code is string => typeof code === "string")
+                  : []);
+                const failureMap = cohort?.verification?.failures;
+                const failureEntries = failureMap && typeof failureMap === "object" && !Array.isArray(failureMap)
+                  ? Object.entries(failureMap).filter((entry): entry is [string, string] => typeof entry[1] === "string")
+                  : [];
+                let currentFailuresForCase = 0;
+                let orphanFailuresForCase = 0;
+                for (const [orderCode] of failureEntries) {
+                  verificationFailureKeysTotal++;
+                  if (memberCodes.has(orderCode)) {
+                    verificationFailureKeysMatchingMembers++;
+                    currentFailuresForCase++;
+                  } else {
+                    orphanFailureKeys++;
+                    orphanFailuresForCase++;
+                    if (baselineCodes.has(orderCode)) orphanKeysInBaselineCodes++;
+                  }
+                }
+                if (orphanFailuresForCase && currentFailuresForCase === 0) casesWithOnlyOrphanFailures++;
+                if (orphanFailuresForCase && currentFailuresForCase > 0) casesWithMixedCurrentAndOrphanFailures++;
                 try {
                   const count = validateCase(row, archiveByCase.get(row.id));
                   memberTotal += count;
@@ -477,6 +509,13 @@ jobs:
             console.log("BACKFILL_WOULD_SKIP_NULL_COHORT=" + wouldSkip);
             console.log("BACKFILL_WOULD_FAIL=" + wouldFail);
             console.log("ELIGIBLE_MEMBER_ROWS=" + memberTotal);
+            console.log("ORPHAN_FAILURE_KEYS_TOTAL=" + orphanFailureKeys);
+            console.log("ALL_VERIFICATION_FAILURE_KEYS_TOTAL=" + verificationFailureKeysTotal);
+            console.log("ORPHAN_KEYS_IN_BASELINE_CODES=" + orphanKeysInBaselineCodes);
+            console.log("FAILURE_KEYS_MATCHING_CURRENT_MEMBERS=" + verificationFailureKeysMatchingMembers);
+            console.log("CASES_WITH_ONLY_ORPHAN_FAILURES=" + casesWithOnlyOrphanFailures);
+            console.log("CASES_WITH_MIXED_CURRENT_AND_ORPHAN_FAILURES=" + casesWithMixedCurrentAndOrphanFailures);
+            console.log("ORPHAN_KEYS_FROM_COMPLETED_OR_PRUNED_MEMBERS=NOT_DERIVABLE_FROM_RETAINED_COHORT");
             if (reasons.size) {
               console.log("FAILURE_CATEGORIES=" + Array.from(reasons.entries()).map(([key,value]) => key + ":" + value).join(","));
             }
