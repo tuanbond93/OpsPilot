@@ -11,6 +11,7 @@ import {
   type FollowupCaseMemberRow,
 } from "@/domain/operational-learning/normalized-followup-members";
 import type { OperationalCohort } from "@/domain/operational-learning/checkpoint-policy";
+import { logRuntimeError } from "@/observability/runtimeDiagnostics";
 import { BaseRepository } from "../base/BaseRepository";
 import type {
   FollowupCaseUpsert,
@@ -23,6 +24,94 @@ import type {
   FollowupCaseCohortReference,
 } from "../interfaces/IFollowupRepository";
 import { hydrateFollowupCaseRows } from "./followup-case-cohort";
+
+export const MANIFEST_VERIFY_BATCH_SIZE = 100;
+
+export interface FollowupPersistenceDiagnosticParams {
+  operation: "manifest_verify" | "member_upsert";
+  table: string;
+  generationId: string;
+  batchIndex?: number;
+  batchCount?: number;
+  caseCount?: number;
+  chunkIndex?: number;
+  rowCount?: number;
+  serializedBytes?: number;
+  status?: number | string | null;
+  code?: string | null;
+  message: string;
+  details?: string | null;
+  hint?: string | null;
+}
+
+export class FollowupPersistenceError extends Error {
+  readonly operation: "manifest_verify" | "member_upsert";
+  readonly table: string;
+  readonly generationId: string;
+  readonly batchIndex?: number;
+  readonly batchCount?: number;
+  readonly caseCount?: number;
+  readonly chunkIndex?: number;
+  readonly rowCount?: number;
+  readonly serializedBytes?: number;
+  readonly status: number | string | null;
+  readonly code: string | null;
+  readonly details: string | null;
+  readonly hint: string | null;
+
+  constructor(diagnostics: FollowupPersistenceDiagnosticParams, cause?: unknown) {
+    const parts: string[] = [
+      `operation=${diagnostics.operation}`,
+      `table=${diagnostics.table}`,
+      `generationId=${diagnostics.generationId}`,
+    ];
+    if (diagnostics.batchIndex !== undefined) parts.push(`batchIndex=${diagnostics.batchIndex}`);
+    if (diagnostics.batchCount !== undefined) parts.push(`batchCount=${diagnostics.batchCount}`);
+    if (diagnostics.caseCount !== undefined) parts.push(`caseCount=${diagnostics.caseCount}`);
+    if (diagnostics.chunkIndex !== undefined) parts.push(`chunkIndex=${diagnostics.chunkIndex}`);
+    if (diagnostics.rowCount !== undefined) parts.push(`rowCount=${diagnostics.rowCount}`);
+    if (diagnostics.serializedBytes !== undefined) parts.push(`serializedBytes=${diagnostics.serializedBytes}`);
+    if (diagnostics.status !== undefined && diagnostics.status !== null) parts.push(`status=${diagnostics.status}`);
+    if (diagnostics.code) parts.push(`code=${diagnostics.code}`);
+    parts.push(`message=${diagnostics.message}`);
+    if (diagnostics.details) parts.push(`details=${diagnostics.details}`);
+    if (diagnostics.hint) parts.push(`hint=${diagnostics.hint}`);
+
+    super(`FOLLOWUP_PERSISTENCE_ERROR:${diagnostics.operation} [${parts.join(" ")}]`, { cause });
+    this.name = "FollowupPersistenceError";
+    this.operation = diagnostics.operation;
+    this.table = diagnostics.table;
+    this.generationId = diagnostics.generationId;
+    this.batchIndex = diagnostics.batchIndex;
+    this.batchCount = diagnostics.batchCount;
+    this.caseCount = diagnostics.caseCount;
+    this.chunkIndex = diagnostics.chunkIndex;
+    this.rowCount = diagnostics.rowCount;
+    this.serializedBytes = diagnostics.serializedBytes;
+    this.status = diagnostics.status ?? null;
+    this.code = diagnostics.code ?? null;
+    this.details = diagnostics.details ?? null;
+    this.hint = diagnostics.hint ?? null;
+  }
+}
+
+function extractPostgrestDetails(error: unknown): {
+  status: number | string | null;
+  code: string | null;
+  message: string;
+  details: string | null;
+  hint: string | null;
+} {
+  const src = error && typeof error === "object" ? (error as Record<string, unknown>) : {};
+  const status = typeof src.status === "number" || typeof src.status === "string" ? src.status : null;
+  const code = typeof src.code === "string" ? src.code : null;
+  const message = typeof src.message === "string" && src.message.length > 0
+    ? src.message
+    : (error instanceof Error ? error.message : "Unknown database error");
+  const details = typeof src.details === "string" ? src.details : null;
+  const hint = typeof src.hint === "string" ? src.hint : null;
+  return { status, code, message, details, hint };
+}
 
 const FOLLOWUP_CASE_COLUMNS = [
   "operational_cohort",
@@ -432,11 +521,55 @@ export class SupabaseFollowupRepository extends BaseRepository implements IFollo
       });
     if (generationRegisterError) throw generationRegisterError;
     const generationCaseIds = generationRecords.map((record) => record.followup_case_id);
-    const { data: storedGenerationRecords, error: generationReadError } = await (this.client.from("followup_case_member_generations") as any)
-      .select("followup_case_id,generation_id,source_sync_run_id,expected_member_count,generation_status")
-      .eq("generation_id", generationId)
-      .in("followup_case_id", generationCaseIds);
-    if (generationReadError) throw generationReadError;
+    const storedGenerationRecords: Array<{
+      followup_case_id: string;
+      generation_id: string;
+      source_sync_run_id: string | null;
+      expected_member_count: number;
+      generation_status: string;
+    }> = [];
+    const verifyBatchCount = Math.ceil(generationCaseIds.length / MANIFEST_VERIFY_BATCH_SIZE);
+
+    for (let batchIndex = 0; batchIndex < verifyBatchCount; batchIndex++) {
+      const start = batchIndex * MANIFEST_VERIFY_BATCH_SIZE;
+      const batch = generationCaseIds.slice(start, start + MANIFEST_VERIFY_BATCH_SIZE);
+      let pageRecords: any[] | null = null;
+      let generationReadError: any = null;
+      try {
+        const result = await (this.client.from("followup_case_member_generations") as any)
+          .select("followup_case_id,generation_id,source_sync_run_id,expected_member_count,generation_status")
+          .eq("generation_id", generationId)
+          .in("followup_case_id", batch);
+        pageRecords = result.data;
+        generationReadError = result.error;
+      } catch (err: any) {
+        generationReadError = err;
+      }
+
+      if (generationReadError) {
+        const postgrest = extractPostgrestDetails(generationReadError);
+        const diagError = new FollowupPersistenceError({
+          operation: "manifest_verify",
+          table: "followup_case_member_generations",
+          generationId,
+          batchIndex,
+          batchCount: verifyBatchCount,
+          caseCount: batch.length,
+          status: postgrest.status,
+          code: postgrest.code,
+          message: postgrest.message,
+          details: postgrest.details,
+          hint: postgrest.hint,
+        }, generationReadError);
+        logRuntimeError("SupabaseFollowupRepository.manifest_verify", diagError);
+        throw diagError;
+      }
+
+      if (pageRecords) {
+        storedGenerationRecords.push(...pageRecords);
+      }
+    }
+
     const storedByCase = new Map((storedGenerationRecords || []).map((record: any) => [record.followup_case_id, record]));
     for (const expected of generationRecords) {
       const stored = storedByCase.get(expected.followup_case_id) as any;
@@ -487,10 +620,34 @@ export class SupabaseFollowupRepository extends BaseRepository implements IFollo
 
     const pendingWrites = allExpected.filter((row) => !committedCaseIds.has(row.followup_case_id));
     const chunks = planFollowupMemberWriteChunks(pendingWrites);
-    for (const chunk of chunks) {
-      const { error } = await (this.client.from("followup_case_members") as any)
-        .upsert(chunk, { onConflict: "followup_case_id,generation_id,order_code" });
-      if (error) throw error;
+    for (let chunkIndex = 0; chunkIndex < chunks.length; chunkIndex++) {
+      const chunk = chunks[chunkIndex];
+      let upsertError: any = null;
+      try {
+        const result = await (this.client.from("followup_case_members") as any)
+          .upsert(chunk, { onConflict: "followup_case_id,generation_id,order_code" });
+        upsertError = result.error;
+      } catch (err: any) {
+        upsertError = err;
+      }
+      if (upsertError) {
+        const postgrest = extractPostgrestDetails(upsertError);
+        const diagError = new FollowupPersistenceError({
+          operation: "member_upsert",
+          table: "followup_case_members",
+          generationId,
+          chunkIndex,
+          rowCount: chunk.length,
+          serializedBytes: Buffer.byteLength(JSON.stringify(chunk), "utf8"),
+          status: postgrest.status,
+          code: postgrest.code,
+          message: postgrest.message,
+          details: postgrest.details,
+          hint: postgrest.hint,
+        }, upsertError);
+        logRuntimeError("SupabaseFollowupRepository.member_upsert", diagError);
+        throw diagError;
+      }
     }
 
     const pendingCaseIds = [...expectedByCaseId.keys()].filter((caseId) => !committedCaseIds.has(caseId));
