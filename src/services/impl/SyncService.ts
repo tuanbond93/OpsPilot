@@ -478,7 +478,9 @@ export class SyncService implements ISyncService {
           const unfinishedRun: SyncRunRow | null = (await retryTransientInfrastructure(() =>
             _options?.checkpointAt
               ? this.syncRunRepo!.getSyncRunForCheckpoint(_options!.checkpointAt!)
-              : this.syncRunRepo!.getUnfinishedSyncRun()
+              : _options?.forceReprocessSource === true
+                ? Promise.resolve(null)
+                : this.syncRunRepo!.getUnfinishedSyncRun()
           )).value;
           if (resumeCheckpointRun && !unfinishedRun) {
             throw new Error("CHECKPOINT_RUN_MISSING_AFTER_LOCK");
