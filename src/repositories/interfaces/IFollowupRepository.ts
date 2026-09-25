@@ -37,6 +37,7 @@ export interface IFollowupRepository {
     nextCursor: FollowupCasePageCursor | null;
   }>;
   getAllCases(): Promise<FollowupCaseRow[]>;
+  getAllCasesSummary?(): Promise<FollowupCaseRow[]>;
   upsertCase(caseData: FollowupCaseUpsert): Promise<FollowupCaseRow>;
   batchUpsertCases(cases: FollowupCaseUpsert[]): Promise<FollowupCaseLinkRow[]>;
   persistOperationalCohortGenerations(cases: FollowupCaseUpsert[], generationId: string, options?: FollowupCohortGenerationOptions): Promise<FollowupCaseLinkRow[]>;

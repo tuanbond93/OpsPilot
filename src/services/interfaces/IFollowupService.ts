@@ -10,6 +10,10 @@ export interface IFollowupService {
     totalCases: number;
     cases: any[];
   }>;
+  getAllCasesSummary(): Promise<{
+    totalCases: number;
+    cases: any[];
+  }>;
 
   getCaseById(
     id: string

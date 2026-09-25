@@ -55,6 +55,10 @@ const FOLLOWUP_CASE_COLUMNS = [
   "created_at",
   "updated_at",
 ].join(", ");
+const FOLLOWUP_CASE_SUMMARY_COLUMNS = FOLLOWUP_CASE_COLUMNS
+  .split(", ")
+  .filter((column) => !["operational_cohort", "cohort_version", "member_generation_id"].includes(column))
+  .join(", ");
 
 const FOLLOWUP_EVENT_COLUMNS = [
   "id",
@@ -165,17 +169,15 @@ export class SupabaseFollowupRepository extends BaseRepository implements IFollo
     };
   }
 
-  async getAllCases(): Promise<FollowupCaseRow[]> {
+  private async readAllCases(columns: string): Promise<FollowupCaseRow[]> {
     const cases: FollowupCaseRow[] = [];
     let cursor: FollowupCasePageCursor | undefined;
 
-    // Keep the public repository contract unchanged while ensuring every
-    // database statement is bounded. This method serves both the debug/API
-    // read path and the follow-up engine, so terminal cases remain included.
+    // Keep terminal cases included and bound every parent page.
     for (;;) {
       const query = this.client
         .from("followup_cases")
-        .select(FOLLOWUP_CASE_COLUMNS);
+        .select(columns);
 
       if (cursor) {
         query.or(`updated_at.lt.${cursor.updatedAt},and(updated_at.eq.${cursor.updatedAt},id.lt.${cursor.id})`);
@@ -196,7 +198,17 @@ export class SupabaseFollowupRepository extends BaseRepository implements IFollo
       cursor = { updatedAt: last.updated_at, id: last.id };
     }
 
-    return hydrateFollowupCaseRows(this.client, cases);
+    return cases;
+  }
+
+  async getAllCasesSummary(): Promise<FollowupCaseRow[]> {
+    // The dashboard renders parent-level fields only; it does not need each
+    // normalized order-level cohort hydrated.
+    return this.readAllCases(FOLLOWUP_CASE_SUMMARY_COLUMNS);
+  }
+
+  async getAllCases(): Promise<FollowupCaseRow[]> {
+    return hydrateFollowupCaseRows(this.client, await this.readAllCases(FOLLOWUP_CASE_COLUMNS));
   }
 
   async upsertCase(caseData: FollowupCaseUpsert): Promise<FollowupCaseRow> {

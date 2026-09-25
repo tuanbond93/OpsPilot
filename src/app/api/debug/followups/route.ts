@@ -37,7 +37,9 @@ export async function GET(request: NextRequest) {
     }
 
     const service = ServiceFactory.getFollowupService(dbClient);
-    const result = await service.getAllCases();
+    // This endpoint returns parent-level dashboard fields. Operational and
+    // state-machine readers continue to use the full cohort hydrator.
+    const result = await service.getAllCasesSummary();
 
     if (!auth.identity || !dbClient) return NextResponse.json(result);
     // incident_id is a foreign-key snapshot and can change when a source

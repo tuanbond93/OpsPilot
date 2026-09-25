@@ -92,6 +92,18 @@ describe("bounded follow-up case reads", () => {
     expect(builders[0].limit).toHaveBeenCalledWith(100);
   });
 
+  it("uses a paginated parent-only summary read for the follow-up dashboard", async () => {
+    const updatedAt = "2026-09-22T11:00:00.000Z";
+    const rows = [makeCase(1, updatedAt)];
+    const { client, builders } = pagedClient([rows]);
+
+    const result = await new SupabaseFollowupRepository(client).getAllCasesSummary();
+
+    expect(result).toEqual(rows);
+    expect((client.from as any).mock.calls).toHaveLength(1);
+    expect(builders[0].select).toHaveBeenCalledWith(expect.not.stringMatching(/operational_cohort|cohort_version|member_generation_id/));
+  });
+
   it("uses only processing fields and excludes CLOSED cases for engine pages", async () => {
     const updatedAt = "2026-09-22T11:00:00.000Z";
     const rows = Array.from({ length: 100 }, (_, index) => makeCase(100 - index, updatedAt, "FOLLOWING_UP"));

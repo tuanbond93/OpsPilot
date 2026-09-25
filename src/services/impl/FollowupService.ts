@@ -47,6 +47,16 @@ export class FollowupService implements IFollowupService {
     };
   }
 
+  async getAllCasesSummary(): Promise<{ totalCases: number; cases: any[] }> {
+    if (this.followupRepo) {
+      const cases = this.followupRepo.getAllCasesSummary
+        ? await this.followupRepo.getAllCasesSummary()
+        : await this.followupRepo.getAllCases();
+      return { totalCases: cases.length, cases };
+    }
+    return this.getAllCases();
+  }
+
   async getCaseById(id: string): Promise<{ followupCase: any; events: any[] } | null> {
     if (!this.followupRepo) return null;
 
