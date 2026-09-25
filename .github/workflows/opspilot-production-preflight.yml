@@ -1,4 +1,4 @@
-name: OpsPilot Production 094 Migration and Backfill
+name: OpsPilot Production 094 Resume Backfill
 
 on:
   workflow_dispatch:
@@ -8,7 +8,7 @@ on:
         required: true
         type: string
       approve_database_mutations:
-        description: "Explicitly authorize migration 094 and bounded backfill"
+        description: "Explicitly authorize bounded backfill; migration 094 must already be applied"
         required: true
         default: "NO"
         type: choice
@@ -202,6 +202,11 @@ jobs:
             'migration_table_count',(SELECT table_count FROM artifacts),
             'migration_column_count',(SELECT column_count FROM artifacts),
             'migration_constraint_present',(SELECT consistency_constraint FROM artifacts),
+            'pointer_count',(SELECT count(*) FROM public.followup_cases
+              WHERE cohort_version=2 OR member_generation_id IS NOT NULL),
+            'member_count',(SELECT count(*) FROM public.followup_case_members),
+            'generation_count',(SELECT count(*) FROM public.followup_case_member_generations),
+            'archive_count',(SELECT count(*) FROM public.followup_case_cohort_archive),
             'followup_cases_total',(SELECT count(*) FROM public.followup_cases),
             'active_v1_nonnull_cohorts',(
               SELECT count(*) FROM public.followup_cases
@@ -221,21 +226,7 @@ jobs:
             echo "READ_ONLY_PREFLIGHT=FAIL; SQLSTATE=${state:-UNKNOWN}"
             exit 1
           fi
-          cohort_digest=""
-          if [[ "$mode" == "ABSENT" ]]; then
-            cat > "$RUNNER_TEMP/opspilot-prod-094-digest.sql" <<'SQL'
-          SELECT md5(coalesce((
-            SELECT string_agg(
-              fc.id::text || ':' || coalesce(fc.current_state::text,'NULL') || ':'
-                || coalesce(fc.updated_at::text,'NULL') || ':'
-                || coalesce(md5(fc.operational_cohort::text),'NULL'),
-              '|' ORDER BY fc.id
-            ) FROM public.followup_cases AS fc
-          ),''));
-          SQL
-            cohort_digest="$(psql -X -qAt -v ON_ERROR_STOP=1 -f "$RUNNER_TEMP/opspilot-prod-094-digest.sql" 2>"$RUNNER_TEMP/opspilot-prod-094-digest.err")"
-          fi
-          GATE_JSON="$gate" COHORT_DIGEST="$cohort_digest" PREFLIGHT_MODE="$mode" python - <<'PY'
+          GATE_JSON="$gate" PREFLIGHT_MODE="$mode" python - <<'PY'
           import json, os, sys
           try:
               g=json.loads(os.environ["GATE_JSON"])
@@ -253,27 +244,31 @@ jobs:
               "no_recent_running_checkpoint": g["recent_running_runs"] == 0,
           }
           artifacts=g["migration_table_count"] + g["migration_column_count"] + int(g["migration_constraint_present"])
-          if mode == "ABSENT":
-              checks["migration_094_absent"] = artifacts == 0
-          elif mode == "PRESENT":
+          if mode in ("PRESENT_EMPTY", "PRESENT"):
               checks["migration_094_complete"] = (
                   g["migration_table_count"] == 3
                   and g["migration_column_count"] == 2
                   and g["migration_constraint_present"]
               )
+              if mode == "PRESENT_EMPTY":
+                  checks["no_v2_pointers_or_rows"] = (
+                      g["pointer_count"] == 0
+                      and g["member_count"] == 0
+                      and g["generation_count"] == 0
+                      and g["archive_count"] == 0
+                  )
           else:
               checks["mode_valid"] = False
           failed=[name for name,ok in checks.items() if not ok]
           if failed:
               print("READ_ONLY_PREFLIGHT=FAIL; GATES=" + ",".join(failed))
               sys.exit(1)
-          if mode == "ABSENT":
-              with open(os.environ["GITHUB_ENV"],"a",encoding="utf-8") as env:
-                  env.write("BASE_FOLLOWUP_CASES=" + str(g["followup_cases_total"]) + "\n")
-                  env.write("BASE_ACTIVE_V1_NONNULL=" + str(g["active_v1_nonnull_cohorts"]) + "\n")
-                  env.write("BASE_ACTIVE_V1_NULL=" + str(g["active_v1_null_cohorts"]) + "\n")
-                  env.write("BASE_COHORT_DIGEST=" + os.environ["COHORT_DIGEST"] + "\n")
           print("READ_ONLY_PREFLIGHT=PASS; MODE=" + mode)
+          print("MIGRATION_094=APPLIED; TABLES=" + str(g["migration_table_count"]) + "; COLUMNS=" + str(g["migration_column_count"]) + "; CONSTRAINT=" + str(g["migration_constraint_present"]))
+          print("V2_POINTERS=" + str(g["pointer_count"]) + "; MEMBERS=" + str(g["member_count"]) + "; GENERATIONS=" + str(g["generation_count"]) + "; ARCHIVES=" + str(g["archive_count"]))
+          print("FOLLOWUP_CASES_TOTAL=" + str(g["followup_cases_total"]))
+          print("ACTIVE_V1_NONNULL_COHORTS=" + str(g["active_v1_nonnull_cohorts"]))
+          print("ACTIVE_V1_NULL_COHORTS=" + str(g["active_v1_null_cohorts"]))
           print("CRON_14_17=OFF")
           print("LIVE_SYNC_EXECUTION=NONE")
           print("RECOVERY_OR_LEASE=NONE")
@@ -587,7 +582,7 @@ jobs:
           });
           TS
 
-      - name: Read-only pre-migration Production gate
+      - name: Read-only resume preflight for applied migration 094
         shell: bash
         env:
           PROD_SUPABASE_URL: ${{ secrets.PROD_SUPABASE_URL }}
@@ -603,12 +598,13 @@ jobs:
         run: |
           set -euo pipefail
           export CONFIRM_PRODUCTION_REF APPROVE_DATABASE_MUTATIONS PROD_V3_FLAG
-          bash "$RUNNER_TEMP/opspilot-prod-094-preflight.sh" ABSENT
+          bash "$RUNNER_TEMP/opspilot-prod-094-preflight.sh" PRESENT_EMPTY
 
-      - name: Recheck immediately and apply exact migration 094
+      - name: Reload PostgREST schema cache and probe normalized columns
         shell: bash
         env:
           PROD_SUPABASE_URL: ${{ secrets.PROD_SUPABASE_URL }}
+          PROD_SERVICE_ROLE_KEY: ${{ secrets.PROD_SERVICE_ROLE_KEY }}
           PROD_DB_HOST: ${{ secrets.PROD_DB_HOST }}
           PGHOST: ${{ secrets.PROD_DB_HOST }}
           PGPORT: ${{ secrets.PROD_DB_PORT }}
@@ -617,53 +613,33 @@ jobs:
           PGPASSWORD: ${{ secrets.PROD_DB_PASSWORD }}
           PGSSLMODE: require
           PGCONNECT_TIMEOUT: "10"
-          PGOPTIONS: "-c default_transaction_read_only=on -c statement_timeout=8000"
+          PGOPTIONS: "-c statement_timeout=8000 -c lock_timeout=3000"
         run: |
           set -euo pipefail
-          export CONFIRM_PRODUCTION_REF APPROVE_DATABASE_MUTATIONS PROD_V3_FLAG
-          bash "$RUNNER_TEMP/opspilot-prod-094-preflight.sh" ABSENT
-          unset PGOPTIONS
-          export PGOPTIONS="-c statement_timeout=8000 -c lock_timeout=3000"
-          started=$SECONDS
-          if ! psql -X -v ON_ERROR_STOP=1 -f candidate/src/database/migrations/094_normalized_followup_case_members.sql >"$RUNNER_TEMP/migration.out" 2>"$RUNNER_TEMP/migration.err"; then
-            state="$(grep -Eo '[0-9A-Z]{5}' "$RUNNER_TEMP/migration.err" | tail -n 1 || true)"
-            echo "MIGRATION_094=FAIL; SQLSTATE=${state:-UNKNOWN}"
-            exit 1
-          fi
-          echo "MIGRATION_094=PASS; DURATION_SECONDS=$((SECONDS-started))"
-          export PGOPTIONS="-c default_transaction_read_only=on -c statement_timeout=8000"
-          sql="SELECT jsonb_build_object(
-            'objects_ok',
-              to_regclass('public.followup_case_members') IS NOT NULL
-              AND to_regclass('public.followup_case_member_generations') IS NOT NULL
-              AND to_regclass('public.followup_case_cohort_archive') IS NOT NULL
-              AND EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='followup_cases' AND column_name='cohort_version')
-              AND EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='followup_cases' AND column_name='member_generation_id')
-              AND EXISTS(SELECT 1 FROM pg_constraint WHERE conrelid='public.followup_cases'::regclass AND conname='followup_cases_cohort_generation_consistency'),
-            'pointers', (SELECT count(*) FROM public.followup_cases WHERE cohort_version=2 OR member_generation_id IS NOT NULL),
-            'members', (SELECT count(*) FROM public.followup_case_members),
-            'generations', (SELECT count(*) FROM public.followup_case_member_generations),
-            'archives', (SELECT count(*) FROM public.followup_case_cohort_archive),
-            'case_count', (SELECT count(*) FROM public.followup_cases),
-            'cohort_digest', md5(coalesce((SELECT string_agg(
-              fc.id::text || ':' || coalesce(fc.current_state::text,'NULL') || ':'
-                || coalesce(fc.updated_at::text,'NULL') || ':'
-                || coalesce(md5(fc.operational_cohort::text),'NULL'),
-              '|' ORDER BY fc.id
-            ) FROM public.followup_cases fc),'')))::text"
-          result="$(psql -X -qAt -v ON_ERROR_STOP=1 -c "$sql" 2>"$RUNNER_TEMP/schema-verify.err")"
-          RESULT="$result" python - <<'PY'
+          psql -X -v ON_ERROR_STOP=1 -c "NOTIFY pgrst, 'reload schema';" >/dev/null
+          echo "POSTGREST_SCHEMA_RELOAD=REQUESTED"
+          sleep 3
+          probe_url="${PROD_SUPABASE_URL%/}/rest/v1/followup_cases?select=id%2Ccohort_version%2Cmember_generation_id&limit=1"
+          http_status="$(curl --silent --output "$RUNNER_TEMP/postgrest-schema-probe.json" --write-out '%{http_code}' --max-time 20 \
+            --header "apikey: ${PROD_SERVICE_ROLE_KEY}" \
+            --header "Authorization: Bearer ${PROD_SERVICE_ROLE_KEY}" \
+            "$probe_url" || true)"
+          if [[ "$http_status" =~ ^2[0-9][0-9]$ ]]; then
+            echo "POSTGREST_NEW_COLUMNS_PROBE=PASS; HTTP=${http_status}"
+          else
+            HTTP_STATUS="$http_status" python - "$RUNNER_TEMP/postgrest-schema-probe.json" <<'PY'
           import json, os, sys
-          r=json.loads(os.environ["RESULT"])
-          if not r["objects_ok"] or r["pointers"] != 0 or r["members"] != 0 or r["generations"] != 0 or r["archives"] != 0:
-              print("MIGRATION_SCHEMA_VERIFY=FAIL")
-              sys.exit(1)
-          if str(r["case_count"]) != os.environ.get("BASE_FOLLOWUP_CASES") or r["cohort_digest"] != os.environ.get("BASE_COHORT_DIGEST"):
-              print("MIGRATION_DATA_PRESERVATION=FAIL")
-              sys.exit(1)
-          print("MIGRATION_SCHEMA_VERIFY=PASS")
-          print("MIGRATION_DATA_PRESERVATION=PASS; POINTERS=0")
+          try:
+              with open(sys.argv[1], encoding="utf-8") as f:
+                  body=json.load(f)
+          except Exception:
+              body={}
+          code=str(body.get("code") or "NOT_AVAILABLE")
+          message=" ".join(str(body.get("message") or "No PostgREST error detail").split())[:180]
+          print("POSTGREST_NEW_COLUMNS_PROBE=FAIL; HTTP=" + os.environ.get("HTTP_STATUS", "UNKNOWN") + "; CODE=" + code + "; MESSAGE=" + message)
+          sys.exit(1)
           PY
+          fi
 
       - name: Read-only full backfill dry-run
         working-directory: candidate
@@ -691,7 +667,7 @@ jobs:
         run: |
           set -euo pipefail
           export CONFIRM_PRODUCTION_REF APPROVE_DATABASE_MUTATIONS PROD_V3_FLAG
-          bash "$RUNNER_TEMP/opspilot-prod-094-preflight.sh" PRESENT
+          bash "$RUNNER_TEMP/opspilot-prod-094-preflight.sh" PRESENT_EMPTY
           result="$(psql -X -qAt -v ON_ERROR_STOP=1 -c "SELECT count(*) FROM public.followup_cases WHERE cohort_version=2 OR member_generation_id IS NOT NULL" 2>"$RUNNER_TEMP/pointer-check.err")"
           test "$result" = "0"
           echo "BACKFILL_PRECONDITIONS=PASS"
