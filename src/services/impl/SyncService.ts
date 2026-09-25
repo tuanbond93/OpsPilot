@@ -476,14 +476,14 @@ export class SyncService implements ISyncService {
 
       try {
           const unfinishedRun: SyncRunRow | null = (await retryTransientInfrastructure(() =>
-            resumeCheckpointRun
+            _options?.checkpointAt
               ? this.syncRunRepo!.getSyncRunForCheckpoint(_options!.checkpointAt!)
               : this.syncRunRepo!.getUnfinishedSyncRun()
           )).value;
           if (resumeCheckpointRun && !unfinishedRun) {
             throw new Error("CHECKPOINT_RUN_MISSING_AFTER_LOCK");
           }
-          if (resumeCheckpointRun && unfinishedRun && (unfinishedRun.status === "success" || unfinishedRun.current_phase === "COMPLETED")) {
+          if (_options?.checkpointAt && unfinishedRun && (unfinishedRun.status === "success" || unfinishedRun.current_phase === "COMPLETED")) {
             return { ok: true, skipped: true, skipReason: "CHECKPOINT_ALREADY_COMPLETED", syncRunId: unfinishedRun.id, startedAt, completedAt: startedAt, durationMs: 0, fetchedOrderCount: unfinishedRun.fetched_order_count, normalizedOrderCount: unfinishedRun.normalized_order_count, incidentCount: unfinishedRun.incident_count, phaseTimings: {}, dbInstrumentation: { totalQueries: 0, phases: {}, bottlenecksDetected: [] }, syncLockAttempts: 0, syncLockRetryCount: 0, syncLockFinalStatus: "NOT_ATTEMPTED" };
           }
           if (unfinishedRun) {

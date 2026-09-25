@@ -76,4 +76,26 @@ describe("follow-up cohort pointer hydration", () => {
       operational_cohort: metadata,
     }] as any)).rejects.toThrow("MEMBER_COUNT_MISMATCH");
   });
+
+  it.each([null, 1])("keeps a null-cohort V1 row readable when cohort_version is %s", async (cohortVersion) => {
+    let memberReads = 0;
+    const client = {
+      from: () => {
+        memberReads++;
+        throw new Error("V1 null-cohort rows must not read normalized members");
+      },
+    };
+    const source = {
+      id: CASE_ID,
+      cohort_version: cohortVersion,
+      member_generation_id: null,
+      operational_cohort: null,
+    };
+
+    const [hydrated] = await hydrateFollowupCaseRows(client as any, [source] as any);
+
+    expect(hydrated).toMatchObject(source);
+    expect(hydrated.operational_cohort).toBeNull();
+    expect(memberReads).toBe(0);
+  });
 });
