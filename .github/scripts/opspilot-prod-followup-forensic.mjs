@@ -254,7 +254,7 @@ function summarizeManifest(manifests) {
     sourceSyncRunConsistency: {
       distinctSourceSyncRunIds: sourceSyncRunIds.size,
       nullSourceSyncRunIds,
-      sourceSyncRunIdMismatchCount,
+      sourceSyncRunIdMismatchCount: sourceSyncRunMismatchCount,
       sourceSyncRunIdsMatchGeneration: manifests.length > 0 && sourceSyncRunMismatchCount === 0 && generationMismatchCount === 0,
     },
     approximateRawIdListBytes: Buffer.byteLength(orderedCaseIds.join(","), "utf8"),
@@ -389,6 +389,23 @@ async function main() {
   const manifests = inventory.manifests;
   const summary = summarizeManifest(manifests);
 
+  // ── EARLY OBSERVABILITY — print inventory metrics immediately ──
+  console.log("MANIFEST_COUNT=" + inventory.total);
+  console.log("MANIFEST_PAGE_COUNT=" + inventory.pageCount);
+  console.log("EXPECTED_MEMBER_TOTAL=" + summary.expectedMemberTotal);
+  console.log("CASE_ID_COUNT=" + summary.caseIdCount);
+  console.log("DUPLICATE_CASE_IDS=" + summary.duplicateCaseIds);
+  console.log("MANIFEST_STATUS_COUNTS=" + JSON.stringify({
+    PREPARING: summary.preparingCount,
+    COMMITTED: summary.committedCount,
+    OTHER: summary.otherStatusCount,
+  }));
+  console.log("MANIFEST_GENERATION_MISMATCH_COUNT=" + summary.generationMismatchCount);
+  console.log("SOURCE_SYNC_RUN_CONSISTENCY=" + JSON.stringify(summary.sourceSyncRunConsistency));
+  console.log("CASE_ID_SHA256=" + summary.caseIdSha256);
+  console.log("APPROX_RAW_ID_LIST_BYTES=" + summary.approximateRawIdListBytes);
+
+  // ── Optional source-sync-run reference check (fail-soft) ──
   let referencedSyncRunsFound = null;
   let sourceSyncRunReferenceError = null;
   try {
@@ -399,13 +416,13 @@ async function main() {
     );
   } catch (error) {
     sourceSyncRunReferenceError = scrub(error?.message || error, [identity.serviceKey, identity.baseUrl]);
+    console.log("SOURCE_SYNC_RUN_REFERENCE_READ_ERROR=" + sourceSyncRunReferenceError);
   }
-  const sourceSyncRunConsistency = {
-    ...summary.sourceSyncRunConsistency,
-    referencedSyncRunRowsFound: referencedSyncRunsFound,
-    referenceReadError: sourceSyncRunReferenceError,
-  };
+  if (referencedSyncRunsFound !== null) {
+    console.log("REFERENCED_SYNC_RUN_ROWS_FOUND=" + referencedSyncRunsFound);
+  }
 
+  // ── Member and pointer exact counts ──
   const memberRows = await fetchExactCount(
     identity.baseUrl,
     identity.serviceKey,
@@ -423,23 +440,10 @@ async function main() {
     "POINTERS_TO_FAILED_GENERATION"
   );
 
-  console.log("MANIFEST_COUNT=" + inventory.total);
-  console.log("MANIFEST_PAGE_COUNT=" + inventory.pageCount);
-  console.log("EXPECTED_MEMBER_TOTAL=" + summary.expectedMemberTotal);
   console.log("MEMBER_ROWS=" + memberRows);
   console.log("POINTERS_TO_FAILED_GENERATION=" + pointerCount);
-  console.log("CASE_ID_COUNT=" + summary.caseIdCount);
-  console.log("DUPLICATE_CASE_IDS=" + summary.duplicateCaseIds);
-  console.log("MANIFEST_STATUS_COUNTS=" + JSON.stringify({
-    PREPARING: summary.preparingCount,
-    COMMITTED: summary.committedCount,
-    OTHER: summary.otherStatusCount,
-  }));
-  console.log("MANIFEST_GENERATION_MISMATCH_COUNT=" + summary.generationMismatchCount);
-  console.log("SOURCE_SYNC_RUN_CONSISTENCY=" + JSON.stringify(sourceSyncRunConsistency));
-  console.log("CASE_ID_SHA256=" + summary.caseIdSha256);
-  console.log("APPROX_RAW_ID_LIST_BYTES=" + summary.approximateRawIdListBytes);
 
+  // ── Unbatched vs batched comparison ──
   const unbatched = summary.caseIds.length
     ? await verifyManifestQuery(identity.baseUrl, identity.serviceKey, summary.caseIds, "unbatched")
     : null;
@@ -477,22 +481,165 @@ async function main() {
     : "Not confirmed by the required unbatched-versus-batched comparison."));
   if (unbatched && !unbatched.error) console.log("NEXT_SUSPECT=first member upsert");
 
+  const sourceSyncRunConsistencyFull = {
+    ...summary.sourceSyncRunConsistency,
+    referencedSyncRunRowsFound: referencedSyncRunsFound,
+    referenceReadError: sourceSyncRunReferenceError,
+  };
+
   writeStepSummary([
     "## Production follow-up forensic (REST GET only)",
     "- Production identity: **PASS** (" + process.env.EXPECTED_PRODUCTION_REF + ")",
     "- Manifests / expected members: **" + inventory.total + " / " + summary.expectedMemberTotal + "**",
     "- Members / pointers: **" + memberRows + " / " + pointerCount + "**",
     "- Case IDs / duplicates: **" + summary.caseIdCount + " / " + summary.duplicateCaseIds + "**",
+    "- Source sync run consistency: " + JSON.stringify(sourceSyncRunConsistencyFull),
     "- Unbatched GET: HTTP **" + (unbatched?.httpStatus ?? "NO_RESPONSE") + "**, URL bytes **" + (unbatched?.requestUrlLength ?? "unavailable") + "**, rows **" + (unbatched?.rows ?? 0) + "**",
     "- Batched GET: **" + batches.length + "** requests, **" + batchRows + "** rows, **" + (batchedPass ? "PASS" : "FAIL") + "**",
     "- Root cause confirmed: **" + (rootCauseConfirmed ? "YES" : "NO") + "**",
   ]);
 }
 
-main().catch((error) => {
-  console.error(scrub(error?.message || error, [
-    process.env.SUPABASE_SERVICE_ROLE_KEY,
-    process.env.SUPABASE_URL,
-  ]));
-  process.exitCode = 1;
-});
+// ═══════════════════════════════════════════════════════════════
+// SELF-TEST MODE — pure functions, no network, no secrets
+// ═══════════════════════════════════════════════════════════════
+
+function runSelfTest() {
+  let failures = 0;
+  function assert(condition, name) {
+    if (!condition) {
+      console.error("SELF_TEST_FAIL: " + name);
+      failures += 1;
+    }
+  }
+
+  // ── A. summarizeManifest ──
+  {
+    const fixture = [
+      { followup_case_id: "case-001", generation_id: GENERATION_ID, source_sync_run_id: GENERATION_ID, expected_member_count: 5, generation_status: "PREPARING" },
+      { followup_case_id: "case-002", generation_id: GENERATION_ID, source_sync_run_id: GENERATION_ID, expected_member_count: 3, generation_status: "COMMITTED" },
+      { followup_case_id: "case-003", generation_id: GENERATION_ID, source_sync_run_id: null, expected_member_count: 2, generation_status: "PREPARING" },
+    ];
+    const s = summarizeManifest(fixture);
+    assert(s.caseIdCount === 3, "summarize.caseIdCount");
+    assert(s.duplicateCaseIds === 0, "summarize.duplicateCaseIds");
+    assert(s.expectedMemberTotal === 10, "summarize.expectedMemberTotal");
+    assert(s.preparingCount === 2, "summarize.preparingCount");
+    assert(s.committedCount === 1, "summarize.committedCount");
+    assert(s.otherStatusCount === 0, "summarize.otherStatusCount");
+    assert(s.generationMismatchCount === 0, "summarize.generationMismatchCount");
+    assert(s.sourceSyncRunConsistency.sourceSyncRunIdMismatchCount === 0, "summarize.sourceSyncRunIdMismatchCount");
+    assert(s.sourceSyncRunConsistency.nullSourceSyncRunIds === 1, "summarize.nullSourceSyncRunIds");
+    assert(s.sourceSyncRunConsistency.distinctSourceSyncRunIds === 1, "summarize.distinctSourceSyncRunIds");
+    assert(s.sourceSyncRunConsistency.sourceSyncRunIdsMatchGeneration === true, "summarize.sourceSyncRunIdsMatchGeneration");
+    assert(typeof s.caseIdSha256 === "string" && s.caseIdSha256.length === 64, "summarize.caseIdSha256");
+    assert(s.approximateRawIdListBytes > 0, "summarize.approximateRawIdListBytes");
+
+    // Duplicate case ID test
+    const fixtureDup = [...fixture, { followup_case_id: "case-001", generation_id: GENERATION_ID, source_sync_run_id: GENERATION_ID, expected_member_count: 1, generation_status: "COMMITTED" }];
+    const sDup = summarizeManifest(fixtureDup);
+    assert(sDup.duplicateCaseIds === 1, "summarize.duplicateCaseIds_with_dup");
+    assert(sDup.caseIdCount === 3, "summarize.caseIdCount_with_dup_deduped");
+
+    // Generation mismatch test
+    const fixtureMismatch = [
+      { followup_case_id: "case-100", generation_id: "wrong-gen-id", source_sync_run_id: GENERATION_ID, expected_member_count: 1, generation_status: "PREPARING" },
+    ];
+    const sMismatch = summarizeManifest(fixtureMismatch);
+    assert(sMismatch.generationMismatchCount === 1, "summarize.generationMismatchCount_mismatch");
+  }
+
+  // ── B. parseContentRange ──
+  {
+    const r1 = parseContentRange("0-0/1", "TEST");
+    assert(r1.start === 0 && r1.end === 0 && r1.total === 1, "parseContentRange 0-0/1");
+
+    const r2 = parseContentRange("0-499/1091", "TEST");
+    assert(r2.start === 0 && r2.end === 499 && r2.total === 1091, "parseContentRange 0-499/1091");
+
+    const r3 = parseContentRange("1000-1090/1091", "TEST");
+    assert(r3.start === 1000 && r3.end === 1090 && r3.total === 1091, "parseContentRange 1000-1090/1091");
+
+    const r4 = parseContentRange("*/0", "TEST");
+    assert(r4.start === null && r4.end === null && r4.total === 0, "parseContentRange */0");
+  }
+
+  // ── C. Manifest pagination calculation ──
+  {
+    const totalRows = 1091;
+    const pageSize = MANIFEST_PAGE_SIZE; // 500
+    const offsets = [];
+    let offset = 0;
+    while (offset < totalRows) {
+      offsets.push(offset);
+      const pageRows = Math.min(pageSize, totalRows - offset);
+      assert(pageRows > 0, "pagination.positivePageRows_at_" + offset);
+      offset += pageRows;
+    }
+    assert(offsets[0] === 0, "pagination.firstOffset");
+    assert(offsets[1] === 500, "pagination.secondOffset");
+    assert(offsets[2] === 1000, "pagination.thirdOffset");
+    assert(offsets.length === 3, "pagination.pageCount");
+    assert(offset === totalRows, "pagination.finalOffset");
+
+    // Verify no negative limit or range construction
+    for (const off of offsets) {
+      const remaining = totalRows - off;
+      const limit = Math.min(pageSize, remaining);
+      assert(limit > 0, "pagination.positiveLimit_at_" + off);
+      assert(off >= 0, "pagination.nonNegativeOffset_at_" + off);
+    }
+  }
+
+  // ── D. Root-cause predicate ──
+  {
+    // Positive case: unbatched 400, batched pass, batched rows == total
+    const manifestTotal = 50;
+    const unbatchedPositive = { httpStatus: 400 };
+    const batchedRowsPositive = 50;
+    const batchErrorsPositive = [];
+    const batchedPassPositive = batchErrorsPositive.length === 0 && batchedRowsPositive === manifestTotal;
+    const confirmedPositive = unbatchedPositive.httpStatus === 400 && batchedPassPositive && batchedRowsPositive === manifestTotal;
+    assert(confirmedPositive === true, "rootCause.positive");
+
+    // Negative case 1: unbatched 200 (not 400)
+    const unbatchedNeg1 = { httpStatus: 200 };
+    const confirmedNeg1 = unbatchedNeg1.httpStatus === 400 && batchedPassPositive && batchedRowsPositive === manifestTotal;
+    assert(confirmedNeg1 === false, "rootCause.negative_unbatched200");
+
+    // Negative case 2: batched has errors
+    const batchErrorsNeg2 = [{ error: { code: "500" } }];
+    const batchedPassNeg2 = batchErrorsNeg2.length === 0 && batchedRowsPositive === manifestTotal;
+    const confirmedNeg2 = unbatchedPositive.httpStatus === 400 && batchedPassNeg2 && batchedRowsPositive === manifestTotal;
+    assert(confirmedNeg2 === false, "rootCause.negative_batchErrors");
+
+    // Negative case 3: batched rows != manifest total
+    const batchedRowsNeg3 = 49;
+    const batchedPassNeg3 = batchErrorsPositive.length === 0 && batchedRowsNeg3 === manifestTotal;
+    const confirmedNeg3 = unbatchedPositive.httpStatus === 400 && batchedPassNeg3 && batchedRowsNeg3 === manifestTotal;
+    assert(confirmedNeg3 === false, "rootCause.negative_rowsMismatch");
+  }
+
+  if (failures > 0) {
+    console.error("FORENSIC_SELF_TEST=FAIL (" + failures + " failures)");
+    process.exitCode = 1;
+  } else {
+    console.log("FORENSIC_SELF_TEST=PASS");
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// ENTRY POINT
+// ═══════════════════════════════════════════════════════════════
+
+if (process.argv.includes("--self-test")) {
+  runSelfTest();
+} else {
+  main().catch((error) => {
+    console.error(scrub(error?.message || error, [
+      process.env.SUPABASE_SERVICE_ROLE_KEY,
+      process.env.SUPABASE_URL,
+    ]));
+    process.exitCode = 1;
+  });
+}

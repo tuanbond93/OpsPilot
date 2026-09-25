@@ -55,6 +55,9 @@ jobs:
         with:
           node-version: "20"
 
+      - name: Forensic harness self-test (no network, no secrets)
+        run: node .github/scripts/opspilot-prod-followup-forensic.mjs --self-test
+
       - name: Verify production data without writes
         env:
           SUPABASE_URL: ${{ secrets.PROD_SUPABASE_URL }}
