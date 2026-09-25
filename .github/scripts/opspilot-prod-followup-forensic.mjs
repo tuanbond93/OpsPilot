@@ -82,13 +82,13 @@ function psqlSelect(sql, label) {
   })();
   const result = spawnSync("psql", [
     "-X", "--set=ON_ERROR_STOP=1", "--no-align", "--tuples-only", "--quiet",
+    "--dbname", databaseUrl,
     "--command", `BEGIN READ ONLY; ${sql}; ROLLBACK;`,
   ], {
     encoding: "utf8",
     maxBuffer: 4 * 1024 * 1024,
     env: {
       ...process.env,
-      PGDATABASE: databaseUrl,
       PGSSLMODE: "require",
       PGCONNECT_TIMEOUT: "15",
       PGOPTIONS: "-c default_transaction_read_only=on -c statement_timeout=8s",
