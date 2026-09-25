@@ -156,14 +156,13 @@ async function fetchManifestInventory(baseUrl, serviceKey) {
     url.searchParams.set("generation_id", "eq." + GENERATION_ID);
     url.searchParams.set("order", "followup_case_id.asc,generation_id.asc,source_sync_run_id.asc.nullsfirst,expected_member_count.asc.nullsfirst,generation_status.asc");
     url.searchParams.set("limit", String(MANIFEST_PAGE_SIZE));
+    url.searchParams.set("offset", String(offset));
 
     let response;
     let body;
     try {
       response = await requestGet(url, serviceKey, {
         Prefer: "count=exact",
-        "Range-Unit": "items",
-        Range: offset + "-" + (offset + MANIFEST_PAGE_SIZE - 1),
       });
       body = await response.text();
     } catch (error) {
@@ -268,24 +267,19 @@ async function fetchExactCount(baseUrl, serviceKey, table, filters, selectColumn
   const url = buildRestUrl(baseUrl, table);
   url.searchParams.set("select", selectColumn);
   for (const [name, value] of Object.entries(filters)) url.searchParams.set(name, value);
+  url.searchParams.set("limit", "1");
 
   let response;
   let body;
   try {
     response = await requestGet(url, serviceKey, {
       Prefer: "count=exact",
-      "Range-Unit": "items",
-      Range: "0-0",
     });
     body = await response.text();
   } catch (error) {
     fail(label + "_FETCH_FAILED", scrub(error?.message || error, secrets));
   }
 
-  if (response.status === 416) {
-    const emptyRange = parseContentRange(response.headers.get("content-range"), label);
-    if (emptyRange.total === 0) return 0;
-  }
   if (!response.ok) fail(label + "_QUERY_FAILED", httpError(response, body, secrets));
 
   const range = parseContentRange(response.headers.get("content-range"), label);
