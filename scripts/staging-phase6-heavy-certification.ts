@@ -552,8 +552,8 @@ export class StagingPhase6HeavyCertification {
     const claimedCP2 = await this.queueRepo.claimWorkUnits(cp2At, "worker_cp2_1", 30, 2);
 
     // Complete all claimed units
-    for (const u of claimedCP1) await this.queueRepo.completeWorkUnit(u.id, "worker_cp1_1", { itemsProcessed: 25 });
-    for (const u of claimedCP2) await this.queueRepo.completeWorkUnit(u.id, "worker_cp2_1", { itemsProcessed: 1000 });
+    for (const u of claimedCP1) await this.queueRepo.completeWorkUnit(u.id, "worker_cp1_1");
+    for (const u of claimedCP2) await this.queueRepo.completeWorkUnit(u.id, "worker_cp2_1");
 
     // Assertions
     const cp1OwnershipMatch = claimedCP1.every(u => new Date(u.checkpointAt).getTime() === new Date(cp1At).getTime() && u.syncRunId === run1Id);
@@ -663,7 +663,7 @@ export class StagingPhase6HeavyCertification {
         operational_cohort: cohort,
       }], syncRunId, { archiveLegacy: false });
 
-      await this.queueRepo.completeWorkUnit(unit.id, "worker_crash_1", { itemsProcessed: 1 });
+      await this.queueRepo.completeWorkUnit(unit.id, "worker_crash_1");
     }
     console.log("Worker 1 completed 3 units, then simulated fatal crash occurs!");
 
@@ -710,7 +710,7 @@ export class StagingPhase6HeavyCertification {
         operational_cohort: cohort,
       }], syncRunId, { archiveLegacy: false });
 
-      await this.queueRepo.completeWorkUnit(unit.id, "worker_recovery_2", { itemsProcessed: 1 });
+      await this.queueRepo.completeWorkUnit(unit.id, "worker_recovery_2");
     }
 
     // Verify all 6 units COMPLETED, exactly 300 members, 0 duplicates

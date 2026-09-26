@@ -67,8 +67,12 @@ import type { ISnapshotV3ShadowRepository } from "./interfaces/ISnapshotV3Shadow
 import { SupabaseSnapshotV3ShadowRepository } from "./supabase/SupabaseSnapshotV3ShadowRepository";
 import { createSnapshotV3ShadowClient } from "@/connectors/supabase/snapshot-v3-server";
 import { isSnapshotV3ShadowEnabled } from "@/config/snapshot-v3";
+import type { ICheckpointWorkQueueRepository } from "./interfaces/ICheckpointWorkQueueRepository";
+import { SupabaseCheckpointWorkQueueRepository } from "./supabase/SupabaseCheckpointWorkQueueRepository";
+import { MockCheckpointWorkQueueRepository } from "./mock/MockCheckpointWorkQueueRepository";
 
 export class RepositoryFactory {
+  private static checkpointWorkQueueRepo: ICheckpointWorkQueueRepository | null = null;
   private static incidentRepo: IIncidentRepository | null = null;
   private static aiJobRepo: IAiJobRepository | null = null;
   private static plannerRepo: IPlannerRepository | null = null;
@@ -385,7 +389,20 @@ export class RepositoryFactory {
     return this.playbookDirectiveRepo;
   }
 
+  static registerCheckpointWorkQueueRepository(repo: ICheckpointWorkQueueRepository | null): void {
+    this.checkpointWorkQueueRepo = repo;
+  }
+
+  static getCheckpointWorkQueueRepository(client?: SupabaseClient | null): ICheckpointWorkQueueRepository {
+    if (this.checkpointWorkQueueRepo) return this.checkpointWorkQueueRepo;
+    if (client) return new SupabaseCheckpointWorkQueueRepository(client);
+    return this.shouldProvideMock()
+      ? new MockCheckpointWorkQueueRepository()
+      : new SupabaseCheckpointWorkQueueRepository(createAdminClient());
+  }
+
   static clear(): void {
+    this.checkpointWorkQueueRepo = null;
     this.incidentRepo = null;
     this.aiJobRepo = null;
     this.plannerRepo = null;

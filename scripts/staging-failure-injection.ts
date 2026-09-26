@@ -161,7 +161,7 @@ export async function runStagingFailureInjection(): Promise<FailureInjectionResu
 
     // Worker 1 processes 3 units and completes them
     for (let i = 0; i < 3; i++) {
-      await queueRepo.completeWorkUnit(worker1Claimed[i].id, worker1Id, { itemsProcessed: 10 });
+      await queueRepo.completeWorkUnit(worker1Claimed[i].id, worker1Id);
     }
     results.midBatchCrash.worker1Completed = 3;
     console.log("Worker 1 completed 3 units, then crashes ungracefully (process dies)!");
@@ -182,7 +182,7 @@ export async function runStagingFailureInjection(): Promise<FailureInjectionResu
 
     // Worker 2 completes all reclaimed units
     for (const unit of worker2Claimed) {
-      await queueRepo.completeWorkUnit(unit.id, worker2Id, { itemsProcessed: 10 });
+      await queueRepo.completeWorkUnit(unit.id, worker2Id);
     }
 
     // Verify all 10 units completed
@@ -212,7 +212,7 @@ export async function runStagingFailureInjection(): Promise<FailureInjectionResu
       checkpointAt,
       syncRunId,
       stage: "FOLLOWUPS_PROCESSING" as const,
-      workType: "PROCESS_FOLLOWUP_BATCH" as const,
+      workType: "EVALUATE_FOLLOWUP_BATCH" as const,
       partitionKey: "TEST2_FREEZE",
       cursor: { offset: 0, limit: 5, total: 5 },
       idempotencyKey: test2UnitKey,
@@ -234,7 +234,7 @@ export async function runStagingFailureInjection(): Promise<FailureInjectionResu
     results.leaseReclaim.worker2Reclaimed = claimedReclaim.length === 1 && claimedReclaim[0].idempotencyKey === test2UnitKey;
 
     if (results.leaseReclaim.worker2Reclaimed) {
-      await queueRepo.completeWorkUnit(claimedReclaim[0].id, reclaimWorkerId, { itemsProcessed: 5 });
+      await queueRepo.completeWorkUnit(claimedReclaim[0].id, reclaimWorkerId);
       const { data: finalUnit } = await supabase
         .from("checkpoint_work_units")
         .select("status")

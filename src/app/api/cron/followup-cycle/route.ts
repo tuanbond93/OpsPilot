@@ -14,7 +14,7 @@ import { queuePhase2CheckpointWork } from "@/services/phase2-checkpoint-work";
 import { isTransientInfrastructureError, retryTransientInfrastructure } from "@/services/transient-infrastructure";
 import { runNaturalShadowObserverSafely } from "@/services/inbound-natural-shadow-observer";
 import { CheckpointShadowRunner } from "@/engine/checkpoint-v2/checkpoint-shadow-runner";
-import { SupabaseCheckpointWorkQueueRepository } from "@/repositories/supabase/SupabaseCheckpointWorkQueueRepository";
+import { RepositoryFactory } from "@/repositories/RepositoryFactory";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
@@ -225,7 +225,7 @@ async function runFollowupCycle(request: NextRequest) {
   let v2Shadow = null;
   if (process.env.CHECKPOINT_PIPELINE_V2_SHADOW === "true") {
     try {
-      const queueRepo = new SupabaseCheckpointWorkQueueRepository(client);
+      const queueRepo = RepositoryFactory.getCheckpointWorkQueueRepository(client);
       const shadowRunner = new CheckpointShadowRunner(queueRepo);
       v2Shadow = await shadowRunner.runShadowComparison(
         {

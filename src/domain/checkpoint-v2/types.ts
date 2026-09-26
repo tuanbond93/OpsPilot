@@ -67,7 +67,7 @@ export interface WorkerBudgetConfig {
   /** Target execution time for a normal invocation (default: 45,000ms = 45s) */
   softBudgetMs: number;
   /** Safe tail margin: stop claiming/starting new work when remaining budget <= safeTailMarginMs (default: 12,000ms = 12s) */
-  safeTailMarginMs: number;
+  safeTailMarginMs?: number;
   /** Warning threshold where no new batches should be started (default: 75,000ms = 75s) */
   warningBudgetMs: number;
   /** Hard cutoff threshold where the worker must yield immediately (default: 150,000ms = 150s) */
