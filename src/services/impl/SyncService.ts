@@ -652,6 +652,27 @@ export class SyncService implements ISyncService {
         }
       };
 
+      const notifyCheckpointHistoryPersisted = async () => {
+        if (!_options?.onCheckpointHistoryPersisted || !_options.checkpointAt) return;
+        try {
+          await _options.onCheckpointHistoryPersisted({
+            syncRunId,
+            checkpointAt: _options.checkpointAt,
+            orderCount: snapshotResult?.orders?.length || 0,
+            incidentCount: incidents?.length || 0,
+            orders: snapshotResult?.orders || [],
+          });
+        } catch (error) {
+          logger.warn({
+            category: "V2_SHADOW_ERROR",
+            component: "SyncService",
+            operation: "checkpointHistoryObserver",
+            message: "Checkpoint history observer failed without blocking sync.",
+            metadata: { error: safeErrorMessage(error) },
+          });
+        }
+      };
+
       try {
         if (reusingCompleteInboundPopulation && !completePopulationResumeReady) {
           throw new Error("INBOUND_COMPLETE_POPULATION_RESUME_STATE_UNAVAILABLE");
@@ -1097,6 +1118,7 @@ export class SyncService implements ISyncService {
               message: `[SyncPhase] phase=${pHist} status=completed durationMs=${Math.round(histDuration)}`
             });
         }
+        await notifyCheckpointHistoryPersisted();
 
         // Load incident histories for follow-up evaluation
         let historyMap = new Map();

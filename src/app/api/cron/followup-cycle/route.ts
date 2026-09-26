@@ -13,7 +13,7 @@ import { claimCheckpointRecovery, finishCheckpointRecovery, queueCheckpointRecov
 import { queuePhase2CheckpointWork } from "@/services/phase2-checkpoint-work";
 import { isTransientInfrastructureError, retryTransientInfrastructure } from "@/services/transient-infrastructure";
 import { runNaturalShadowObserverSafely } from "@/services/inbound-natural-shadow-observer";
-import { CheckpointShadowRunner } from "@/engine/checkpoint-v2/checkpoint-shadow-runner";
+import { CheckpointShadowRunner, type ShadowComputeResult, type ShadowParityReport } from "@/engine/checkpoint-v2/checkpoint-shadow-runner";
 import { RepositoryFactory } from "@/repositories/RepositoryFactory";
 
 export const dynamic = "force-dynamic";
@@ -89,11 +89,32 @@ async function runFollowupCycle(request: NextRequest) {
   let naturalShadow: Awaited<ReturnType<typeof runNaturalShadowObserverSafely>> = {
     status: "FAILED", reason: "NATURAL_SHADOW_NOT_NATURAL_SCHEDULER_PATH", warehousesEvaluated: 0,
   };
+  let shadowComputeResult: ShadowComputeResult | null = null;
   const sync = await syncRillnet({
     checkpointAt,
     onSourceCoreComplete: !recovery && trustedNaturalScheduler
       ? async ({ syncRunId }) => {
           naturalShadow = await runNaturalShadowObserverSafely(client, { checkpointAt, syncRunId, trustedScheduler: true });
+        }
+      : undefined,
+    onCheckpointHistoryPersisted: process.env.CHECKPOINT_PIPELINE_V2_SHADOW === "true"
+      ? async ({ syncRunId, checkpointAt: cbCheckpointAt, orderCount, incidentCount, orders }) => {
+          try {
+            const queueRepo = RepositoryFactory.getCheckpointWorkQueueRepository(client);
+            const shadowRunner = new CheckpointShadowRunner(queueRepo);
+            shadowComputeResult = await shadowRunner.runShadowCompute({
+              checkpointAt: cbCheckpointAt,
+              syncRunId,
+              orderCount,
+              incidentCount,
+              orders,
+            });
+          } catch (shadowErr) {
+            logger.warn({
+              category: "V2_SHADOW_ERROR",
+              message: getRuntimeErrorDetails(shadowErr).message,
+            });
+          }
         }
       : undefined,
   });
@@ -126,7 +147,10 @@ async function runFollowupCycle(request: NextRequest) {
         attention(checkpointAt, "RECOVERY_QUEUE", "RECOVERY_QUEUE_FAILURE", 1, error);
       }
     }
-    return NextResponse.json({ ok: false, stage: "SYNC", sync }, { status });
+    const v2Shadow = shadowComputeResult
+      ? new CheckpointShadowRunner().finalizeParity(shadowComputeResult, null)
+      : null;
+    return NextResponse.json({ ok: false, stage: "SYNC", sync, v2Shadow }, { status });
   }
 
   if (sync.skipped && sync.skipReason === "CHECKPOINT_ALREADY_COMPLETED") {
@@ -221,27 +245,30 @@ async function runFollowupCycle(request: NextRequest) {
   await queuePhase2CheckpointWork(client, { checkpointAt, syncRunId: sync.syncRunId });
   if (recovery) await finishCheckpointRecovery(client, checkpointAt, recovery.recoveryToken, { status: "CONFIRMED", syncRunId: sync.syncRunId });
 
-  // Pipeline V2 Shadow Runner: runs alongside V1 only if CHECKPOINT_PIPELINE_V2_SHADOW is 'true'
-  let v2Shadow = null;
+  // Pipeline V2 Shadow Runner: finalize parity report if V2 shadow compute ran
+  let v2Shadow: ShadowParityReport | null = null;
   if (process.env.CHECKPOINT_PIPELINE_V2_SHADOW === "true") {
     try {
       const queueRepo = RepositoryFactory.getCheckpointWorkQueueRepository(client);
       const shadowRunner = new CheckpointShadowRunner(queueRepo);
-      v2Shadow = await shadowRunner.runShadowComparison(
-        {
-          syncRunId: sync.syncRunId,
-          checkpointAt,
-          orderCount: sync.fetchedOrderCount || 0,
-          incidentCount: sync.incidentCount || 0,
-          caseCount: evaluation?.supportedCasesEvaluated || 0,
-          memberCount: evaluation?.khoTonEvaluated || 0,
-          decisionsCount: evaluation
-            ? Object.values(evaluation.pendingCreated).reduce((sum, value) => sum + value, 0)
-            : 0,
-          interventionTypes: ["TELEGRAM_FIRST_PUSH", "TELEGRAM_FOLLOW_UP"],
-        },
-        []
-      );
+      const v1Summary = {
+        syncRunId: sync.syncRunId,
+        checkpointAt,
+        orderCount: sync.fetchedOrderCount || 0,
+        incidentCount: sync.incidentCount || 0,
+        caseCount: evaluation?.supportedCasesEvaluated || 0,
+        memberCount: evaluation?.khoTonEvaluated || 0,
+        decisionsCount: evaluation
+          ? Object.values(evaluation.pendingCreated).reduce((sum, value) => sum + value, 0)
+          : 0,
+        interventionTypes: ["TELEGRAM_FIRST_PUSH", "TELEGRAM_FOLLOW_UP"],
+      };
+
+      if (shadowComputeResult) {
+        v2Shadow = shadowRunner.finalizeParity(shadowComputeResult, v1Summary);
+      } else {
+        v2Shadow = await shadowRunner.runShadowComparison(v1Summary, []);
+      }
     } catch (shadowErr) {
       logger.warn({
         category: "V2_SHADOW_ERROR",

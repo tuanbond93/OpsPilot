@@ -14,6 +14,14 @@ export interface SyncOptions {
     sourceFreshness: string;
     populationCompletedAt: string;
   }) => Promise<void>;
+  /** Invoked immediately after checkpoint history is durably committed and BEFORE Phase 6 followups. */
+  onCheckpointHistoryPersisted?: (context: {
+    syncRunId: string;
+    checkpointAt: string;
+    orderCount: number;
+    incidentCount: number;
+    orders: any[];
+  }) => Promise<void>;
 }
 
 export interface ISyncService {
