@@ -17,7 +17,7 @@
 
 import type { NormalizedRillnetOrder } from "@/connectors/rillnet/types";
 import { CheckpointOrchestrator } from "./checkpoint-orchestrator";
-import { CheckpointWorker } from "./checkpoint-worker";
+import { CheckpointWorker, type WorkUnitExecutionHandler } from "./checkpoint-worker";
 import { CheckpointDispatchLedger, InMemoryDispatchLedgerStorage } from "./dispatch-ledger";
 import { MockCheckpointWorkQueueRepository } from "@/repositories/mock/MockCheckpointWorkQueueRepository";
 import type { ICheckpointWorkQueueRepository } from "@/repositories/interfaces/ICheckpointWorkQueueRepository";
@@ -181,32 +181,35 @@ export class CheckpointShadowRunner {
   async runWorkerBatch(
     checkpointAt: string,
     syncRunId: string,
-    budgetConfig: WorkerBudgetConfig = DEFAULT_WORKER_BUDGET
+    budgetConfig: WorkerBudgetConfig = DEFAULT_WORKER_BUDGET,
+    customHandler?: WorkUnitExecutionHandler
   ): Promise<WorkerInvocationSummary> {
     const shadowLedgerStorage = new InMemoryDispatchLedgerStorage();
     const shadowLedger = new CheckpointDispatchLedger(shadowLedgerStorage);
     const worker = new CheckpointWorker(this.queueRepo, budgetConfig, "shadow-cron-worker");
 
+    const defaultHandler: WorkUnitExecutionHandler = async (unit) => {
+      // Evaluate dispatch in shadow mode if unit is dispatch stage
+      if (unit.stage === "DISPATCH_PROCESSING" || unit.workType === "DISPATCH_INTERVENTION_BATCH") {
+        await shadowLedger.dispatchEffectivelyOnce({
+          checkpointAt: unit.checkpointAt,
+          syncRunId: unit.syncRunId,
+          caseId: `case_shadow_${unit.id}`,
+          incidentKey: `WH_SHADOW:${unit.partitionKey}`,
+          interventionType: (unit.cursor.metadata?.interventionType as string) || "TELEGRAM_FIRST_PUSH",
+          executionMode: "SHADOW",
+          sendExternal: async () => {
+            throw new Error("SECURITY_BREACH: sendExternal must never be invoked in SHADOW mode!");
+          },
+        });
+      }
+      return { itemsProcessed: unit.cursor.limit };
+    };
+
     return worker.runLoop(
       checkpointAt,
       syncRunId,
-      async (unit) => {
-        // Evaluate dispatch in shadow mode if unit is dispatch stage
-        if (unit.stage === "DISPATCH_PROCESSING" || unit.workType === "DISPATCH_INTERVENTION_BATCH") {
-          await shadowLedger.dispatchEffectivelyOnce({
-            checkpointAt: unit.checkpointAt,
-            syncRunId: unit.syncRunId,
-            caseId: `case_shadow_${unit.id}`,
-            incidentKey: `WH_SHADOW:${unit.partitionKey}`,
-            interventionType: (unit.cursor.metadata?.interventionType as string) || "TELEGRAM_FIRST_PUSH",
-            executionMode: "SHADOW",
-            sendExternal: async () => {
-              throw new Error("SECURITY_BREACH: sendExternal must never be invoked in SHADOW mode!");
-            },
-          });
-        }
-        return { itemsProcessed: unit.cursor.limit };
-      },
+      customHandler || defaultHandler,
       "SHADOW"
     );
   }

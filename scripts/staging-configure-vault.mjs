@@ -14,7 +14,7 @@ async function main() {
   });
   await client.connect();
 
-  const cycleUrl = "https://airline-thickness-laugh-appearing.trycloudflare.com/api/cron/followup-cycle";
+  const cycleUrl = "https://helping-decorative-mud-encouraged.trycloudflare.com/api/cron/followup-cycle";
   const cronSecret = "ops-staging-cron-secret-2026";
 
   console.log("Configuring Supabase Vault on Staging...");

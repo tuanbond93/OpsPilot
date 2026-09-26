@@ -5,6 +5,8 @@ import { loadAndVerifyStagingEnv } from "./staging-safety-guard.mjs";
 import { SupabaseCheckpointWorkQueueRepository } from "../src/repositories/supabase/SupabaseCheckpointWorkQueueRepository";
 import { CheckpointShadowRunner } from "../src/engine/checkpoint-v2/checkpoint-shadow-runner";
 import { DEFAULT_WORKER_BUDGET } from "../src/domain/checkpoint-v2/types";
+import type { WorkUnitExecutionHandler } from "../src/engine/checkpoint-v2/checkpoint-worker";
+import { SupabaseDispatchLedgerStorage, CheckpointDispatchLedger } from "../src/engine/checkpoint-v2/dispatch-ledger";
 
 const envPath = path.resolve(process.cwd(), ".env.staging.local");
 const stagingEnv = loadAndVerifyStagingEnv(envPath);
@@ -25,6 +27,8 @@ const supabase = createClient(stagingEnv.url, stagingEnv.secretKey, {
 });
 const queueRepo = new SupabaseCheckpointWorkQueueRepository(supabase);
 const shadowRunner = new CheckpointShadowRunner(queueRepo);
+const ledgerStorage = new SupabaseDispatchLedgerStorage(supabase);
+const dispatchLedger = new CheckpointDispatchLedger(ledgerStorage);
 
 export interface WorkerHttpInvocationRecord {
   invocationId: string;
@@ -193,14 +197,93 @@ const server = http.createServer(async (req, res) => {
       const safeTailParam = Number(reqUrl.searchParams.get("safe_tail_margin_ms"));
       const budgetConfig = {
         ...DEFAULT_WORKER_BUDGET,
-        ...(softBudgetParam > 0 ? { softBudgetMs: softBudgetParam } : {}),
-        ...(safeTailParam > 0 ? { safeTailMarginMs: safeTailParam } : {}),
+        softBudgetMs: softBudgetParam > 0 ? softBudgetParam : 38_000,
+        safeTailMarginMs: safeTailParam > 0 ? safeTailParam : 8_000,
+      };
+
+      const customHandler: WorkUnitExecutionHandler = async (unit) => {
+        switch (unit.workType) {
+          case "INGEST_POPULATION_CHUNK": {
+            return { itemsProcessed: unit.cursor.limit };
+          }
+          case "EVALUATE_INCIDENTS_CHUNK": {
+            return { itemsProcessed: unit.cursor.limit };
+          }
+          case "EVALUATE_FOLLOWUP_BATCH": {
+            return { itemsProcessed: unit.cursor.limit };
+          }
+          case "PERSIST_MEMBERS_CHUNK": {
+            if (unit.cursor.metadata?.kind === "GENERATION_COMMIT") {
+              const caseIds = (unit.cursor.metadata?.caseIds as string[]) || [];
+              if (caseIds.length > 0) {
+                const { error: genErr } = await supabase
+                  .from("followup_case_member_generations")
+                  .update({
+                    generation_status: "COMMITTED",
+                    committed_at: new Date().toISOString(),
+                  })
+                  .eq("generation_id", unit.syncRunId)
+                  .in("followup_case_id", caseIds);
+                if (genErr) throw new Error(`Generation commit failed: ${genErr.message}`);
+              }
+              return { itemsProcessed: unit.cursor.limit };
+            } else {
+              const offset = unit.cursor.offset;
+              const limit = unit.cursor.limit;
+              const caseIds = (unit.cursor.metadata?.caseIds as string[]) || [];
+              const defaultCaseId = (unit.cursor.metadata?.caseId as string) || `case_${unit.syncRunId.slice(0, 8)}_0`;
+              const rows = [];
+              for (let m = 0; m < limit; m++) {
+                const mIdx = offset + m;
+                const cId = caseIds.length > 0 ? caseIds[m % caseIds.length] : defaultCaseId;
+                rows.push({
+                  followup_case_id: cId,
+                  generation_id: unit.syncRunId,
+                  source_sync_run_id: unit.syncRunId,
+                  order_code: `ORD_${unit.syncRunId.slice(0, 6)}_${mIdx}`,
+                  customer_id: "CUST_PRODUCTION",
+                  warehouse_id: "WH_HNI_01",
+                  stage: "DELIVERY",
+                  status: m % 2 === 0 ? "delivering" : "delay",
+                  baseline_status: "delivering",
+                  is_baseline: true,
+                  member_active: true,
+                  observed_at: unit.checkpointAt,
+                  due_at: unit.checkpointAt,
+                });
+              }
+              const { error: memberErr } = await supabase
+                .from("followup_case_members")
+                .upsert(rows, { onConflict: "followup_case_id,generation_id,order_code" });
+              if (memberErr) throw new Error(`Member upsert failed: ${memberErr.message}`);
+              return { itemsProcessed: limit };
+            }
+          }
+          case "DISPATCH_INTERVENTION_BATCH": {
+            const caseId = (unit.cursor.metadata?.caseId as string) || `case_${unit.syncRunId.slice(0, 8)}_${unit.cursor.offset}`;
+            await dispatchLedger.dispatchEffectivelyOnce({
+              checkpointAt: unit.checkpointAt,
+              syncRunId: unit.syncRunId,
+              caseId,
+              incidentKey: `WH_HNI_01:KHO_TON:SHADOW_${unit.partitionKey}`,
+              interventionType: (unit.cursor.metadata?.interventionType as string) || "TELEGRAM_FIRST_PUSH",
+              executionMode: "SHADOW",
+              sendExternal: async () => {
+                throw new Error("SECURITY_BREACH: sendExternal must never be invoked in SHADOW mode!");
+              },
+            });
+            return { itemsProcessed: unit.cursor.limit };
+          }
+          default:
+            return { itemsProcessed: unit.cursor.limit };
+        }
       };
 
       const summary = await shadowRunner.runWorkerBatch(
         finalCheckpointAt,
         targetSyncRunId,
-        budgetConfig
+        budgetConfig,
+        customHandler
       );
 
       record.httpStatus = 200;
