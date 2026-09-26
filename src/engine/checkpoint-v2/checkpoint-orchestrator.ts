@@ -11,6 +11,7 @@ import type {
   WorkUnitType,
   WorkerBatchConfig,
   ExecutionMode,
+  PostBarrierWorkPlan,
 } from "@/domain/checkpoint-v2/types";
 import { DEFAULT_BATCH_CONFIG } from "@/domain/checkpoint-v2/types";
 import type { ICheckpointWorkQueueRepository } from "@/repositories/interfaces/ICheckpointWorkQueueRepository";
@@ -31,7 +32,97 @@ export class CheckpointOrchestrator {
   ) {}
 
   /**
+   * Initializes a post-barrier Phase 6 checkpoint work plan.
+   * Strictly scopes to post-barrier work:
+   * 1. EVALUATE_FOLLOWUP_BATCH (followup case evaluation)
+   * 2. PERSIST_MEMBERS_CHUNK (cohort/member hydration & generation)
+   * 3. DISPATCH_INTERVENTION_BATCH (dispatch reservation & execution)
+   *
+   * Pre-barrier work types (INGEST_POPULATION_CHUNK, etc.) are strictly excluded
+   * from the post-barrier shadow plan.
+   */
+  async initializePostBarrierCheckpoint(plan: PostBarrierWorkPlan): Promise<number> {
+    const {
+      checkpointAt,
+      syncRunId,
+      caseCount,
+      estimatedMembers = 0,
+      executionMode = "SHADOW",
+      caseBatchSize = this.batchConfig.followupCaseBatchSize || 25,
+      memberBatchSize = this.batchConfig.followupMemberBatchSize || 250,
+      dispatchBatchSize = 25,
+    } = plan;
+
+    if (caseCount <= 0) {
+      return 0;
+    }
+
+    const inputs = [];
+
+    // 1. Followup Evaluation Batches (Phase 6 state machine evaluation)
+    const caseBatchCount = Math.max(1, Math.ceil(caseCount / caseBatchSize));
+    for (let i = 0; i < caseBatchCount; i++) {
+      const offset = i * caseBatchSize;
+      const limit = Math.min(caseBatchSize, caseCount - offset);
+      const partitionKey = `followup_batch_${i}_of_${caseBatchCount}`;
+      const idempotencyKey = `${checkpointAt}:${syncRunId}:${executionMode}:FOLLOWUPS_PROCESSING:EVALUATE_FOLLOWUP_BATCH:${partitionKey}`;
+      inputs.push({
+        checkpointAt,
+        syncRunId,
+        stage: "FOLLOWUPS_PROCESSING" as CheckpointStage,
+        workType: "EVALUATE_FOLLOWUP_BATCH" as WorkUnitType,
+        partitionKey,
+        cursor: { offset, limit, total: caseCount },
+        executionMode,
+        idempotencyKey,
+      });
+    }
+
+    // 2. Member Hydration & Generation Batches
+    const memberTotal = estimatedMembers > 0 ? estimatedMembers : Math.max(caseCount * 25, 25);
+    const memberBatchCount = Math.max(1, Math.ceil(memberTotal / memberBatchSize));
+    for (let i = 0; i < memberBatchCount; i++) {
+      const offset = i * memberBatchSize;
+      const limit = Math.min(memberBatchSize, memberTotal - offset);
+      const partitionKey = `member_chunk_${i}_of_${memberBatchCount}`;
+      const idempotencyKey = `${checkpointAt}:${syncRunId}:${executionMode}:FOLLOWUPS_PROCESSING:PERSIST_MEMBERS_CHUNK:${partitionKey}`;
+      inputs.push({
+        checkpointAt,
+        syncRunId,
+        stage: "FOLLOWUPS_PROCESSING" as CheckpointStage,
+        workType: "PERSIST_MEMBERS_CHUNK" as WorkUnitType,
+        partitionKey,
+        cursor: { offset, limit, total: memberTotal },
+        executionMode,
+        idempotencyKey,
+      });
+    }
+
+    // 3. Dispatch Intervention Batches
+    const dispatchBatchCount = Math.max(1, Math.ceil(caseCount / dispatchBatchSize));
+    for (let i = 0; i < dispatchBatchCount; i++) {
+      const offset = i * dispatchBatchSize;
+      const limit = Math.min(dispatchBatchSize, caseCount - offset);
+      const partitionKey = `dispatch_batch_${i}_of_${dispatchBatchCount}`;
+      const idempotencyKey = `${checkpointAt}:${syncRunId}:${executionMode}:DISPATCH_PROCESSING:DISPATCH_INTERVENTION_BATCH:${partitionKey}`;
+      inputs.push({
+        checkpointAt,
+        syncRunId,
+        stage: "DISPATCH_PROCESSING" as CheckpointStage,
+        workType: "DISPATCH_INTERVENTION_BATCH" as WorkUnitType,
+        partitionKey,
+        cursor: { offset, limit, total: caseCount },
+        executionMode,
+        idempotencyKey,
+      });
+    }
+
+    return this.workQueueRepo.createWorkUnits(inputs);
+  }
+
+  /**
    * Initializes a new checkpoint by partitioning the ingestion stage into bounded work units.
+   * Kept for backwards compatibility with raw ingestion benchmarks.
    */
   async initializeCheckpoint(
     checkpointAt: string,

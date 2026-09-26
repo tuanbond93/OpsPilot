@@ -16,6 +16,7 @@
  */
 
 import type { NormalizedRillnetOrder } from "@/connectors/rillnet/types";
+import type { Incident, IncidentReasonCode } from "@/engine/incident";
 import { CheckpointOrchestrator } from "./checkpoint-orchestrator";
 import { CheckpointWorker, type WorkUnitExecutionHandler } from "./checkpoint-worker";
 import { CheckpointDispatchLedger, InMemoryDispatchLedgerStorage } from "./dispatch-ledger";
@@ -26,6 +27,10 @@ import {
   type WorkerBudgetConfig,
   type WorkerInvocationSummary,
 } from "@/domain/checkpoint-v2/types";
+import {
+  PostBarrierShadowHandler,
+  type PostBarrierHandlerDependencies,
+} from "./post-barrier-handler";
 
 export interface V1CheckpointSummary {
   syncRunId: string;
@@ -43,6 +48,8 @@ export interface ShadowSeedInput {
   syncRunId: string;
   orderCount?: number;
   incidentCount?: number;
+  caseCount?: number;
+  estimatedMembers?: number;
   orders?: NormalizedRillnetOrder[];
 }
 
@@ -51,6 +58,7 @@ export interface ShadowSeedResult {
   syncRunId: string;
   orderCount: number;
   incidentCount: number;
+  caseCount: number;
   unitsSeeded: number;
   executionMode: "SHADOW";
   seedDurationMs: number;
@@ -63,7 +71,9 @@ export interface ShadowComputeInput {
   orderCount: number;
   incidentCount: number;
   caseCount?: number;
+  estimatedMembers?: number;
   orders?: NormalizedRillnetOrder[];
+  incidents?: Incident[];
   interventionTypes?: string[];
 }
 
@@ -115,9 +125,18 @@ export interface ShadowParityReport {
 
 export class CheckpointShadowRunner {
   private queueRepo: ICheckpointWorkQueueRepository;
+  private postBarrierHandler: PostBarrierShadowHandler;
 
-  constructor(queueRepo?: ICheckpointWorkQueueRepository) {
+  constructor(
+    queueRepo?: ICheckpointWorkQueueRepository,
+    deps: PostBarrierHandlerDependencies = {}
+  ) {
     this.queueRepo = queueRepo || new MockCheckpointWorkQueueRepository();
+    this.postBarrierHandler = new PostBarrierShadowHandler(deps);
+  }
+
+  getPostBarrierHandler(): PostBarrierShadowHandler {
+    return this.postBarrierHandler;
   }
 
   static isShadowEnabled(): boolean {
@@ -147,19 +166,22 @@ export class CheckpointShadowRunner {
    * Seeds V2 checkpoint work units durably at the barrier BEFORE Phase 6.
    * Strictly bounded: Enqueues work units into the database and returns immediately.
    * DOES NOT execute workers, rehydration, or dispatch inline.
+   * Strictly scopes to post-barrier work units (EVALUATE_FOLLOWUP_BATCH, PERSIST_MEMBERS_CHUNK, DISPATCH_INTERVENTION_BATCH).
    */
   async seedShadowCheckpoint(input: ShadowSeedInput): Promise<ShadowSeedResult> {
     const startTime = performance.now();
     const orderCount = input.orderCount ?? input.orders?.length ?? 0;
     const incidentCount = input.incidentCount ?? 0;
+    const caseCount = input.caseCount ?? (incidentCount > 0 ? incidentCount : 0);
 
     const orchestrator = new CheckpointOrchestrator(this.queueRepo);
-    const unitsSeeded = await orchestrator.initializeCheckpoint(
-      input.checkpointAt,
-      input.syncRunId,
-      orderCount,
-      "SHADOW"
-    );
+    const unitsSeeded = await orchestrator.initializePostBarrierCheckpoint({
+      checkpointAt: input.checkpointAt,
+      syncRunId: input.syncRunId,
+      caseCount,
+      estimatedMembers: input.estimatedMembers,
+      executionMode: "SHADOW",
+    });
 
     const elapsedMs = performance.now() - startTime;
     return {
@@ -167,6 +189,7 @@ export class CheckpointShadowRunner {
       syncRunId: input.syncRunId,
       orderCount,
       incidentCount,
+      caseCount,
       unitsSeeded,
       executionMode: "SHADOW",
       seedDurationMs: Math.round(elapsedMs),
@@ -177,6 +200,7 @@ export class CheckpointShadowRunner {
   /**
    * Executes a bounded batch of work units in SHADOW mode for an independent worker invocation.
    * Pulls units under soft budget (~45s), suppresses all external Telegram calls, and updates state cleanly.
+   * Uses real post-barrier handlers for followup evaluation, member persistence, and dispatch suppression.
    */
   async runWorkerBatch(
     checkpointAt: string,
@@ -184,32 +208,13 @@ export class CheckpointShadowRunner {
     budgetConfig: WorkerBudgetConfig = DEFAULT_WORKER_BUDGET,
     customHandler?: WorkUnitExecutionHandler
   ): Promise<WorkerInvocationSummary> {
-    const shadowLedgerStorage = new InMemoryDispatchLedgerStorage();
-    const shadowLedger = new CheckpointDispatchLedger(shadowLedgerStorage);
+    const handler = customHandler || this.postBarrierHandler.createExecutionHandler();
     const worker = new CheckpointWorker(this.queueRepo, budgetConfig, "shadow-cron-worker");
-
-    const defaultHandler: WorkUnitExecutionHandler = async (unit) => {
-      // Evaluate dispatch in shadow mode if unit is dispatch stage
-      if (unit.stage === "DISPATCH_PROCESSING" || unit.workType === "DISPATCH_INTERVENTION_BATCH") {
-        await shadowLedger.dispatchEffectivelyOnce({
-          checkpointAt: unit.checkpointAt,
-          syncRunId: unit.syncRunId,
-          caseId: `case_shadow_${unit.id}`,
-          incidentKey: `WH_SHADOW:${unit.partitionKey}`,
-          interventionType: (unit.cursor.metadata?.interventionType as string) || "TELEGRAM_FIRST_PUSH",
-          executionMode: "SHADOW",
-          sendExternal: async () => {
-            throw new Error("SECURITY_BREACH: sendExternal must never be invoked in SHADOW mode!");
-          },
-        });
-      }
-      return { itemsProcessed: unit.cursor.limit };
-    };
 
     return worker.runLoop(
       checkpointAt,
       syncRunId,
-      customHandler || defaultHandler,
+      handler,
       "SHADOW"
     );
   }
@@ -220,65 +225,63 @@ export class CheckpointShadowRunner {
    */
   async runShadowCompute(input: ShadowComputeInput): Promise<ShadowComputeResult> {
     const startTime = performance.now();
-    let telegramSuppressedCount = 0;
     const orderCount = input.orderCount ?? input.orders?.length ?? 0;
+    const incidentCount = input.incidentCount ?? 0;
     const caseCount = input.caseCount ?? (input.incidentCount > 0 ? input.incidentCount : 0);
-    const interventionTypes = input.interventionTypes?.length
-      ? input.interventionTypes
-      : ["TELEGRAM_FIRST_PUSH", "TELEGRAM_FOLLOW_UP"];
 
-    // 1. Initialize V2 shadow work queue
+    // 1. Initialize strictly post-barrier V2 shadow work queue
     const orchestrator = new CheckpointOrchestrator(this.queueRepo);
-    const totalUnits = await orchestrator.initializeCheckpoint(
-      input.checkpointAt,
-      input.syncRunId,
-      orderCount,
-      "SHADOW"
-    );
+    const totalUnits = await orchestrator.initializePostBarrierCheckpoint({
+      checkpointAt: input.checkpointAt,
+      syncRunId: input.syncRunId,
+      caseCount,
+      estimatedMembers: input.estimatedMembers,
+      executionMode: "SHADOW",
+    });
 
-    // 2. Set up Shadow Dispatch Ledger (strictly captures rather than sending)
-    const shadowLedgerStorage = new InMemoryDispatchLedgerStorage();
-    const shadowLedger = new CheckpointDispatchLedger(shadowLedgerStorage);
-
-    // 3. Execute V2 worker loop in shadow mode
-    const worker = new CheckpointWorker(this.queueRepo, undefined, "shadow-worker-v2");
-
-    let v2OrdersProcessed = 0;
-    await worker.runLoop(
-      input.checkpointAt,
-      input.syncRunId,
-      async (unit) => {
-        v2OrdersProcessed += unit.cursor.limit;
-        return { itemsProcessed: unit.cursor.limit };
-      },
-      "SHADOW"
-    );
-
-    // 4. Advance through followup and dispatch stages in shadow
-    const v2InterventionTypes: string[] = [];
-    for (let i = 0; i < caseCount; i++) {
-      const type = interventionTypes[i % interventionTypes.length] || "TELEGRAM_FIRST_PUSH";
-      v2InterventionTypes.push(type);
-
-      // Shadow dispatch: intercept and hard block
-      const dispatchResult = await shadowLedger.dispatchEffectivelyOnce({
-        checkpointAt: input.checkpointAt,
-        syncRunId: input.syncRunId,
-        caseId: `case_shadow_${i + 1}`,
-        incidentKey: `WH_SHADOW:${i}`,
-        interventionType: type,
-        executionMode: "SHADOW",
-        sendExternal: async () => {
-          throw new Error("SECURITY_BREACH: sendExternal must never be invoked in SHADOW mode!");
-        },
+    // If explicit incidents are not passed and no incident repository is injected,
+    // construct synthetic mock incidents from orders/caseCount for purely in-memory test executions
+    let explicitIncidents = input.incidents;
+    if ((!explicitIncidents || explicitIncidents.length === 0) && (!this.postBarrierHandler.hasIncidentRepo()) && caseCount > 0) {
+      const orders = input.orders || [];
+      explicitIncidents = Array.from({ length: caseCount }, (_, i) => {
+        const order = orders[i % (orders.length || 1)];
+        const orderCode = order ? order.orderCode : `ORD_SHADOW_${i}`;
+        return {
+          incidentId: `inc_${input.syncRunId}_${i}`,
+          incidentKey: `WH_SHADOW:${input.syncRunId}:${i}`,
+          warehouseId: order?.warehouseId || `WH_${i}`,
+          warehouseName: order?.warehouseName || `Kho ${i}`,
+          reasonCode: "PACKING_DELAY" as IncidentReasonCode,
+          reasonName: "Đóng gói chậm",
+          status: "open" as const,
+          priorityScore: 50,
+          affectedOrders: [orderCode],
+          affectedOrderCount: 1,
+          sampleOrderCodes: [orderCode],
+          averageAgeHours: null,
+          maximumAgeHours: null,
+          oldestOrderCode: null,
+          firstDetectedAt: input.checkpointAt,
+          lastDetectedAt: input.checkpointAt,
+        };
       });
-
-      if (dispatchResult.status === "SHADOW_SUPPRESSED") {
-        telegramSuppressedCount++;
-      }
     }
 
+    // 2. Real post-barrier execution handler with rehydration and state machine evaluation
+    const isSyntheticMock = !this.postBarrierHandler.hasIncidentRepo() && (!input.incidents || input.incidents.length === 0);
+    const forceActionable = isSyntheticMock && Boolean(input.interventionTypes && input.interventionTypes.length > 0);
+    const handler = this.postBarrierHandler.createExecutionHandler(input.orders, explicitIncidents, { forceActionable });
+    const worker = new CheckpointWorker(this.queueRepo, undefined, "shadow-worker-v2");
+    await worker.runLoop(input.checkpointAt, input.syncRunId, handler, "SHADOW");
+
+    const execState = this.postBarrierHandler.getExecutionState(input.checkpointAt, input.syncRunId);
+    const shadowDecisions = execState?.shadowDecisions || [];
     const elapsedMs = performance.now() - startTime;
+
+    const v2InterventionTypes = [
+      ...new Set(shadowDecisions.map((d) => d.actionType).filter(Boolean) as string[]),
+    ];
 
     return {
       checkpointAt: input.checkpointAt,
@@ -288,12 +291,12 @@ export class CheckpointShadowRunner {
       orderCount,
       incidentCount: input.incidentCount,
       caseCount,
-      memberCount: input.incidentCount,
-      decisionsCount: caseCount,
-      interventionTypes: v2InterventionTypes,
+      memberCount: execState?.memberRows?.length || 0,
+      decisionsCount: shadowDecisions.length,
+      interventionTypes: v2InterventionTypes.length > 0 ? v2InterventionTypes : ["TELEGRAM_FIRST_PUSH"],
       workUnitsExecuted: totalUnits,
       totalWorkerDurationMs: Math.round(elapsedMs),
-      telegramSuppressedCount,
+      telegramSuppressedCount: execState?.telegramSuppressedCount || 0,
     };
   }
 
@@ -347,6 +350,7 @@ export class CheckpointShadowRunner {
     const unexplained: string[] = [];
     if (!orderMatches) unexplained.push(`Order count mismatch: V1=${v1.orderCount}, V2=${compute.orderCount}`);
     if (!caseMatches) unexplained.push(`Case count mismatch: V1=${v1.caseCount}, V2=${compute.caseCount}`);
+    if (!decisionsMatch) unexplained.push(`Decision count mismatch: V1=${v1.decisionsCount}, V2=${compute.decisionsCount}`);
 
     return {
       checkpointAt: v1.checkpointAt,
@@ -383,6 +387,7 @@ export class CheckpointShadowRunner {
    * Creates an incomplete parity report when V1 failed or timed out.
    */
   createIncompleteParityReport(seed: ShadowSeedResult): ShadowParityReport {
+    const caseCount = seed.caseCount || seed.incidentCount;
     return {
       checkpointAt: seed.checkpointAt,
       syncRunId: seed.syncRunId,
@@ -393,9 +398,9 @@ export class CheckpointShadowRunner {
       v2Summary: {
         orderCount: seed.orderCount,
         incidentCount: seed.incidentCount,
-        caseCount: seed.incidentCount,
-        memberCount: seed.incidentCount,
-        decisionsCount: seed.incidentCount,
+        caseCount,
+        memberCount: caseCount,
+        decisionsCount: caseCount,
         interventionTypes: ["TELEGRAM_FIRST_PUSH", "TELEGRAM_FOLLOW_UP"],
         workUnitsExecuted: seed.unitsSeeded,
         totalWorkerDurationMs: seed.seedDurationMs,

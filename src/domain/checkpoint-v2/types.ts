@@ -39,6 +39,30 @@ export interface WorkUnitCursor {
 
 export type ExecutionMode = "PRODUCTION" | "SHADOW";
 
+export interface ShadowDecision {
+  caseIdentity: string;
+  caseId: string;
+  decisionType: "ACTION_REQUESTED" | "MONITORING" | "RESOLVED" | "CLOSED";
+  oldState: string;
+  newState: string;
+  actionType: string | null;
+  reason: string;
+  memberCount: number;
+  generationId: string;
+  evaluatedAt: string;
+}
+
+export interface PostBarrierWorkPlan {
+  checkpointAt: string;
+  syncRunId: string;
+  caseCount: number;
+  estimatedMembers?: number;
+  executionMode?: ExecutionMode;
+  caseBatchSize?: number;
+  memberBatchSize?: number;
+  dispatchBatchSize?: number;
+}
+
 export interface CheckpointWorkUnit {
   id: string;
   checkpointAt: string;

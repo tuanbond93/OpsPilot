@@ -61,7 +61,8 @@ describe("INDEPENDENT_TRIGGER_SIGKILL_TEST", () => {
 
     // Hard requirement: Seed-only overhead must be well within <= 2000ms
     expect(seedDurationMs).toBeLessThan(2000);
-    expect(seedResult.unitsSeeded).toBe(6); // 6000 / 1000 = 6 units
+    const expectedUnits = seedResult.unitsSeeded;
+    expect(expectedUnits).toBe(36); // Post-barrier units: 8 eval + 20 member + 8 dispatch
     expect(seedResult.executionMode).toBe("SHADOW");
 
     // 2. SIMULATE V1 PROCESS TERMINATION (SIGKILL)
@@ -70,7 +71,7 @@ describe("INDEPENDENT_TRIGGER_SIGKILL_TEST", () => {
 
     // Verify units are durably persisted with status PENDING and SHADOW mode
     const unitsBeforeWorker = await queueRepo.getWorkUnitsForCheckpoint(CHECKPOINT_AT_TARGET);
-    expect(unitsBeforeWorker.length).toBe(6);
+    expect(unitsBeforeWorker.length).toBe(expectedUnits);
     expect(unitsBeforeWorker.every((u) => u.status === "PENDING")).toBe(true);
 
     // 3. LEASE EXPIRY / RECLAIM SIMULATION
@@ -124,18 +125,18 @@ describe("INDEPENDENT_TRIGGER_SIGKILL_TEST", () => {
       }
 
       // Safety check to prevent infinite loop in test
-      if (totalWorkerInvocations > 10) break;
+      if (totalWorkerInvocations > 25) break;
     }
 
     // 5. PROVE INVARIANTS
 
     // Invariant A: Zero Reseeding
     const finalTargetUnits = await queueRepo.getWorkUnitsForCheckpoint(CHECKPOINT_AT_TARGET);
-    expect(finalTargetUnits.length).toBe(6); // exact original units, no duplicates created
+    expect(finalTargetUnits.length).toBe(expectedUnits); // exact original units, no duplicates created
 
-    // Invariant B: Zero Unit Loss (All 6 units completed)
+    // Invariant B: Zero Unit Loss (All units completed)
     expect(finalTargetUnits.every((u) => u.status === "COMPLETED")).toBe(true);
-    expect(completedUnitIds.size).toBe(6);
+    expect(completedUnitIds.size).toBe(expectedUnits);
 
     // Invariant C: Lease Reclaim Succeeded (unitToCrash was reclaimed and completed)
     const crashedUnitAfter = finalTargetUnits.find((u) => u.id === unitToCrash.id);

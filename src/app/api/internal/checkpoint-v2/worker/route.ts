@@ -103,7 +103,13 @@ async function handleWorkerInvocation(request: NextRequest) {
       ...(safeTailParam > 0 ? { safeTailMarginMs: safeTailParam } : {}),
     };
 
-    const shadowRunner = new CheckpointShadowRunner(queueRepo);
+    const shadowRunner = new CheckpointShadowRunner(queueRepo, {
+      orderSnapshotRepo: RepositoryFactory.getOrderSnapshotRepository(client),
+      syncRunRepo: RepositoryFactory.getSyncRunRepository(client),
+      incidentRepo: RepositoryFactory.getIncidentRepository(client),
+      incidentHistoryRepo: RepositoryFactory.getIncidentHistoryRepository(client),
+      followupRepo: RepositoryFactory.getFollowupRepository(client),
+    });
     const summary = await shadowRunner.runWorkerBatch(
       finalCheckpointAt,
       targetSyncRunId,
