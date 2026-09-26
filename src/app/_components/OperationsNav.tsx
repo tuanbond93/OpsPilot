@@ -18,6 +18,7 @@ const items = [
   { href: "/account", label: "Tài khoản", icon: UserRound, mobile: false },
   { href: "/admin/users", label: "Quản trị", icon: Settings, mobile: false, adminOnly: true },
   { href: "/admin/telegram-pilot", label: "Telegram Pilot", icon: UsersRound, mobile: false, adminOnly: true },
+  { href: "/system/observability", label: "Checkpoint observability", icon: Activity, mobile: false, adminOnly: true },
   { href: "/telegram-work-orders", label: "Nhắc việc TG", icon: BellRing, mobile: false },
 ] as const;
 
@@ -47,7 +48,7 @@ export function OperationsNav() {
   const visibleItems = items.filter((item) => !("adminOnly" in item && item.adminOnly) || role === "ADMIN");
   const primary = visibleItems.filter((item) => item.mobile);
   const desktopPrimary = visibleItems.filter((item) => ["/dashboard", "/incidents", "/reviews", "/decisions", "/followups"].includes(item.href));
-  const desktopTools = visibleItems.filter((item) => ["/b2b-consolidation", "/pilot-quality", "/admin/users", "/admin/telegram-pilot", "/telegram-work-orders"].includes(item.href));
+  const desktopTools = visibleItems.filter((item) => ["/b2b-consolidation", "/pilot-quality", "/admin/users", "/admin/telegram-pilot", "/system/observability", "/telegram-work-orders"].includes(item.href));
   const toolsActive = desktopTools.some((item) => active(item.href));
   const accountPage = pathname.startsWith("/account");
 
