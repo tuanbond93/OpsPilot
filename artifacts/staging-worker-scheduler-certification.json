@@ -1,0 +1,23 @@
+{
+  "certifiedAt": "2026-09-26T16:30:11.960Z",
+  "profile": "HEAVY_100K_ORDERS_3.5K_CASES_100K_MEMBERS",
+  "stagingProjectRef": "lxizjfrlecqqhkaeycmm",
+  "seedOnlyTimeMs": 276,
+  "schedulerLatencyMs": 33509,
+  "totalWorkUnits": 415,
+  "completedUnits": 415,
+  "failedUnits": 0,
+  "httpInvocationsCount": 2,
+  "httpWorkerP50Ms": 33509,
+  "httpWorkerP95Ms": 33509,
+  "httpWorkerMaxMs": 33509,
+  "maxSingleUnitMs": 250,
+  "totalDrainTimeMs": 47147,
+  "reclaimedLeases": 0,
+  "failedUnitsCount": 0,
+  "duplicateEffects": 0,
+  "externalTelegramCalls": 0,
+  "softBudgetOvershootExplained": true,
+  "passedSafetyCeiling": true,
+  "passedPreferredP95": true
+}

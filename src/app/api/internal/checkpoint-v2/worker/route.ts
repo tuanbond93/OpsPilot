@@ -14,8 +14,7 @@ async function handleWorkerInvocation(request: NextRequest) {
   const authHeader = request.headers.get("authorization") || "";
   const xCronSecret = request.headers.get("x-cron-secret") || "";
   const isAuthorized =
-    process.env.NODE_ENV === "development" ||
-    (cronSecret !== "" && (authHeader === `Bearer ${cronSecret}` || xCronSecret === cronSecret));
+    cronSecret !== "" && (authHeader === `Bearer ${cronSecret}` || xCronSecret === cronSecret);
 
   if (!isAuthorized) {
     return NextResponse.json(
@@ -96,11 +95,19 @@ async function handleWorkerInvocation(request: NextRequest) {
     }
 
     // 4. Run bounded worker batch in SHADOW execution mode
+    const softBudgetParam = Number(request.nextUrl.searchParams.get("soft_budget_ms"));
+    const safeTailParam = Number(request.nextUrl.searchParams.get("safe_tail_margin_ms"));
+    const budgetConfig = {
+      ...DEFAULT_WORKER_BUDGET,
+      ...(softBudgetParam > 0 ? { softBudgetMs: softBudgetParam } : {}),
+      ...(safeTailParam > 0 ? { safeTailMarginMs: safeTailParam } : {}),
+    };
+
     const shadowRunner = new CheckpointShadowRunner(queueRepo);
     const summary = await shadowRunner.runWorkerBatch(
       finalCheckpointAt,
       targetSyncRunId,
-      DEFAULT_WORKER_BUDGET
+      budgetConfig
     );
 
     return NextResponse.json({
