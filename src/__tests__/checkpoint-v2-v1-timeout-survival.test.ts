@@ -72,7 +72,7 @@ describe("V1_PHASE6_TIMEOUT_SHADOW_SURVIVAL_TEST", () => {
       insertEventBatch: vi.fn().mockResolvedValue(undefined),
     } as any;
 
-    let shadowComputeResult: ShadowComputeResult | null = null;
+    let shadowSeedResult: any = null;
 
     const service = new SyncService(
       syncRunRepo,
@@ -89,11 +89,11 @@ describe("V1_PHASE6_TIMEOUT_SHADOW_SURVIVAL_TEST", () => {
       null
     );
 
-    // Execute sync with checkpoint barrier callback
+    // Execute sync with checkpoint barrier callback (seed-only)
     const syncResult = await service.runSync({
       checkpointAt: CHECKPOINT_AT,
       onCheckpointHistoryPersisted: async ({ syncRunId, checkpointAt, orderCount, incidentCount, orders }) => {
-        shadowComputeResult = await shadowRunner.runShadowCompute({
+        shadowSeedResult = await shadowRunner.seedShadowCheckpoint({
           checkpointAt,
           syncRunId,
           orderCount,
@@ -107,21 +107,22 @@ describe("V1_PHASE6_TIMEOUT_SHADOW_SURVIVAL_TEST", () => {
     expect(syncResult.ok).toBe(false);
     expect(syncResult.error?.message).toContain("SIMULATED_VERCEL_300S_INVOCATION_TIMEOUT");
 
-    // 2. CRITICAL ASSERTION: V2 shadow compute completed BEFORE Phase 6 threw
-    expect(shadowComputeResult).not.toBeNull();
-    expect(shadowComputeResult!.checkpointAt).toBe(CHECKPOINT_AT);
-    expect(shadowComputeResult!.isShadow).toBe(true);
-    expect(shadowComputeResult!.workUnitsExecuted).toBeGreaterThan(0);
-    expect(shadowComputeResult!.orderCount).toBe(100);
+    // 2. CRITICAL ASSERTION: V2 shadow seed completed BEFORE Phase 6 threw
+    expect(shadowSeedResult).not.toBeNull();
+    expect(shadowSeedResult.checkpointAt).toBe(CHECKPOINT_AT);
+    expect(shadowSeedResult.executionMode).toBe("SHADOW");
+    expect(shadowSeedResult.unitsSeeded).toBeGreaterThan(0);
+    expect(shadowSeedResult.orderCount).toBe(100);
+    expect(shadowSeedResult.seedDurationMs).toBeLessThan(2000);
 
     // 3. Verify V2 work units exist in work queue repo with execution_mode = 'SHADOW'
     const units = await queueRepo.getWorkUnitsForCheckpoint(CHECKPOINT_AT);
     expect(units.length).toBeGreaterThan(0);
     expect(units.every((u) => u.executionMode === "SHADOW")).toBe(true);
-    expect(units.every((u) => u.status === "COMPLETED")).toBe(true);
+    expect(units.every((u) => u.status === "PENDING")).toBe(true);
 
     // 4. Verify parity finalization gracefully handles incomplete V1
-    const parityReport = shadowRunner.finalizeParity(shadowComputeResult!, null);
+    const parityReport = shadowRunner.createIncompleteParityReport(shadowSeedResult);
     expect(parityReport.isShadow).toBe(true);
     expect(parityReport.parityStatus).toBe("V1_INCOMPLETE");
     expect(parityReport.v1Summary).toBeNull();
@@ -131,6 +132,6 @@ describe("V1_PHASE6_TIMEOUT_SHADOW_SURVIVAL_TEST", () => {
     );
 
     // 5. DEFENSE-IN-DEPTH ASSERTION: Zero external Telegram calls
-    expect(shadowComputeResult!.telegramSuppressedCount).toBeGreaterThanOrEqual(0);
+    expect(parityReport.v2Summary.telegramSuppressedCount).toBe(0);
   });
 });

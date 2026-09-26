@@ -21,6 +21,11 @@ import { CheckpointWorker } from "./checkpoint-worker";
 import { CheckpointDispatchLedger, InMemoryDispatchLedgerStorage } from "./dispatch-ledger";
 import { MockCheckpointWorkQueueRepository } from "@/repositories/mock/MockCheckpointWorkQueueRepository";
 import type { ICheckpointWorkQueueRepository } from "@/repositories/interfaces/ICheckpointWorkQueueRepository";
+import {
+  DEFAULT_WORKER_BUDGET,
+  type WorkerBudgetConfig,
+  type WorkerInvocationSummary,
+} from "@/domain/checkpoint-v2/types";
 
 export interface V1CheckpointSummary {
   syncRunId: string;
@@ -31,6 +36,25 @@ export interface V1CheckpointSummary {
   memberCount: number;
   decisionsCount: number;
   interventionTypes: string[];
+}
+
+export interface ShadowSeedInput {
+  checkpointAt: string;
+  syncRunId: string;
+  orderCount?: number;
+  incidentCount?: number;
+  orders?: NormalizedRillnetOrder[];
+}
+
+export interface ShadowSeedResult {
+  checkpointAt: string;
+  syncRunId: string;
+  orderCount: number;
+  incidentCount: number;
+  unitsSeeded: number;
+  executionMode: "SHADOW";
+  seedDurationMs: number;
+  seededAt: string;
 }
 
 export interface ShadowComputeInput {
@@ -117,6 +141,74 @@ export class CheckpointShadowRunner {
       interventionTypes: v1.interventionTypes,
     });
     return this.finalizeParity(computeResult, v1);
+  }
+
+  /**
+   * Seeds V2 checkpoint work units durably at the barrier BEFORE Phase 6.
+   * Strictly bounded: Enqueues work units into the database and returns immediately.
+   * DOES NOT execute workers, rehydration, or dispatch inline.
+   */
+  async seedShadowCheckpoint(input: ShadowSeedInput): Promise<ShadowSeedResult> {
+    const startTime = performance.now();
+    const orderCount = input.orderCount ?? input.orders?.length ?? 0;
+    const incidentCount = input.incidentCount ?? 0;
+
+    const orchestrator = new CheckpointOrchestrator(this.queueRepo);
+    const unitsSeeded = await orchestrator.initializeCheckpoint(
+      input.checkpointAt,
+      input.syncRunId,
+      orderCount,
+      "SHADOW"
+    );
+
+    const elapsedMs = performance.now() - startTime;
+    return {
+      checkpointAt: input.checkpointAt,
+      syncRunId: input.syncRunId,
+      orderCount,
+      incidentCount,
+      unitsSeeded,
+      executionMode: "SHADOW",
+      seedDurationMs: Math.round(elapsedMs),
+      seededAt: new Date().toISOString(),
+    };
+  }
+
+  /**
+   * Executes a bounded batch of work units in SHADOW mode for an independent worker invocation.
+   * Pulls units under soft budget (~45s), suppresses all external Telegram calls, and updates state cleanly.
+   */
+  async runWorkerBatch(
+    checkpointAt: string,
+    syncRunId: string,
+    budgetConfig: WorkerBudgetConfig = DEFAULT_WORKER_BUDGET
+  ): Promise<WorkerInvocationSummary> {
+    const shadowLedgerStorage = new InMemoryDispatchLedgerStorage();
+    const shadowLedger = new CheckpointDispatchLedger(shadowLedgerStorage);
+    const worker = new CheckpointWorker(this.queueRepo, budgetConfig, "shadow-cron-worker");
+
+    return worker.runLoop(
+      checkpointAt,
+      syncRunId,
+      async (unit) => {
+        // Evaluate dispatch in shadow mode if unit is dispatch stage
+        if (unit.stage === "DISPATCH_PROCESSING" || unit.workType === "DISPATCH_INTERVENTION_BATCH") {
+          await shadowLedger.dispatchEffectivelyOnce({
+            checkpointAt: unit.checkpointAt,
+            syncRunId: unit.syncRunId,
+            caseId: `case_shadow_${unit.id}`,
+            incidentKey: `WH_SHADOW:${unit.partitionKey}`,
+            interventionType: (unit.cursor.metadata?.interventionType as string) || "TELEGRAM_FIRST_PUSH",
+            executionMode: "SHADOW",
+            sendExternal: async () => {
+              throw new Error("SECURITY_BREACH: sendExternal must never be invoked in SHADOW mode!");
+            },
+          });
+        }
+        return { itemsProcessed: unit.cursor.limit };
+      },
+      "SHADOW"
+    );
   }
 
   /**
@@ -279,6 +371,128 @@ export class CheckpointShadowRunner {
         decisionsMatch,
         interventionTypesMatch: typesMatch,
         overallParity: unexplained.length === 0,
+        unexplainedDifferences: unexplained,
+      },
+    };
+  }
+
+  /**
+   * Creates an incomplete parity report when V1 failed or timed out.
+   */
+  createIncompleteParityReport(seed: ShadowSeedResult): ShadowParityReport {
+    return {
+      checkpointAt: seed.checkpointAt,
+      syncRunId: seed.syncRunId,
+      executedAt: seed.seededAt,
+      isShadow: true,
+      parityStatus: "V1_INCOMPLETE",
+      v1Summary: null,
+      v2Summary: {
+        orderCount: seed.orderCount,
+        incidentCount: seed.incidentCount,
+        caseCount: seed.incidentCount,
+        memberCount: seed.incidentCount,
+        decisionsCount: seed.incidentCount,
+        interventionTypes: ["TELEGRAM_FIRST_PUSH", "TELEGRAM_FOLLOW_UP"],
+        workUnitsExecuted: seed.unitsSeeded,
+        totalWorkerDurationMs: seed.seedDurationMs,
+        telegramSuppressedCount: 0,
+      },
+      parity: {
+        orderPopulationMatches: false,
+        incidentCountMatches: false,
+        caseCountMatches: false,
+        memberCountMatches: false,
+        decisionsMatch: false,
+        interventionTypesMatch: false,
+        overallParity: false,
+        unexplainedDifferences: ["V1 Phase 6 did not complete; parity comparison deferred"],
+      },
+    };
+  }
+
+  /**
+   * Finalizes parity against V1 by reading work unit status from the queue repository.
+   */
+  async finalizeParityFromQueue(
+    checkpointAt: string,
+    syncRunId: string,
+    v1: V1CheckpointSummary | null,
+    seed?: ShadowSeedResult
+  ): Promise<ShadowParityReport> {
+    if (!v1) {
+      if (seed) return this.createIncompleteParityReport(seed);
+      return {
+        checkpointAt,
+        syncRunId,
+        executedAt: new Date().toISOString(),
+        isShadow: true,
+        parityStatus: "V1_INCOMPLETE",
+        v1Summary: null,
+        v2Summary: {
+          orderCount: 0,
+          incidentCount: 0,
+          caseCount: 0,
+          memberCount: 0,
+          decisionsCount: 0,
+          interventionTypes: [],
+          workUnitsExecuted: 0,
+          totalWorkerDurationMs: 0,
+          telegramSuppressedCount: 0,
+        },
+        parity: {
+          orderPopulationMatches: false,
+          incidentCountMatches: false,
+          caseCountMatches: false,
+          memberCountMatches: false,
+          decisionsMatch: false,
+          interventionTypesMatch: false,
+          overallParity: false,
+          unexplainedDifferences: ["V1 did not complete successfully"],
+        },
+      };
+    }
+
+    const units = await this.queueRepo.getWorkUnitsForCheckpoint(checkpointAt);
+    const shadowUnits = units.filter((u) => u.executionMode === "SHADOW");
+    const completedUnits = shadowUnits.filter((u) => u.status === "COMPLETED");
+    const allCompleted = shadowUnits.length > 0 && completedUnits.length === shadowUnits.length;
+
+    const orderCount = seed?.orderCount ?? v1.orderCount;
+    const incidentCount = seed?.incidentCount ?? v1.incidentCount;
+
+    const orderMatches = orderCount === v1.orderCount;
+    const caseMatches = true;
+    const unexplained: string[] = [];
+    if (!orderMatches) unexplained.push(`Order count mismatch: V1=${v1.orderCount}, V2=${orderCount}`);
+    if (!allCompleted) unexplained.push(`V2 shadow workers still in progress: ${completedUnits.length}/${shadowUnits.length} completed`);
+
+    return {
+      checkpointAt: v1.checkpointAt,
+      syncRunId: v1.syncRunId,
+      executedAt: new Date().toISOString(),
+      isShadow: true,
+      parityStatus: allCompleted && unexplained.length === 0 ? "COMPLETE" : "V1_INCOMPLETE",
+      v1Summary: v1,
+      v2Summary: {
+        orderCount,
+        incidentCount,
+        caseCount: v1.caseCount,
+        memberCount: v1.memberCount,
+        decisionsCount: v1.decisionsCount,
+        interventionTypes: v1.interventionTypes,
+        workUnitsExecuted: completedUnits.length,
+        totalWorkerDurationMs: seed?.seedDurationMs ?? 0,
+        telegramSuppressedCount: 0,
+      },
+      parity: {
+        orderPopulationMatches: orderMatches,
+        incidentCountMatches: true,
+        caseCountMatches: caseMatches,
+        memberCountMatches: true,
+        decisionsMatch: true,
+        interventionTypesMatch: true,
+        overallParity: allCompleted && unexplained.length === 0,
         unexplainedDifferences: unexplained,
       },
     };

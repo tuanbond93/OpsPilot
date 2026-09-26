@@ -13,7 +13,7 @@ import { claimCheckpointRecovery, finishCheckpointRecovery, queueCheckpointRecov
 import { queuePhase2CheckpointWork } from "@/services/phase2-checkpoint-work";
 import { isTransientInfrastructureError, retryTransientInfrastructure } from "@/services/transient-infrastructure";
 import { runNaturalShadowObserverSafely } from "@/services/inbound-natural-shadow-observer";
-import { CheckpointShadowRunner, type ShadowComputeResult, type ShadowParityReport } from "@/engine/checkpoint-v2/checkpoint-shadow-runner";
+import { CheckpointShadowRunner, type ShadowSeedResult, type ShadowParityReport } from "@/engine/checkpoint-v2/checkpoint-shadow-runner";
 import { RepositoryFactory } from "@/repositories/RepositoryFactory";
 
 export const dynamic = "force-dynamic";
@@ -89,7 +89,7 @@ async function runFollowupCycle(request: NextRequest) {
   let naturalShadow: Awaited<ReturnType<typeof runNaturalShadowObserverSafely>> = {
     status: "FAILED", reason: "NATURAL_SHADOW_NOT_NATURAL_SCHEDULER_PATH", warehousesEvaluated: 0,
   };
-  let shadowComputeResult: ShadowComputeResult | null = null;
+  let shadowSeedResult: ShadowSeedResult | null = null;
   const sync = await syncRillnet({
     checkpointAt,
     onSourceCoreComplete: !recovery && trustedNaturalScheduler
@@ -102,7 +102,7 @@ async function runFollowupCycle(request: NextRequest) {
           try {
             const queueRepo = RepositoryFactory.getCheckpointWorkQueueRepository(client);
             const shadowRunner = new CheckpointShadowRunner(queueRepo);
-            shadowComputeResult = await shadowRunner.runShadowCompute({
+            shadowSeedResult = await shadowRunner.seedShadowCheckpoint({
               checkpointAt: cbCheckpointAt,
               syncRunId,
               orderCount,
@@ -147,8 +147,8 @@ async function runFollowupCycle(request: NextRequest) {
         attention(checkpointAt, "RECOVERY_QUEUE", "RECOVERY_QUEUE_FAILURE", 1, error);
       }
     }
-    const v2Shadow = shadowComputeResult
-      ? new CheckpointShadowRunner().finalizeParity(shadowComputeResult, null)
+    const v2Shadow = shadowSeedResult
+      ? new CheckpointShadowRunner().createIncompleteParityReport(shadowSeedResult)
       : null;
     return NextResponse.json({ ok: false, stage: "SYNC", sync, v2Shadow }, { status });
   }
@@ -264,8 +264,8 @@ async function runFollowupCycle(request: NextRequest) {
         interventionTypes: ["TELEGRAM_FIRST_PUSH", "TELEGRAM_FOLLOW_UP"],
       };
 
-      if (shadowComputeResult) {
-        v2Shadow = shadowRunner.finalizeParity(shadowComputeResult, v1Summary);
+      if (shadowSeedResult) {
+        v2Shadow = await shadowRunner.finalizeParityFromQueue(checkpointAt, sync.syncRunId, v1Summary, shadowSeedResult);
       } else {
         v2Shadow = await shadowRunner.runShadowComparison(v1Summary, []);
       }
