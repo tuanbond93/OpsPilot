@@ -1,0 +1,26 @@
+{
+  "midBatchCrash": {
+    "totalUnits": 10,
+    "worker1Completed": 3,
+    "worker2ClaimedAndCompleted": 7,
+    "totalCompleted": 10,
+    "droppedUnits": 0,
+    "status": "PASS"
+  },
+  "leaseReclaim": {
+    "worker1Leased": true,
+    "leaseExpired": true,
+    "worker2Reclaimed": true,
+    "finalStatus": "COMPLETED",
+    "status": "PASS"
+  },
+  "telegramQuarantine": {
+    "reservationCreated": true,
+    "worker1CrashedBeforeConfirm": true,
+    "ambiguousStaleDetected": true,
+    "dispatchStatus": "QUARANTINED",
+    "externalTelegramsSent": 0,
+    "duplicateTelegramsSent": 0,
+    "status": "PASS"
+  }
+}

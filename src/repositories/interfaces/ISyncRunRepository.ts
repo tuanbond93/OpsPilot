@@ -33,4 +33,6 @@ export interface ISyncRunRepository {
   getLatestSyncRuns(limit?: number): Promise<SyncRunRow[]>;
   getPreviousSuccessfulSyncRun(currentSyncRunId: string): Promise<SyncRunRow | null>;
   getSyncRunForCheckpoint(checkpointAt: string): Promise<SyncRunRow | null>;
+  getSyncRunById?(id: string): Promise<SyncRunRow | null>;
 }
+

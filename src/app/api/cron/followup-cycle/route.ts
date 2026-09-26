@@ -13,6 +13,8 @@ import { claimCheckpointRecovery, finishCheckpointRecovery, queueCheckpointRecov
 import { queuePhase2CheckpointWork } from "@/services/phase2-checkpoint-work";
 import { isTransientInfrastructureError, retryTransientInfrastructure } from "@/services/transient-infrastructure";
 import { runNaturalShadowObserverSafely } from "@/services/inbound-natural-shadow-observer";
+import { CheckpointShadowRunner } from "@/engine/checkpoint-v2/checkpoint-shadow-runner";
+import { SupabaseCheckpointWorkQueueRepository } from "@/repositories/supabase/SupabaseCheckpointWorkQueueRepository";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
@@ -218,6 +220,36 @@ async function runFollowupCycle(request: NextRequest) {
   if (!auditPersisted) return failPrimaryAudit(client, checkpointAt, recovery, sync.syncRunId);
   await queuePhase2CheckpointWork(client, { checkpointAt, syncRunId: sync.syncRunId });
   if (recovery) await finishCheckpointRecovery(client, checkpointAt, recovery.recoveryToken, { status: "CONFIRMED", syncRunId: sync.syncRunId });
+
+  // Pipeline V2 Shadow Runner: runs alongside V1 only if CHECKPOINT_PIPELINE_V2_SHADOW is 'true'
+  let v2Shadow = null;
+  if (process.env.CHECKPOINT_PIPELINE_V2_SHADOW === "true") {
+    try {
+      const queueRepo = new SupabaseCheckpointWorkQueueRepository(client);
+      const shadowRunner = new CheckpointShadowRunner(queueRepo);
+      v2Shadow = await shadowRunner.runShadowComparison(
+        {
+          syncRunId: sync.syncRunId,
+          checkpointAt,
+          orderCount: sync.fetchedOrderCount || 0,
+          incidentCount: sync.incidentCount || 0,
+          caseCount: evaluation?.supportedCasesEvaluated || 0,
+          memberCount: evaluation?.khoTonEvaluated || 0,
+          decisionsCount: evaluation
+            ? Object.values(evaluation.pendingCreated).reduce((sum, value) => sum + value, 0)
+            : 0,
+          interventionTypes: ["TELEGRAM_FIRST_PUSH", "TELEGRAM_FOLLOW_UP"],
+        },
+        []
+      );
+    } catch (shadowErr) {
+      logger.warn({
+        category: "V2_SHADOW_ERROR",
+        message: getRuntimeErrorDetails(shadowErr).message,
+      });
+    }
+  }
+
   return NextResponse.json({
     ok: telegram.failed === 0,
     stage: "COMPLETE",
@@ -231,6 +263,7 @@ async function runFollowupCycle(request: NextRequest) {
     statusUpdates,
     phase2: { status: "PENDING", syncRunId: sync.syncRunId },
     naturalShadow,
+    v2Shadow,
   });
 }
 

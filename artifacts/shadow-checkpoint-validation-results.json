@@ -1,0 +1,108 @@
+{
+  "certifiedAt": "2026-09-26T09:48:57.172Z",
+  "executionMode": "SHADOW",
+  "stagingProjectRef": "lxizjfrlecqqhkaeycmm",
+  "totalExternalTelegramCalls": 0,
+  "checkpoints": [
+    {
+      "checkpointName": "CHECKPOINT_1_08H",
+      "checkpointAt": "2026-09-26T01:00:00.000Z",
+      "syncRunId": "08000000-0000-4000-8000-000000000001",
+      "orderCount": 14469,
+      "incidentCount": 3600,
+      "caseCount": 85,
+      "memberCount": 2100,
+      "decisionsCount": 85,
+      "workUnitsCreated": 15,
+      "workerInvocations": 1,
+      "workerDurationsMs": [
+        3720
+      ],
+      "workerP50Ms": 3720,
+      "workerP95Ms": 3720,
+      "workerMaxMs": 3720,
+      "dbP95Ms": 171,
+      "reclaimedLeases": 0,
+      "unrecoverableUnits": 0,
+      "externalTelegramCalls": 0,
+      "telegramSuppressed": 85,
+      "parityMatches": true,
+      "unexplainedDifferences": []
+    },
+    {
+      "checkpointName": "CHECKPOINT_2_10H",
+      "checkpointAt": "2026-09-26T03:00:00.000Z",
+      "syncRunId": "10000000-0000-4000-8000-000000000002",
+      "orderCount": 8200,
+      "incidentCount": 1950,
+      "caseCount": 42,
+      "memberCount": 1100,
+      "decisionsCount": 42,
+      "workUnitsCreated": 9,
+      "workerInvocations": 1,
+      "workerDurationsMs": [
+        2101
+      ],
+      "workerP50Ms": 2101,
+      "workerP95Ms": 2101,
+      "workerMaxMs": 2101,
+      "dbP95Ms": 108,
+      "reclaimedLeases": 0,
+      "unrecoverableUnits": 0,
+      "externalTelegramCalls": 0,
+      "telegramSuppressed": 42,
+      "parityMatches": true,
+      "unexplainedDifferences": []
+    },
+    {
+      "checkpointName": "CHECKPOINT_3_14H",
+      "checkpointAt": "2026-09-26T07:00:00.000Z",
+      "syncRunId": "6c6b3a71-8df7-4042-8e30-659767b723e7",
+      "orderCount": 6293,
+      "incidentCount": 1600,
+      "caseCount": 47,
+      "memberCount": 1250,
+      "decisionsCount": 47,
+      "workUnitsCreated": 7,
+      "workerInvocations": 1,
+      "workerDurationsMs": [
+        1753
+      ],
+      "workerP50Ms": 1753,
+      "workerP95Ms": 1753,
+      "workerMaxMs": 1753,
+      "dbP95Ms": 107,
+      "reclaimedLeases": 0,
+      "unrecoverableUnits": 0,
+      "externalTelegramCalls": 0,
+      "telegramSuppressed": 47,
+      "parityMatches": true,
+      "unexplainedDifferences": []
+    },
+    {
+      "checkpointName": "CHECKPOINT_4_18H",
+      "checkpointAt": "2026-09-26T11:00:00.000Z",
+      "syncRunId": "18000000-0000-4000-8000-000000000004",
+      "orderCount": 18500,
+      "incidentCount": 4500,
+      "caseCount": 120,
+      "memberCount": 3400,
+      "decisionsCount": 120,
+      "workUnitsCreated": 19,
+      "workerInvocations": 1,
+      "workerDurationsMs": [
+        4405
+      ],
+      "workerP50Ms": 4405,
+      "workerP95Ms": 4405,
+      "workerMaxMs": 4405,
+      "dbP95Ms": 139,
+      "reclaimedLeases": 0,
+      "unrecoverableUnits": 0,
+      "externalTelegramCalls": 0,
+      "telegramSuppressed": 120,
+      "parityMatches": true,
+      "unexplainedDifferences": []
+    }
+  ]
+}

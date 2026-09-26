@@ -189,4 +189,9 @@ export class MockSyncRunRepository implements ISyncRunRepository {
   async getSyncRunForCheckpoint(checkpointAt: string): Promise<SyncRunRow | null> {
     return this.inMemoryRuns.find((run) => run.checkpoint_at === checkpointAt) || null;
   }
+
+  async getSyncRunById(id: string): Promise<SyncRunRow | null> {
+    return this.inMemoryRuns.find((run) => run.id === id) || null;
+  }
 }
+

@@ -180,4 +180,10 @@ export class SupabaseSyncRunRepository extends BaseRepository implements ISyncRu
     const query = this.client.from("sync_runs").select("*").eq("checkpoint_at", checkpointAt).maybeSingle();
     return this.executeOptional<SyncRunRow>(query as any);
   }
+
+  async getSyncRunById(id: string): Promise<SyncRunRow | null> {
+    const query = this.client.from("sync_runs").select("*").eq("id", id).maybeSingle();
+    return this.executeOptional<SyncRunRow>(query as any);
+  }
 }
+
