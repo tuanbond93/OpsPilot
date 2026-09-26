@@ -62,7 +62,9 @@ describe("INDEPENDENT_TRIGGER_SIGKILL_TEST", () => {
     // Hard requirement: Seed-only overhead must be well within <= 2000ms
     expect(seedDurationMs).toBeLessThan(2000);
     const expectedUnits = seedResult.unitsSeeded;
-    expect(expectedUnits).toBe(36); // Post-barrier units: 8 eval + 20 member + 8 dispatch
+    // One self-contained evaluation/persistence/dispatch unit per case batch.
+    // There are intentionally no RAM-dependent member or dispatch units.
+    expect(expectedUnits).toBe(8);
     expect(seedResult.executionMode).toBe("SHADOW");
 
     // 2. SIMULATE V1 PROCESS TERMINATION (SIGKILL)

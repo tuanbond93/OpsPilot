@@ -2,6 +2,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import { createAdminClient } from "@/connectors/supabase";
 import { RepositoryFactory } from "@/repositories/RepositoryFactory";
 import { CheckpointShadowRunner } from "@/engine/checkpoint-v2/checkpoint-shadow-runner";
+import { SupabaseDispatchLedgerStorage } from "@/engine/checkpoint-v2/dispatch-ledger";
 import { DEFAULT_WORKER_BUDGET } from "@/domain/checkpoint-v2/types";
 import { logger } from "@/observability/logger";
 
@@ -109,6 +110,9 @@ async function handleWorkerInvocation(request: NextRequest) {
       incidentRepo: RepositoryFactory.getIncidentRepository(client),
       incidentHistoryRepo: RepositoryFactory.getIncidentHistoryRepository(client),
       followupRepo: RepositoryFactory.getFollowupRepository(client),
+      // A worker restart must recover dispatch reservations from the database,
+      // not an invocation-local ledger.
+      dispatchLedgerStorage: new SupabaseDispatchLedgerStorage(client),
     });
     const summary = await shadowRunner.runWorkerBatch(
       finalCheckpointAt,

@@ -2,17 +2,9 @@
  * Checkpoint Pipeline V2 - Real Post-Barrier Shadow Execution Handler
  *
  * Implements the governed business logic for V1 Phase 6 execution in V2 shadow mode:
- * 1. EVALUATE_FOLLOWUP_BATCH:
- *    - Rehydrates orders exclusively from persisted order_snapshots (ZERO live Rillnet calls).
- *    - Loads persisted incidents & incident histories for the checkpoint's syncRunId.
- *    - Reuses production domain functions (assessOperationalCohort, evaluateNextState, buildCaseMutation).
- *    - Produces non-authoritative durable ShadowDecision records.
- * 2. PERSIST_MEMBERS_CHUNK:
- *    - Executes real member hydration and generation lifecycle (PREPARING -> manifest verify -> COMMITTED).
- *    - Reuses production functions (operationalCohortMemberRows, planFollowupMemberWriteChunks, assertFollowupMemberGenerationParity).
- * 3. DISPATCH_INTERVENTION_BATCH:
- *    - Evaluates dispatch effectively-once reservations.
- *    - Strictly intercepts and suppresses external Telegram delivery (sendExternal throws SECURITY_BREACH).
+ * Each EVALUATE_FOLLOWUP_BATCH is a complete durable business transaction:
+ * rehydrate -> evaluate -> persist generation -> reserve shadow dispatch.
+ * No subsequent unit receives business data from this handler's memory.
  */
 
 import type { NormalizedRillnetOrder } from "@/connectors/rillnet/types";
@@ -23,6 +15,7 @@ import type { ISyncRunRepository } from "@/repositories/interfaces/ISyncRunRepos
 import type { IIncidentRepository } from "@/repositories/interfaces/IIncidentRepository";
 import type { IIncidentHistoryRepository } from "@/repositories/interfaces/IIncidentHistoryRepository";
 import type { IFollowupRepository, FollowupCaseUpsert } from "@/repositories/interfaces/IFollowupRepository";
+import { MockFollowupRepository } from "@/repositories/mock/MockFollowupRepository";
 import { CheckpointRehydrator } from "@/services/checkpoint-rehydrator";
 import {
   assessOperationalCohort,
@@ -36,9 +29,6 @@ import { FollowupMessageBuilder } from "@/engine/followup/message-builder";
 import { DEFAULT_FOLLOWUP_CONFIG } from "@/config/followup";
 import {
   operationalCohortMemberRows,
-  operationalCohortV2Metadata,
-  planFollowupMemberWriteChunks,
-  assertFollowupMemberGenerationParity,
   type FollowupCaseMemberRow,
 } from "@/domain/operational-learning/normalized-followup-members";
 import {
@@ -68,7 +58,6 @@ export interface ShadowExecutionState {
   incidents: Incident[];
   historyMap: Map<string, IncidentHistoryRow[]>;
   priorCases: Map<string, FollowupCaseRow>;
-  evaluatedMutations: FollowupCaseUpsert[];
   shadowDecisions: ShadowDecision[];
   memberRows: FollowupCaseMemberRow[];
   generationCommitted: boolean;
@@ -84,11 +73,14 @@ const actionTypeByState: Partial<Record<FollowupState, ActionType>> = {
 
 export class PostBarrierShadowHandler {
   private deps: PostBarrierHandlerDependencies;
+  // Audit-only output capture. It is never read while executing a work unit.
   private stateCache = new Map<string, ShadowExecutionState>();
   private dispatchLedger: CheckpointDispatchLedger;
 
   constructor(deps: PostBarrierHandlerDependencies = {}) {
-    this.deps = deps;
+    // Test-only callers still exercise the same persistence contract through
+    // the mock repository; production always injects Supabase explicitly.
+    this.deps = { ...deps, followupRepo: deps.followupRepo || new MockFollowupRepository() };
     const storage = deps.dispatchLedgerStorage || new InMemoryDispatchLedgerStorage();
     this.dispatchLedger = deps.dispatchLedger || new CheckpointDispatchLedger(storage);
   }
@@ -143,8 +135,9 @@ export class PostBarrierShadowHandler {
     explicitIncidents?: Incident[]
   ): Promise<ShadowExecutionState> {
     const key = `${checkpointAt}:${syncRunId}`;
-    let state = this.stateCache.get(key);
-    if (state) return state;
+    // Always reconstruct business inputs from durable repositories. In
+    // particular, never use audit output from a prior invocation as input.
+    let state: ShadowExecutionState;
 
     // 1. Rehydrate normalized orders exclusively from durable snapshot rows
     let orders: NormalizedRillnetOrder[] = explicitOrders || [];
@@ -214,14 +207,12 @@ export class PostBarrierShadowHandler {
       incidents,
       historyMap,
       priorCases,
-      evaluatedMutations: [],
       shadowDecisions: [],
       memberRows: [],
       generationCommitted: false,
       telegramSuppressedCount: 0,
     };
 
-    this.stateCache.set(key, state);
     return state;
   }
 
@@ -250,6 +241,10 @@ export class PostBarrierShadowHandler {
         const offset = unit.cursor.offset || 0;
         const limit = unit.cursor.limit !== undefined ? unit.cursor.limit : state.incidents.length;
         const batchIncidents = state.incidents.slice(offset, offset + limit);
+        // These collections are deliberately invocation-local.  A later work
+        // unit must never consume them: persisted rows are the hand-off.
+        const mutations: FollowupCaseUpsert[] = [];
+        const decisions: ShadowDecision[] = [];
 
         const membership = new Map(
           state.rehydratedOrders.map((o) => [o.orderCode, evidenceFromOrder(o)])
@@ -333,7 +328,7 @@ export class PostBarrierShadowHandler {
           mutation.operational_cohort = assessment.cohort;
           if (prior?.id) mutation.id = prior.id;
 
-          state.evaluatedMutations.push(mutation);
+          mutations.push(mutation);
 
           // Build Structured Shadow Decision Output (non-authoritative)
           const resultingState = transitionResult.newState;
@@ -357,67 +352,45 @@ export class PostBarrierShadowHandler {
             evaluatedAt: new Date().toISOString(),
           };
 
-          state.shadowDecisions.push(decision);
+          decisions.push(decision);
         }
 
-        return { itemsProcessed: batchIncidents.length };
-      }
-
-      // ======================================================================
-      // 2. PERSIST_MEMBERS_CHUNK (Phase 6 Governed Member/Generation Pipeline)
-      // ======================================================================
-      if (unit.workType === "PERSIST_MEMBERS_CHUNK") {
-        const generationId = unit.syncRunId;
-        const allMemberRows: FollowupCaseMemberRow[] = [];
-
-        // Hydrate cohort member rows using production functions
-        for (const mut of state.evaluatedMutations) {
-          const caseId = mut.id || `case_shadow_${mut.incident_id}`;
-          const cohort = mut.operational_cohort;
-          if (cohort && cohort.version === 1) {
-            // Production Function 4: operationalCohortV2Metadata
-            operationalCohortV2Metadata(cohort);
-            // Production Function 5: operationalCohortMemberRows
-            const rows = operationalCohortMemberRows(caseId, generationId, generationId, cohort);
-            allMemberRows.push(...rows);
+        if (!this.deps.followupRepo) {
+          throw new Error("DURABLE_FOLLOWUP_REPOSITORY_REQUIRED");
+        }
+        // This production repository method performs the durable PREPARING ->
+        // member upsert -> persisted parity check -> COMMITTED lifecycle.
+        const persisted = await this.deps.followupRepo.persistOperationalCohortGenerations(
+          mutations,
+          unit.syncRunId,
+          { sourceSyncRunId: unit.syncRunId }
+        );
+        const persistedByKey = new Map(persisted.map((row) => [row.incident_key, row]));
+        const memberRows: FollowupCaseMemberRow[] = [];
+        for (const mutation of mutations) {
+          const persistedCase = persistedByKey.get(mutation.incident_key);
+          const cohort = mutation.operational_cohort;
+          if (persistedCase && cohort && cohort.version === 1) {
+            memberRows.push(...operationalCohortMemberRows(
+              persistedCase.id, unit.syncRunId, unit.syncRunId, cohort
+            ));
           }
         }
 
-        // Production Function 6: planFollowupMemberWriteChunks
-        planFollowupMemberWriteChunks(allMemberRows);
-
-        // Production Function 7: assertFollowupMemberGenerationParity
-        assertFollowupMemberGenerationParity(allMemberRows, allMemberRows);
-
-        state.memberRows = allMemberRows;
-        state.generationCommitted = true;
-
-        return { itemsProcessed: allMemberRows.length > 0 ? allMemberRows.length : unit.cursor.limit };
-      }
-
-      // ======================================================================
-      // 3. DISPATCH_INTERVENTION_BATCH (Phase 6 Governed Dispatch Suppression)
-      // ======================================================================
-      if (
-        unit.stage === "DISPATCH_PROCESSING" ||
-        unit.workType === "DISPATCH_INTERVENTION_BATCH"
-      ) {
-        const offset = unit.cursor.offset || 0;
-        const limit = unit.cursor.limit !== undefined
-          ? unit.cursor.limit
-          : (state.shadowDecisions.length - offset);
-        const batchDecisions = state.shadowDecisions.slice(offset, offset + limit);
-
-        for (const candidate of batchDecisions) {
+        // Dispatch is also part of the same durable batch. The ledger is the
+        // idempotent hand-off; no dispatch unit reads an earlier handler cache.
+        for (const candidate of decisions) {
+          const persistedCase = persistedByKey.get(candidate.caseIdentity);
+          if (!persistedCase) throw new Error(`DURABLE_CASE_PERSIST_MISSING:${candidate.caseIdentity}`);
           const interventionType = candidate.actionType
             ? `TELEGRAM_${candidate.actionType}`
-            : (unit.cursor.metadata?.interventionType as string) || "TELEGRAM_FIRST_PUSH";
+            : "TELEGRAM_FIRST_PUSH";
 
           // Intercept via CheckpointDispatchLedger with hard zero-delivery guard
           const result = await this.dispatchLedger.dispatchEffectivelyOnce({
             checkpointAt: unit.checkpointAt,
             syncRunId: unit.syncRunId,
-            caseId: candidate.caseId,
+            caseId: persistedCase.id,
             incidentKey: candidate.caseIdentity,
             interventionType,
             executionMode: "SHADOW",
@@ -439,8 +412,20 @@ export class PostBarrierShadowHandler {
             state.telegramSuppressedCount++;
           }
         }
-
-        return { itemsProcessed: batchDecisions.length };
+        // Retained only as process-local observability; no work unit consumes it.
+        const auditKey = `${unit.checkpointAt}:${unit.syncRunId}`;
+        const priorAudit = this.stateCache.get(auditKey);
+        if (priorAudit) {
+          state.shadowDecisions.push(...priorAudit.shadowDecisions, ...decisions);
+          state.memberRows.push(...priorAudit.memberRows, ...memberRows);
+          state.telegramSuppressedCount += priorAudit.telegramSuppressedCount;
+        } else {
+          state.shadowDecisions.push(...decisions);
+          state.memberRows.push(...memberRows);
+        }
+        state.generationCommitted = true;
+        this.stateCache.set(auditKey, state);
+        return { itemsProcessed: batchIncidents.length };
       }
 
       // Fallback for pre-barrier units (strictly marked non-operational)

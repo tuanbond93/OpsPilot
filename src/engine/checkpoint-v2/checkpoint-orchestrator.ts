@@ -34,9 +34,9 @@ export class CheckpointOrchestrator {
   /**
    * Initializes a post-barrier Phase 6 checkpoint work plan.
    * Strictly scopes to post-barrier work:
-   * 1. EVALUATE_FOLLOWUP_BATCH (followup case evaluation)
-   * 2. PERSIST_MEMBERS_CHUNK (cohort/member hydration & generation)
-   * 3. DISPATCH_INTERVENTION_BATCH (dispatch reservation & execution)
+   * Each EVALUATE_FOLLOWUP_BATCH is self-contained: it rehydrates, evaluates,
+   * persists the governed cohort generation, and reserves its shadow dispatch.
+   * There is deliberately no cross-unit member or dispatch continuation stage.
    *
    * Pre-barrier work types (INGEST_POPULATION_CHUNK, etc.) are strictly excluded
    * from the post-barrier shadow plan.
@@ -46,11 +46,8 @@ export class CheckpointOrchestrator {
       checkpointAt,
       syncRunId,
       caseCount,
-      estimatedMembers = 0,
       executionMode = "SHADOW",
       caseBatchSize = this.batchConfig.followupCaseBatchSize || 25,
-      memberBatchSize = this.batchConfig.followupMemberBatchSize || 250,
-      dispatchBatchSize = 25,
     } = plan;
 
     if (caseCount <= 0) {
@@ -71,45 +68,6 @@ export class CheckpointOrchestrator {
         syncRunId,
         stage: "FOLLOWUPS_PROCESSING" as CheckpointStage,
         workType: "EVALUATE_FOLLOWUP_BATCH" as WorkUnitType,
-        partitionKey,
-        cursor: { offset, limit, total: caseCount },
-        executionMode,
-        idempotencyKey,
-      });
-    }
-
-    // 2. Member Hydration & Generation Batches
-    const memberTotal = estimatedMembers > 0 ? estimatedMembers : Math.max(caseCount * 25, 25);
-    const memberBatchCount = Math.max(1, Math.ceil(memberTotal / memberBatchSize));
-    for (let i = 0; i < memberBatchCount; i++) {
-      const offset = i * memberBatchSize;
-      const limit = Math.min(memberBatchSize, memberTotal - offset);
-      const partitionKey = `member_chunk_${i}_of_${memberBatchCount}`;
-      const idempotencyKey = `${checkpointAt}:${syncRunId}:${executionMode}:FOLLOWUPS_PROCESSING:PERSIST_MEMBERS_CHUNK:${partitionKey}`;
-      inputs.push({
-        checkpointAt,
-        syncRunId,
-        stage: "FOLLOWUPS_PROCESSING" as CheckpointStage,
-        workType: "PERSIST_MEMBERS_CHUNK" as WorkUnitType,
-        partitionKey,
-        cursor: { offset, limit, total: memberTotal },
-        executionMode,
-        idempotencyKey,
-      });
-    }
-
-    // 3. Dispatch Intervention Batches
-    const dispatchBatchCount = Math.max(1, Math.ceil(caseCount / dispatchBatchSize));
-    for (let i = 0; i < dispatchBatchCount; i++) {
-      const offset = i * dispatchBatchSize;
-      const limit = Math.min(dispatchBatchSize, caseCount - offset);
-      const partitionKey = `dispatch_batch_${i}_of_${dispatchBatchCount}`;
-      const idempotencyKey = `${checkpointAt}:${syncRunId}:${executionMode}:DISPATCH_PROCESSING:DISPATCH_INTERVENTION_BATCH:${partitionKey}`;
-      inputs.push({
-        checkpointAt,
-        syncRunId,
-        stage: "DISPATCH_PROCESSING" as CheckpointStage,
-        workType: "DISPATCH_INTERVENTION_BATCH" as WorkUnitType,
         partitionKey,
         cursor: { offset, limit, total: caseCount },
         executionMode,
