@@ -50,10 +50,15 @@ describe("SupabaseInboundOrderObservationRepository replacement contract", () =>
     expect(manifestSelect.eq).toHaveBeenNthCalledWith(2, "source_system", input.source_system);
   });
 
-  it("resets the manifest before deleting the incomplete run population", async () => {
+  it("resets the manifest and verifies zero residual rows on cleanup", async () => {
     const manifestSelect = chain({ data: { population_status: "FAILED" }, error: null });
     const manifestUpsert = vi.fn().mockResolvedValue({ error: null });
     const observationsDelete = chain({ error: null });
+    const countChain = {
+      eq: vi.fn(() => countChain),
+      then: vi.fn((resolve: any) => resolve({ count: 0, error: null })),
+    };
+
     const from = vi.fn((table: string) => {
       if (table === "inbound_population_manifests") {
         return {
@@ -61,10 +66,15 @@ describe("SupabaseInboundOrderObservationRepository replacement contract", () =>
           upsert: manifestUpsert,
         };
       }
-      return { delete: vi.fn(() => observationsDelete) };
+      return {
+        delete: vi.fn(() => observationsDelete),
+        select: vi.fn(() => countChain),
+      };
     });
 
-    const repository = new SupabaseInboundOrderObservationRepository({ from } as unknown as SupabaseClient);
+    const rpc = vi.fn().mockResolvedValue({ data: 0, error: null });
+
+    const repository = new SupabaseInboundOrderObservationRepository({ from, rpc } as unknown as SupabaseClient);
     await repository.replaceIncompletePopulation(input);
 
     expect(manifestUpsert).toHaveBeenCalledWith(expect.objectContaining({
@@ -72,9 +82,46 @@ describe("SupabaseInboundOrderObservationRepository replacement contract", () =>
       population_status: "STARTED",
       persisted_observation_count: 0,
     }), { onConflict: "sync_run_id,source_system" });
-    expect(from).toHaveBeenNthCalledWith(3, "inbound_order_observations");
-    expect(observationsDelete.eq).toHaveBeenCalledWith("sync_run_id", input.sync_run_id);
-    expect(observationsDelete.eq).toHaveBeenCalledWith("source_system", input.source_system);
+    expect(rpc).toHaveBeenCalledWith("clear_inbound_order_observation_population", {
+      p_sync_run_id: input.sync_run_id,
+      p_source_system: input.source_system,
+    });
+  });
+
+  it("throws INBOUND_POPULATION_REPLACEMENT_FAILED when residual observations remain after cleanup", async () => {
+    const manifestSelect = chain({ data: { population_status: "FAILED" }, error: null });
+    const manifestUpsert = vi.fn().mockResolvedValue({ error: null });
+    const observationsDelete = chain({ error: null });
+    let countCall = 0;
+    const countChain = {
+      eq: vi.fn(() => countChain),
+      then: vi.fn((resolve: any) => {
+        countCall += 1;
+        // First call before cleanup: 215 rows; second call after cleanup: still 215 rows (failed cleanup)
+        return resolve({ count: 215, error: null });
+      }),
+    };
+
+    const from = vi.fn((table: string) => {
+      if (table === "inbound_population_manifests") {
+        return {
+          select: vi.fn(() => manifestSelect),
+          upsert: manifestUpsert,
+        };
+      }
+      return {
+        delete: vi.fn(() => observationsDelete),
+        select: vi.fn(() => countChain),
+      };
+    });
+
+    // Simulate RPC returning error or deleting 0 rows
+    const rpc = vi.fn().mockResolvedValue({ data: 0, error: new Error("permission denied") });
+
+    const repository = new SupabaseInboundOrderObservationRepository({ from, rpc } as unknown as SupabaseClient);
+    await expect(repository.replaceIncompletePopulation(input)).rejects.toThrow(
+      "INBOUND_POPULATION_REPLACEMENT_FAILED: residual observations remain after cleanup (215 rows)"
+    );
   });
 
   it("rejects completed populations before any replacement write", async () => {

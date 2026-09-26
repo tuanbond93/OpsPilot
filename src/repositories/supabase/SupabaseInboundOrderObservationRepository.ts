@@ -42,17 +42,62 @@ export class SupabaseInboundOrderObservationRepository implements IInboundOrderO
     }, { onConflict: "sync_run_id,source_system" });
     if (error) throw new Error(`InboundOrderObservationRepository.replaceIncompletePopulation failed: ${error.message}`);
 
-    // The sync lock is the concurrency boundary. This sequence is deliberately
-    // not described as transactional: without a database RPC/transaction
-    // primitive, an interruption after DELETE leaves the manifest incomplete,
-    // and the next retry safely rebuilds the population from scratch.
-    const { error: deleteError } = await this.client
-      .from("inbound_order_observations")
-      .delete()
-      .eq("sync_run_id", input.sync_run_id)
-      .eq("source_system", input.source_system);
-    if (deleteError) {
-      throw new Error(`InboundOrderObservationRepository.replaceIncompletePopulation delete failed: ${deleteError.message}`);
+    // Step 1: Determine existing persisted population count before cleanup
+    const countBefore = await this.countPersisted(input.sync_run_id, input.source_system);
+
+    // Step 2 & 3: Call the scoped cleanup RPC
+    let rpcAttempted = false;
+    let rpcErrorOccurred = false;
+    let rpcDeletedCount: number | null = null;
+    let rpcErrorMessage: string | null = null;
+
+    try {
+      const { data, error: rpcError } = await this.client.rpc(
+        "clear_inbound_order_observation_population",
+        {
+          p_sync_run_id: input.sync_run_id,
+          p_source_system: input.source_system,
+        }
+      );
+      rpcAttempted = true;
+      if (rpcError) {
+        rpcErrorOccurred = true;
+        rpcErrorMessage = rpcError.message;
+      } else if (data !== null && data !== undefined) {
+        rpcDeletedCount = Number(data);
+      }
+    } catch (e: any) {
+      rpcErrorOccurred = true;
+      rpcErrorMessage = e?.message || "RPC_FAILED";
+    }
+
+    if (rpcErrorOccurred || !rpcAttempted) {
+      // Direct delete fallback
+      const { error: deleteError } = await this.client
+        .from("inbound_order_observations")
+        .delete()
+        .eq("sync_run_id", input.sync_run_id)
+        .eq("source_system", input.source_system);
+      if (deleteError) {
+        throw new Error(
+          `INBOUND_POPULATION_REPLACEMENT_FAILED: RPC failed (${rpcErrorMessage || "unknown"}), fallback delete failed: ${deleteError.message}`,
+        );
+      }
+    } else {
+      // Step 4: Verify returned deleted count
+      if (countBefore > 0 && Number.isFinite(rpcDeletedCount) && rpcDeletedCount !== countBefore) {
+        throw new Error(
+          `INBOUND_POPULATION_REPLACEMENT_FAILED: deleted count mismatch: expected ${countBefore}, deleted ${rpcDeletedCount}`,
+        );
+      }
+    }
+
+    // Step 5: Verify persisted count is strictly zero after cleanup
+    const countAfter = await this.countPersisted(input.sync_run_id, input.source_system);
+    if (countAfter !== 0) {
+      throw new Error(
+        `INBOUND_POPULATION_REPLACEMENT_FAILED: residual observations remain after cleanup (${countAfter} rows)`,
+      );
     }
   }
 

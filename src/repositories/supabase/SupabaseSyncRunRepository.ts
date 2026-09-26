@@ -122,6 +122,7 @@ export class SupabaseSyncRunRepository extends BaseRepository implements ISyncRu
       .select("*")
       .or("status.eq.running,status.eq.failed")
       .neq("current_phase", "COMPLETED")
+      .is("checkpoint_at", null)
       .order("started_at", { ascending: false })
       .limit(1)
       .maybeSingle();

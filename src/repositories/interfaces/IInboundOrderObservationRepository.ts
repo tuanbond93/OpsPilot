@@ -26,6 +26,7 @@ export interface InboundPopulationManifest extends InboundPopulationManifestInpu
   population_status: "STARTED" | "COMPLETE" | "FAILED";
   persisted_observation_count: number;
   population_completed_at?: string | null;
+  failure_reason?: string | null;
 }
 
 export interface IInboundOrderObservationRepository {

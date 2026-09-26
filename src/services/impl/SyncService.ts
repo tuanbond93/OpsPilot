@@ -475,13 +475,25 @@ export class SyncService implements ISyncService {
       let completedPhases: SyncPhase[] = [];
 
       try {
-          const unfinishedRun: SyncRunRow | null = (await retryTransientInfrastructure(() =>
+          let candidateRun: SyncRunRow | null = (await retryTransientInfrastructure(() =>
             _options?.checkpointAt
               ? this.syncRunRepo!.getSyncRunForCheckpoint(_options!.checkpointAt!)
               : _options?.forceReprocessSource === true
                 ? Promise.resolve(null)
                 : this.syncRunRepo!.getUnfinishedSyncRun()
           )).value;
+
+          // Checkpoint Identity Invariants:
+          // 1. If options.checkpointAt is specified, candidate must match that checkpoint
+          if (_options?.checkpointAt && candidateRun?.checkpoint_at && candidateRun.checkpoint_at !== _options.checkpointAt) {
+            candidateRun = null;
+          }
+          // 2. If options.checkpointAt is NOT specified, candidate must not be an operational checkpoint run
+          if (!_options?.checkpointAt && candidateRun?.checkpoint_at) {
+            candidateRun = null;
+          }
+
+          const unfinishedRun = candidateRun;
           if (resumeCheckpointRun && !unfinishedRun) {
             throw new Error("CHECKPOINT_RUN_MISSING_AFTER_LOCK");
           }

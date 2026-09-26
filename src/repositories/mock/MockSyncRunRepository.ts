@@ -154,7 +154,7 @@ export class MockSyncRunRepository implements ISyncRunRepository {
     const sorted = [...this.inMemoryRuns].sort(
       (a, b) => new Date(b.started_at || 0).getTime() - new Date(a.started_at || 0).getTime()
     );
-    return sorted.find((r) => r.current_phase !== "COMPLETED" && r.status !== "success") || null;
+    return sorted.find((r) => r.current_phase !== "COMPLETED" && r.status !== "success" && !r.checkpoint_at) || null;
   }
 
   async getUnfinishedSyncRuns(limit: number = 50): Promise<SyncRunRow[]> {
