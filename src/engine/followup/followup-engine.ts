@@ -71,6 +71,20 @@ export interface ProcessedFollowupItem {
   payload: StructuredFollowupPayload;
 }
 
+export interface DurableV1FollowupPlan {
+  mutations: FollowupCaseUpsert[];
+  params: ProcessTransitionParams[];
+  actions: EnqueueActionParams[];
+  results: ProcessedFollowupItem[];
+  candidateCount: number;
+  skippedUnchangedNotDue: number;
+}
+
+export interface DurableV1FollowupOptions {
+  existingCases: FollowupCaseRow[];
+  journalPlan: (plan: DurableV1FollowupPlan) => Promise<void>;
+}
+
 export interface FollowupRunMetrics {
   incidents: number;
   caseReads: number;
@@ -223,6 +237,7 @@ export class FollowupEngine {
     referenceTimeMs: number = Date.now(),
     orders?: NormalizedRillnetOrder[],
     syncRunId?: string,
+    durableV1?: DurableV1FollowupOptions,
   ): Promise<ProcessedFollowupItem[]> {
     this.currentIncidentCount = incidents.length;
     const startedAt = performance.now();
@@ -243,7 +258,7 @@ export class FollowupEngine {
 
     try {
       if (orders) {
-        const results = await this.processOrderCohorts(incidents, orders, referenceTimeMs, metrics, syncRunId);
+        const results = await this.processOrderCohorts(incidents, orders, referenceTimeMs, metrics, syncRunId, durableV1);
         this.publishMetrics(metrics, startedAt, "success");
         return results;
       }
@@ -262,16 +277,22 @@ export class FollowupEngine {
     }
   }
 
-  private async processOrderCohorts(incidents: Incident[], orders: NormalizedRillnetOrder[], now: number, metrics: MutableFollowupRunMetrics, syncRunId?: string): Promise<ProcessedFollowupItem[]> {
+  private async processOrderCohorts(incidents: Incident[], orders: NormalizedRillnetOrder[], now: number, metrics: MutableFollowupRunMetrics, syncRunId?: string, durableV1?: DurableV1FollowupOptions): Promise<ProcessedFollowupItem[]> {
     const checkpoint = checkpointKey(now);
-    if (!checkpoint) return [];
+    if (!checkpoint) {
+      if (durableV1) await durableV1.journalPlan({ mutations: [], params: [], actions: [], results: [], candidateCount: 0, skippedUnchangedNotDue: 0 });
+      return [];
+    }
     const isBaseline = localHour(now) === 8;
     // 08h is an immutable baseline checkpoint. It must be persisted even when
     // fetchedAt is the Rillnet snapshot updatedAt. The current successful
     // snapshot is accepted only within the governed freshness window.
-    if (!isBaseline && !orders.some(order => isFreshRillnetSnapshot(order.fetchedAt, now))) return [];
+    if (!isBaseline && !orders.some(order => isFreshRillnetSnapshot(order.fetchedAt, now))) {
+      if (durableV1) await durableV1.journalPlan({ mutations: [], params: [], actions: [], results: [], candidateCount: 0, skippedUnchangedNotDue: 0 });
+      return [];
+    }
     // A failed read must abort; replacing an unavailable baseline would erase old work.
-    const existing = await this.loadOperationalCases(metrics);
+    const existing = durableV1 ? durableV1.existingCases : await this.loadOperationalCases(metrics);
     const byKey = new Map(existing.map(item => [item.incident_key, item]));
     const incomingByKey = new Map<string, string>();
     const incomingById = new Map<string, string>();
@@ -293,7 +314,7 @@ export class FollowupEngine {
     const missingIncidentKeys = [...new Set(incidents
       .map(incident => incident.incidentKey)
       .filter(incidentKey => !byKey.has(incidentKey)))];
-    for (let start = 0; start < missingIncidentKeys.length; start += FOLLOWUP_CASE_IDENTITY_READ_BATCH_SIZE) {
+    for (let start = 0; !durableV1 && start < missingIncidentKeys.length; start += FOLLOWUP_CASE_IDENTITY_READ_BATCH_SIZE) {
       const keys = missingIncidentKeys.slice(start, start + FOLLOWUP_CASE_IDENTITY_READ_BATCH_SIZE);
       metrics.caseReads++;
       const matchingCases = await this.timeOperation(metrics, "caseRead", () =>
@@ -480,6 +501,50 @@ export class FollowupEngine {
       results.push({ incidentId: incident.incidentId, incidentKey: incident.incidentKey, warehouseName: incident.warehouseName,
         reasonName: incident.reasonName, oldState, newState, progressPercent: assessment.progressPercent, assessment: assessment.assessment, payload });
     }
+    const plan: DurableV1FollowupPlan = {
+      mutations, params, actions, results,
+      candidateCount: work.size,
+      skippedUnchangedNotDue,
+    };
+    if (durableV1) await durableV1.journalPlan(plan);
+    await this.persistOrderCohortPlan(plan, metrics, syncRunId, Boolean(durableV1));
+    logRuntimeMessage(`[LoadSheddingMetrics] followup_candidates_before=${work.size} heavy_cases_after=${mutations.length} skipped_unchanged_not_due=${skippedUnchangedNotDue}`);
+    return results;
+  }
+
+  /** Replays the journaled intent after an interrupted write without re-evaluating state. */
+  async replayDurableV1Plan(plan: DurableV1FollowupPlan, syncRunId: string): Promise<ProcessedFollowupItem[]> {
+    // A previous attempt may have inserted a parent before losing its lease.
+    // Reattach that stable identity before replaying the same generation.
+    const unlinkedKeys = plan.mutations.filter(item => !item.id).map(item => item.incident_key);
+    const existing = unlinkedKeys.length && this.followupRepo
+      ? await this.followupRepo.getCasesByIncidentKeys(unlinkedKeys)
+      : [];
+    const existingByKey = new Map(existing.map(item => [item.incident_key, item]));
+    const replayPlan = {
+      ...plan,
+      mutations: plan.mutations.map(item => {
+        const prior = existingByKey.get(item.incident_key);
+        return prior ? { ...item, id: prior.id, updated_at: prior.updated_at,
+          cohort_version: prior.cohort_version, member_generation_id: prior.member_generation_id } : item;
+      }),
+    };
+    const metrics: MutableFollowupRunMetrics = {
+      incidents: plan.candidateCount, caseReads: 0, caseWrites: 0, eventWrites: 0, actions: 0,
+      operationDurationsMs: { caseRead: 0, caseWrite: 0, eventWrite: 0, actionEnqueue: 0 },
+      actionQueueStart: this.actionQueue?.getMetricsSnapshot?.() || null,
+    };
+    await this.persistOrderCohortPlan(replayPlan, metrics, syncRunId, true);
+    return plan.results;
+  }
+
+  private async persistOrderCohortPlan(
+    plan: DurableV1FollowupPlan,
+    metrics: MutableFollowupRunMetrics,
+    syncRunId?: string,
+    durableV1 = false,
+  ): Promise<void> {
+    const { mutations, params, actions } = plan;
     if (this.followupRepo && mutations.length) {
       let persisted: FollowupCaseLinkRow[];
       if (syncRunId) {
@@ -517,7 +582,9 @@ export class FollowupEngine {
       await this.persistEvents(params.map(item => {
         const id = ids.get(item.incidentKey);
         if (!id) throw new Error(`Missing persisted cohort ${item.incidentKey}`);
-        return buildEventMutation(item, id);
+        const event = buildEventMutation(item, id);
+        if (durableV1 && syncRunId) event.durable_work_key = `${syncRunId}:${item.incidentKey}`;
+        return event;
       }), metrics);
     }
     if (actions.length > 0 && this.actionQueue) {
@@ -525,8 +592,6 @@ export class FollowupEngine {
       if (typeof this.actionQueue.enqueueActionBatch === "function") await this.timeOperation(metrics, "actionEnqueue", () => this.actionQueue!.enqueueActionBatch!(actions));
       else for (const action of actions) await this.timeOperation(metrics, "actionEnqueue", () => this.actionQueue!.enqueueAction(action));
     }
-    logRuntimeMessage(`[LoadSheddingMetrics] followup_candidates_before=${work.size} heavy_cases_after=${mutations.length} skipped_unchanged_not_due=${skippedUnchangedNotDue}`);
-    return results;
   }
 
   private async processIncidentFollowupsInternal(

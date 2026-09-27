@@ -15,6 +15,7 @@ import { isTransientInfrastructureError, retryTransientInfrastructure } from "@/
 import { runNaturalShadowObserverSafely } from "@/services/inbound-natural-shadow-observer";
 import { CheckpointShadowRunner, type ShadowSeedResult, type ShadowParityReport } from "@/engine/checkpoint-v2/checkpoint-shadow-runner";
 import { RepositoryFactory } from "@/repositories/RepositoryFactory";
+import { persistDurableV1Input, seedDurableV1Followups, type DurableV1SeedResult } from "@/services/durable-v1-followup";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
@@ -90,8 +91,17 @@ async function runFollowupCycle(request: NextRequest) {
     status: "FAILED", reason: "NATURAL_SHADOW_NOT_NATURAL_SCHEDULER_PATH", warehousesEvaluated: 0,
   };
   let shadowSeedResult: ShadowSeedResult | null = null;
+  let durableV1Seed: DurableV1SeedResult | null = null;
   const sync = await syncRillnet({
     checkpointAt,
+    onDurableV1InputReady: process.env.V1_DURABLE_FOLLOWUP_V0 === "true"
+      ? async input => { await persistDurableV1Input(client, input); }
+      : undefined,
+    onDurableV1CheckpointReady: process.env.V1_DURABLE_FOLLOWUP_V0 === "true"
+      ? async ({ syncRunId, checkpointAt: readyAt }) => {
+          durableV1Seed = await seedDurableV1Followups(client, readyAt, syncRunId);
+        }
+      : undefined,
     onSourceCoreComplete: !recovery && trustedNaturalScheduler
       ? async ({ syncRunId }) => {
           naturalShadow = await runNaturalShadowObserverSafely(client, { checkpointAt, syncRunId, trustedScheduler: true });
@@ -151,6 +161,20 @@ async function runFollowupCycle(request: NextRequest) {
       ? new CheckpointShadowRunner().createIncompleteParityReport(shadowSeedResult)
       : null;
     return NextResponse.json({ ok: false, stage: "SYNC", sync, v2Shadow }, { status });
+  }
+
+  if (sync.durableFollowupDraining) {
+    return NextResponse.json({
+      ok: true,
+      stage: "FOLLOWUP_DRAINING",
+      producerCompleted: true,
+      checkpointCompleted: false,
+      syncRunId: sync.syncRunId,
+      producerRuntimeMs: sync.durationMs,
+      v1Work: durableV1Seed,
+      v2ShadowSeed: shadowSeedResult,
+      naturalShadow,
+    }, { status: 202 });
   }
 
   if (sync.skipped && sync.skipReason === "CHECKPOINT_ALREADY_COMPLETED") {

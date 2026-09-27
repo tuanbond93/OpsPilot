@@ -22,6 +22,18 @@ export interface SyncOptions {
     incidentCount: number;
     orders: any[];
   }) => Promise<void>;
+  /** Saves exact V1 follow-up inputs after incident identities are persisted. */
+  onDurableV1InputReady?: (context: {
+    syncRunId: string;
+    checkpointAt: string;
+    referenceTimeMs: number;
+    orders: any[];
+    incidents: any[];
+  }) => Promise<void>;
+  /** Seeds V1 work after history is durable; failure must stop the producer. */
+  onDurableV1CheckpointReady?: (context: { syncRunId: string; checkpointAt: string }) => Promise<void>;
+  /** Exact producer inputs and journaled results for post-drain continuation. */
+  durableV1Finalization?: { incidents: any[]; followupResults: any[] };
 }
 
 export interface ISyncService {

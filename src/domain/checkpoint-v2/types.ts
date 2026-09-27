@@ -24,6 +24,7 @@ export type WorkUnitType =
   | "EVALUATE_INCIDENTS_CHUNK"
   | "PERSIST_HISTORY_CHUNK"
   | "EVALUATE_FOLLOWUP_BATCH"
+  | "FINALIZE_V1_CHECKPOINT"
   | "PERSIST_MEMBERS_CHUNK"
   | "DISPATCH_INTERVENTION_BATCH";
 
@@ -88,6 +89,8 @@ export interface CheckpointWorkUnit {
 }
 
 export interface WorkerBudgetConfig {
+  /** Optional cap for one claim, used by V1's heavier per-case units. */
+  maxUnitsPerClaim?: number;
   /** Target execution time for a normal invocation (default: 45,000ms = 45s) */
   softBudgetMs: number;
   /** Safe tail margin: stop claiming/starting new work when remaining budget <= safeTailMarginMs (default: 12,000ms = 12s) */

@@ -176,10 +176,15 @@ export class MockFollowupRepository implements IFollowupRepository {
   }
 
   async insertEvent(eventData: FollowupEventInsert): Promise<FollowupEventRow> {
+    if (eventData.durable_work_key) {
+      const existing = this.inMemoryEvents.find(row => row.durable_work_key === eventData.durable_work_key);
+      if (existing) return existing;
+    }
     const now = new Date().toISOString();
     const fullRow: FollowupEventRow = {
       id: eventData.id || `fevt-${this.nextEventId++}`,
       followup_case_id: eventData.followup_case_id,
+      durable_work_key: eventData.durable_work_key || null,
       event_type: eventData.event_type || "CASE_CREATED",
       event_time: eventData.event_time || now,
       snapshot_id: eventData.snapshot_id || null,

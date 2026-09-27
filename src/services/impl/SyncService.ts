@@ -542,6 +542,9 @@ export class SyncService implements ISyncService {
                 incidentsRehydrated = false;
               }
             }
+            // The durable producer saved the exact incident array, including
+            // the valid empty cohort. It is sufficient for finalization.
+            if (_options?.durableV1Finalization) incidentsRehydrated = true;
 
             if (this.inboundOrderObservationRepo) {
               const manifest = await this.inboundOrderObservationRepo.getPopulationManifest(
@@ -607,6 +610,12 @@ export class SyncService implements ISyncService {
             // Truncate completedPhases to only include phases strictly prior to safePhase
             const safeIdx = ORDERED_SYNC_PHASES.indexOf(safePhase);
             completedPhases = ORDERED_SYNC_PHASES.slice(0, safeIdx);
+            if (_options?.durableV1Finalization) {
+              incidents = _options.durableV1Finalization.incidents;
+              incidentCount = incidents.length;
+              keyToIdMap.clear();
+              for (const incident of incidents) keyToIdMap.set(incident.incidentKey, incident.incidentId);
+            }
           } else {
             const newRunId = crypto.randomUUID();
             const newRun = (await retryTransientInfrastructure(
@@ -1100,6 +1109,16 @@ export class SyncService implements ISyncService {
           incident.incidentId = persistedId;
         }
 
+        if (_options?.onDurableV1InputReady && _options.checkpointAt && !reusingCompleteInboundPopulation) {
+          await _options.onDurableV1InputReady({
+            syncRunId,
+            checkpointAt: _options.checkpointAt,
+            referenceTimeMs: _options.referenceTimeMs || startTime,
+            orders: snapshotResult.orders,
+            incidents,
+          });
+        }
+
         // Phase 5: PERSISTING_HISTORY
         const pHist = "PERSISTING_HISTORY" as SyncPhase;
         if (completedPhases.includes(pHist)) {
@@ -1143,6 +1162,31 @@ export class SyncService implements ISyncService {
         }
         await notifyCheckpointHistoryPersisted();
 
+        if (_options?.onDurableV1CheckpointReady && _options.checkpointAt) {
+          await _options.onDurableV1CheckpointReady({ syncRunId, checkpointAt: _options.checkpointAt });
+          if (this.syncRunRepo) {
+            await retryTransientInfrastructure(() => this.syncRunRepo!.updatePhase(syncRunId, "PROCESSING_FOLLOWUPS", completedPhases));
+          }
+          const completedAt = new Date().toISOString();
+          return {
+            ok: true,
+            durableFollowupDraining: true,
+            syncRunId,
+            startedAt,
+            completedAt,
+            durationMs: Date.now() - startTime,
+            fetchedOrderCount,
+            normalizedOrderCount,
+            incidentCount,
+            resolvedIncidentCount,
+            phaseTimings,
+            dbInstrumentation: { totalQueries, phases: dbPhases, bottlenecksDetected },
+            syncLockAttempts: syncLockTelemetry?.attempts || 0,
+            syncLockRetryCount: syncLockTelemetry?.retryCount || 0,
+            syncLockFinalStatus: syncLockTelemetry?.finalStatus || "NOT_ATTEMPTED",
+          };
+        }
+
         // Load incident histories for follow-up evaluation
         let historyMap = new Map();
         const incidentDbIds: string[] = [];
@@ -1162,7 +1206,7 @@ export class SyncService implements ISyncService {
 
         // Phase 6: PROCESSING_FOLLOWUPS
         const pFol = "PROCESSING_FOLLOWUPS" as SyncPhase;
-        let followupResults: any[] = [];
+        let followupResults: any[] = _options?.durableV1Finalization?.followupResults || [];
 
         if (completedPhases.includes(pFol)) {
           logger.info({

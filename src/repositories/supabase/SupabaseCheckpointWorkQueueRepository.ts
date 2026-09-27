@@ -51,7 +51,8 @@ export class SupabaseCheckpointWorkQueueRepository
     workerId: string,
     leaseDurationMs: number,
     limit: number,
-    executionMode: "PRODUCTION" | "SHADOW" = "PRODUCTION"
+    executionMode: "PRODUCTION" | "SHADOW" = "PRODUCTION",
+    pipelineVersion?: "V1" | "V2"
   ): Promise<CheckpointWorkUnit[]> {
     const leaseSeconds = Math.max(1, Math.ceil(leaseDurationMs / 1000));
     const { data, error } = await this.client.rpc("claim_checkpoint_work_units", {
@@ -60,6 +61,7 @@ export class SupabaseCheckpointWorkQueueRepository
       p_lease_seconds: leaseSeconds,
       p_limit: limit,
       p_execution_mode: executionMode,
+      ...(pipelineVersion ? { p_pipeline_version: pipelineVersion } : {}),
     });
 
     if (error) {
@@ -93,7 +95,7 @@ export class SupabaseCheckpointWorkQueueRepository
 
   async completeWorkUnit(id: string, workerId: string): Promise<void> {
     const now = new Date().toISOString();
-    const { error } = await this.client
+    const { data, error } = await this.client
       .from("checkpoint_work_units")
       .update({
         status: "COMPLETED",
@@ -102,9 +104,12 @@ export class SupabaseCheckpointWorkQueueRepository
         updated_at: now,
       })
       .eq("id", id)
-      .eq("lease_owner", workerId);
+      .eq("lease_owner", workerId)
+      .eq("status", "LEASED")
+      .select("id");
 
     if (error) throw error;
+    if (data?.length !== 1) throw new Error(`CHECKPOINT_WORK_LEASE_LOST:${id}`);
   }
 
   async failWorkUnit(
@@ -117,15 +122,24 @@ export class SupabaseCheckpointWorkQueueRepository
       retryAfterMs?: number;
     }
   ): Promise<void> {
+    const { data: current, error: readError } = await this.client
+      .from("checkpoint_work_units")
+      .select("attempts,max_attempts,lease_owner,status")
+      .eq("id", id).single();
+    if (readError) throw readError;
+    if (current.lease_owner !== workerId || current.status !== "LEASED") {
+      throw new Error(`CHECKPOINT_WORK_LEASE_LOST:${id}`);
+    }
+    const canRetry = error.retryable && current.attempts < current.max_attempts;
     const now = new Date();
-    const retryAfter = error.retryAfterMs
+    const retryAfter = canRetry && error.retryAfterMs
       ? new Date(now.getTime() + error.retryAfterMs).toISOString()
       : null;
 
     const { error: updateErr } = await this.client
       .from("checkpoint_work_units")
       .update({
-        status: error.retryable ? "PENDING" : "FAILED",
+        status: canRetry ? "PENDING" : "FAILED",
         failure_code: error.failureCode,
         last_safe_error: error.message,
         retry_after: retryAfter,
@@ -133,7 +147,9 @@ export class SupabaseCheckpointWorkQueueRepository
         lease_expires_at: null,
         updated_at: now.toISOString(),
       })
-      .eq("id", id);
+      .eq("id", id)
+      .eq("lease_owner", workerId)
+      .eq("status", "LEASED");
 
     if (updateErr) throw updateErr;
   }

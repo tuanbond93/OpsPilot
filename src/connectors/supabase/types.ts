@@ -185,6 +185,7 @@ export interface FollowupCaseRow {
 
 export interface FollowupEventRow {
   id: string;
+  durable_work_key?: string | null;
   followup_case_id: string;
   event_type: FollowupEventType;
   event_time: string;

@@ -39,7 +39,8 @@ export class CheckpointWorker {
     checkpointAt: string,
     syncRunId: string,
     handler: WorkUnitExecutionHandler,
-    executionMode: ExecutionMode = "PRODUCTION"
+    executionMode: ExecutionMode = "PRODUCTION",
+    pipelineVersion?: "V1" | "V2"
   ): Promise<WorkerInvocationSummary> {
     const startedAt = performance.now();
     let claimedCount = 0;
@@ -64,7 +65,7 @@ export class CheckpointWorker {
 
       // 2. Adaptive Batch Calculation
       const targetItems = Math.max(50, Math.floor(remainingBudgetMs / Math.max(0.1, observedMsPerItem)));
-      const batchLimit = Math.min(5, Math.max(1, Math.ceil(targetItems / 500)));
+      const batchLimit = Math.min(this.budgetConfig.maxUnitsPerClaim ?? 5, Math.max(1, Math.ceil(targetItems / 500)));
 
       // 3. Claim claimable work units for this checkpoint and execution mode
       const units = await this.workQueueRepo.claimWorkUnits(
@@ -72,7 +73,8 @@ export class CheckpointWorker {
         this.workerId,
         this.budgetConfig.leaseDurationMs,
         batchLimit,
-        executionMode
+        executionMode,
+        pipelineVersion
       );
 
       if (units.length === 0) {

@@ -19,6 +19,7 @@ export interface DetectedBottleneck {
 
 export interface SyncJobResult {
   ok: boolean;
+  durableFollowupDraining?: boolean;
   skipped?: boolean;
   skipReason?: "SOURCE_UNCHANGED" | "CHECKPOINT_ALREADY_COMPLETED";
   syncRunId: string;

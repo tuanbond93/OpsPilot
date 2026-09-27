@@ -23,7 +23,8 @@ export interface ICheckpointWorkQueueRepository {
     workerId: string,
     leaseDurationMs: number,
     limit: number,
-    executionMode?: "PRODUCTION" | "SHADOW"
+    executionMode?: "PRODUCTION" | "SHADOW",
+    pipelineVersion?: "V1" | "V2"
   ): Promise<CheckpointWorkUnit[]>;
   releaseWorkUnits(ids: string[], workerId: string): Promise<void>;
   completeWorkUnit(id: string, workerId: string): Promise<void>;

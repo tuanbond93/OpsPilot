@@ -750,10 +750,14 @@ export class SupabaseFollowupRepository extends BaseRepository implements IFollo
       created_at: eventData.created_at || now,
     }));
 
-    const query = this.client
-      .from("followup_events")
-      .insert(payload)
-      .select(FOLLOWUP_EVENT_COLUMNS);
+    const durable = payload.every(event => Boolean(event.durable_work_key));
+    const query = durable
+      ? this.client.from("followup_events")
+        .upsert(payload, { onConflict: "durable_work_key", ignoreDuplicates: true })
+        .select(FOLLOWUP_EVENT_COLUMNS)
+      : this.client.from("followup_events")
+        .insert(payload)
+        .select(FOLLOWUP_EVENT_COLUMNS);
 
     return this.executeMany<FollowupEventRow>(query as unknown as Promise<{ data: FollowupEventRow[] | null; error: unknown }>);
   }
