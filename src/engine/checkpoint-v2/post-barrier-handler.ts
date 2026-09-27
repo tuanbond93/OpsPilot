@@ -20,6 +20,7 @@ import { CheckpointRehydrator } from "@/services/checkpoint-rehydrator";
 import {
   assessOperationalCohort,
   evidenceFromOrder,
+  isFreshRillnetSnapshot,
   OPERATIONAL_CHECKPOINT_POLICY_VERSION,
 } from "@/domain/operational-learning/checkpoint-policy";
 import { evaluateNextState } from "@/engine/followup/state-machine";
@@ -288,7 +289,7 @@ export class PostBarrierShadowHandler {
           const isBaseline = false;
           const shouldRemind = assessment.reminderCodes.length > 0 && (!isBaseline || transitionState === "NEW");
           const currentCount = assessment.pending + assessment.unknown;
-          const resolved = assessment.due > 0 && assessment.completed === assessment.due && !assessment.unknown;
+          const resolved = !isBaseline && assessment.due > 0 && assessment.completed === assessment.due && !assessment.unknown;
           const mustEvaluate = resolved || (!isBaseline && oldState === "RESOLVED") || (oldState === "CLOSED" && currentCount === 0) || shouldRemind || options?.forceActionable;
 
           const lastActionAt = prior?.last_action_requested_at ? Date.parse(prior.last_action_requested_at) : NaN;
@@ -299,17 +300,19 @@ export class PostBarrierShadowHandler {
           const transitionCtx: TransitionContext = {
             incidentId: incident.incidentId,
             incidentKey: incident.incidentKey,
-            currentCount: currentCount > 0 ? currentCount : (incident.affectedOrderCount || 1),
-            baselineCount: assessment.due > 0 ? assessment.due : 1,
+            currentCount,
+            baselineCount: assessment.due,
             previousCount: prior?.latest_affected_order_count || 0,
             countChangePercent: assessment.progressPercent,
             progressPercent: assessment.progressPercent,
             progressAssessment: assessment.assessment,
             incidentDurationHours: Math.max(0, (now - Date.parse(prior?.first_detected_at || incident.firstDetectedAt)) / 3_600_000),
-            isIncidentActive: true,
+            isIncidentActive: currentCount > 0,
             timeSinceLastActionHours,
             timeSinceResolvedHours,
-            hasFreshSnapshotAfterLastAction: true,
+            hasFreshSnapshotAfterLastAction: !Number.isFinite(lastActionAt) || state.rehydratedOrders.some((order) =>
+              isFreshRillnetSnapshot(order.fetchedAt, now) && Date.parse(order.fetchedAt) >= lastActionAt
+            ),
           };
 
           const transitionResult: TransitionResult = mustEvaluate
@@ -329,7 +332,7 @@ export class PostBarrierShadowHandler {
             incidentKey: incident.incidentKey,
             firstDetectedAt: prior?.first_detected_at || incident.firstDetectedAt,
             baselineCount: assessment.due > 0 ? assessment.due : 1,
-            latestCount: currentCount > 0 ? currentCount : 1,
+            latestCount: currentCount,
             changePercent: assessment.progressPercent,
             assessment: assessment.assessment,
             transitionResult,

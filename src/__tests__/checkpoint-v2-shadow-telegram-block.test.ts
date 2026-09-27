@@ -72,7 +72,7 @@ describe("Checkpoint Pipeline V2 - Shadow Telegram Defense-In-Depth Hard Block",
     expect(liveTelegramAdapter).toHaveBeenCalledTimes(1);
   });
 
-  it("shadow runner suppresses all 47 simulated cases with 0 external network requests", async () => {
+  it("shadow runner reserves no dispatch for non-action simulated cases", async () => {
     const runner = new CheckpointShadowRunner();
 
     const report = await runner.runShadowComparison(
@@ -105,7 +105,7 @@ describe("Checkpoint Pipeline V2 - Shadow Telegram Defense-In-Depth Hard Block",
     );
 
     expect(report.isShadow).toBe(true);
-    expect(report.v2Summary.telegramSuppressedCount).toBe(47);
+    expect(report.v2Summary.telegramSuppressedCount).toBe(0);
     expect(report.parity.overallParity).toBe(true);
   });
 });

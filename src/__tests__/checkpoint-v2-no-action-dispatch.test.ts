@@ -6,11 +6,15 @@ import { PostBarrierShadowHandler } from "@/engine/checkpoint-v2/post-barrier-ha
 import { createFourScenarioParityFixtures } from "@/engine/checkpoint-v2/four-scenario-parity-harness";
 import { MockCheckpointWorkQueueRepository } from "@/repositories/mock/MockCheckpointWorkQueueRepository";
 import { MockFollowupRepository } from "@/repositories/mock/MockFollowupRepository";
+import type { FollowupState } from "@/connectors/supabase/types";
 
-async function runFixture(index: number) {
+async function runFixture(index: number, priorState?: FollowupState) {
   const fixture = createFourScenarioParityFixtures("no-action-dispatch-regression")[index];
   const followupRepo = new MockFollowupRepository();
-  if (fixture.priorCase) await followupRepo.upsertCase(fixture.priorCase);
+  if (fixture.priorCase) await followupRepo.upsertCase({
+    ...fixture.priorCase,
+    ...(priorState ? { current_state: priorState } : {}),
+  });
   const queue = new MockCheckpointWorkQueueRepository();
   const storage = new InMemoryDispatchLedgerStorage();
   const handler = new PostBarrierShadowHandler({ followupRepo, dispatchLedgerStorage: storage });
@@ -31,7 +35,7 @@ async function runFixture(index: number) {
 }
 
 describe("Checkpoint V2 no-action dispatch regression", () => {
-  it("creates no SHADOW dispatch reservation for FOLLOWING_UP monitoring", async () => {
+  it("keeps an active FOLLOWING_UP case active when the governed resolution predicate is not met", async () => {
     const { fixture, handler, storage, persistedCase } = await runFixture(1);
     const key = CheckpointDispatchLedger.buildIdempotencyKey(
       fixture.checkpointAt, persistedCase.id, "TELEGRAM_FIRST_PUSH",
@@ -41,6 +45,20 @@ describe("Checkpoint V2 no-action dispatch regression", () => {
     });
     expect(handler.getExecutionState(fixture.checkpointAt, fixture.syncRunId)?.telegramSuppressedCount).toBe(0);
     expect(await storage.getByDedupeKey(key)).toBeNull();
+  });
+
+  it("resolves a completed FOLLOWING_UP cohort with no intervention", async () => {
+    const { fixture, handler, storage, persistedCase } = await runFixture(3, "FOLLOWING_UP");
+    const interventionTypes = ["TELEGRAM_FIRST_PUSH", "TELEGRAM_SECOND_PUSH", "TELEGRAM_THIRD_PUSH", "TELEGRAM_ESCALATION"];
+    expect(persistedCase).toMatchObject({ current_state: "RESOLVED" });
+    expect(handler.getShadowDecisions(fixture.checkpointAt, fixture.syncRunId)[0]).toMatchObject({
+      decisionType: "RESOLVED", actionType: null, newState: "RESOLVED",
+    });
+    expect(handler.getExecutionState(fixture.checkpointAt, fixture.syncRunId)?.telegramSuppressedCount).toBe(0);
+    for (const interventionType of interventionTypes) {
+      const key = CheckpointDispatchLedger.buildIdempotencyKey(fixture.checkpointAt, persistedCase.id, interventionType);
+      expect(await storage.getByDedupeKey(key)).toBeNull();
+    }
   });
 
   it("keeps the governed first-push intervention", async () => {

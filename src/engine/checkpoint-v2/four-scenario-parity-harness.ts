@@ -258,6 +258,7 @@ function toSnapshotRows(fixture: FourScenarioParityFixture): OrderSnapshotRow[] 
     order_code: order.orderCode,
     warehouse_id: order.warehouseId,
     warehouse_name: order.warehouseName,
+    customer_id: order.customerId,
     source_status: order.status,
     task_category: order.taskCategory,
     source_updated_at: order.fetchedAt,

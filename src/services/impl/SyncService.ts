@@ -964,6 +964,7 @@ export class SyncService implements ISyncService {
                   order_code: orderCode,
                   warehouse_id: o.warehouseId || undefined,
                   warehouse_name: o.warehouseName || undefined,
+                  customer_id: o.customerId || undefined,
                   source_status: o.status,
                   task_category: o.taskCategory || undefined,
                   reason_code: reasonMeta ? reasonMeta.code : undefined,

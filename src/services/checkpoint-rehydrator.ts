@@ -26,6 +26,14 @@ export function mapSnapshotRowToNormalizedOrder(
   row: OrderSnapshotRow,
   fallbackFetchedAt: string
 ): NormalizedRillnetOrder {
+  const customerId = row.customer_id?.trim();
+  // A customer's identity participates in governed cohort membership and
+  // follow-up assessment. Historical rows without it cannot be faithfully
+  // re-evaluated, so reject them instead of inventing a synthetic customer.
+  if (!customerId) {
+    throw new Error(`CHECKPOINT_REHYDRATION_CUSTOMER_ID_MISSING: ${row.order_code}`);
+  }
+
   return {
     id: row.order_code,
     orderCode: row.order_code,
@@ -33,7 +41,7 @@ export function mapSnapshotRowToNormalizedOrder(
     taskCategory: row.task_category || "",
     warehouseId: row.warehouse_id || "",
     warehouseName: row.warehouse_name || "",
-    customerId: "REHYDRATED_CUSTOMER",
+    customerId,
     customerName: "",
     customerCode: "",
     createdAt: row.order_created_at || null,

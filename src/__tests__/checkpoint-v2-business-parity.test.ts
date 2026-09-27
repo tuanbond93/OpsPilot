@@ -159,6 +159,7 @@ describe("Checkpoint Pipeline V2 - Deterministic Business Parity Test (V1 Phase 
       order_code: o.orderCode,
       warehouse_id: o.warehouseId,
       warehouse_name: o.warehouseName,
+      customer_id: o.customerId,
       source_status: o.status,
       task_category: o.taskCategory,
       source_updated_at: o.fetchedAt,
@@ -264,8 +265,10 @@ describe("Checkpoint Pipeline V2 - Deterministic Business Parity Test (V1 Phase 
     expect(v2TotalMembers).toBe(v1TotalMembers);
     expect(v2State?.generationCommitted).toBe(true);
 
-    // Metric 5: Telegram hard suppression
-    expect(v2State?.telegramSuppressedCount).toBe(v2Decisions.length);
+    // Metric 5: only governed action decisions reserve a SHADOW dispatch.
+    expect(v2State?.telegramSuppressedCount).toBe(
+      v2Decisions.filter((decision) => decision.actionType !== null).length
+    );
 
     // Final Parity Assertions
     expect(casesMatch).toBe(true);

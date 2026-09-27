@@ -25,6 +25,7 @@ describe("Checkpoint Pipeline V2 - Persisted Order Rehydration", () => {
         order_code: "ORD_1001",
         warehouse_id: "WH_HNI_01",
         warehouse_name: "Kho Hub Hà Nội",
+        customer_id: "CUST_1001",
         source_status: "delivering",
         task_category: "giao_hang",
         source_updated_at: "2026-09-26T06:58:30.000Z",
@@ -37,6 +38,7 @@ describe("Checkpoint Pipeline V2 - Persisted Order Rehydration", () => {
         order_code: "ORD_1002",
         warehouse_id: "WH_SGN_01",
         warehouse_name: "Kho Hub Sài Gòn",
+        customer_id: "CUST_1002",
         source_status: "delay",
         task_category: "chuyen_tiep",
         source_updated_at: "2026-09-26T06:58:30.000Z",
@@ -54,6 +56,7 @@ describe("Checkpoint Pipeline V2 - Persisted Order Rehydration", () => {
         sync_run_id: otherRunId,
         order_code: "ORD_9999",
         warehouse_id: "WH_OTHER",
+        customer_id: "CUST_9999",
         source_status: "returned",
         source_updated_at: "2026-09-26T08:00:00.000Z",
       },
@@ -69,11 +72,27 @@ describe("Checkpoint Pipeline V2 - Persisted Order Rehydration", () => {
     // Invariant: fetchedAt matches the snapshot's source_updated_at, NOT wall-clock
     expect(result.orders[0].fetchedAt).toBe("2026-09-26T06:58:30.000Z");
     expect(result.orders[0].warehouseLog).toHaveLength(1);
+    expect(result.orders[0].customerId).toBe("CUST_1001");
 
     // Invariant validation helper passes
     expect(() => {
       CheckpointRehydrator.assertRehydrationInvariant(result, 2, checkpointAt);
     }).not.toThrow();
+  });
+
+  it("fails closed rather than assigning a synthetic customer to legacy snapshots", async () => {
+    const snapshotRepo = new MockOrderSnapshotRepository();
+    const checkpointAt = "2026-09-26T07:00:00.000Z";
+    const syncRunId = "d090f4d2-8bd2-492b-b6aa-9a6e8ce427fd";
+    await snapshotRepo.insertBatch([{
+      sync_run_id: syncRunId,
+      order_code: "ORD_LEGACY_WITHOUT_CUSTOMER",
+      source_status: "delivering",
+      source_updated_at: checkpointAt,
+    }]);
+
+    await expect(new CheckpointRehydrator(snapshotRepo).rehydrateOrdersForCheckpoint(syncRunId, checkpointAt))
+      .rejects.toThrow("CHECKPOINT_REHYDRATION_CUSTOMER_ID_MISSING");
   });
 
   it("fails closed when sync run ID does not match the checkpoint_at owner", async () => {

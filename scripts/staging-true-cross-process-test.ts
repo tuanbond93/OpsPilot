@@ -99,7 +99,7 @@ async function run() {
   await pgClient.connect();
 
   const testTimestamp = new Date().toISOString();
-  const testCheckpointAt = `2026-09-27T02:${Math.floor(10 + Math.random() * 40)}:00.000Z`;
+  const testCheckpointAt = new Date().toISOString();
   const testSyncRunId = crypto.randomUUID();
   const caseCount = 3;
   const leaseSeconds = 8; // Bounded lease time for crisp expiration test
@@ -126,6 +126,7 @@ async function run() {
     order_code: `ORD_DUR_${testSyncRunId.slice(0, 6)}_${i}`,
     warehouse_id: `WH_0${(i % 2) + 1}`,
     warehouse_name: `Kho Hub ${(i % 2) + 1}`,
+    customer_id: `CUST_DUR_${testSyncRunId.slice(0, 6)}_${i}`,
     source_status: "storing",
     task_category: "giao_hang",
     source_updated_at: testCheckpointAt,

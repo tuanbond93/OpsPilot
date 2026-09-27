@@ -40,6 +40,7 @@ describe("Checkpoint Pipeline V2 - Exact Checkpoint Rehydration & Post-Barrier E
         order_code: "ORD_REHYD_001",
         warehouse_id: "WH_HNI_01",
         warehouse_name: "Kho Hub Hà Nội",
+        customer_id: "CUST_REHYD_001",
         source_status: "delivering",
         task_category: "giao_hang",
         source_updated_at: "2026-09-26T06:55:00.000Z",
@@ -54,6 +55,7 @@ describe("Checkpoint Pipeline V2 - Exact Checkpoint Rehydration & Post-Barrier E
         order_code: "ORD_REHYD_002",
         warehouse_id: "WH_HNI_01",
         warehouse_name: "Kho Hub Hà Nội",
+        customer_id: "CUST_REHYD_002",
         source_status: "storing",
         task_category: "chuyen_tiep",
         source_updated_at: "2026-09-26T06:55:00.000Z",
@@ -150,8 +152,8 @@ describe("Checkpoint Pipeline V2 - Exact Checkpoint Rehydration & Post-Barrier E
     // Invariant E: Real member hydration executed
     expect(state?.generationCommitted).toBe(true);
 
-    // Invariant F: Telegram delivery suppressed safely (exactly 1 suppressed delivery)
-    expect(state?.telegramSuppressedCount).toBe(1);
+    // Invariant F: monitoring is governed no-action, so no dispatch is reserved.
+    expect(state?.telegramSuppressedCount).toBe(0);
 
     // Invariant G: Overall verification label
     const EXACT_CHECKPOINT_REHYDRATION = "PASS";

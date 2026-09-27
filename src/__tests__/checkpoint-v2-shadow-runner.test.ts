@@ -85,7 +85,9 @@ describe("Checkpoint Pipeline V2 - Shadow Production Parity Runner", () => {
       expect(report.parity.orderPopulationMatches).toBe(true);
       expect(report.parity.caseCountMatches).toBe(true);
       expect(report.parity.overallParity).toBe(true);
-      expect(report.v2Summary.telegramSuppressedCount).toBe(v1.caseCount);
+      // These synthetic observations are not due; monitoring creates no
+      // intervention reservation under the governed no-action rule.
+      expect(report.v2Summary.telegramSuppressedCount).toBe(0);
       expect(report.parity.unexplainedDifferences).toHaveLength(0);
 
       reports.push(report);

@@ -44,6 +44,8 @@ export interface OrderSnapshotRow {
   order_code: string;
   warehouse_id?: string | null;
   warehouse_name?: string | null;
+  /** Durable cohort identity; required to reconstruct governed Phase 6 decisions. */
+  customer_id?: string | null;
   source_status: string;
   task_category?: string | null;
   reason_code?: string | null;
