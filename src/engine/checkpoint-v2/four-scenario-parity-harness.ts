@@ -59,16 +59,16 @@ export interface FourScenarioParityFixture {
 const scenarioRows: Array<{
   scenario: CanonicalParityScenario;
   ordinal: number;
-  checkpointAt: string;
+  checkpointAnchor: string;
   oldState: FollowupState;
   status: string;
   prior: boolean;
   orderCount: number;
 }> = [
-  { scenario: "NEW_FIRST_PUSH", ordinal: 1, checkpointAt: "2026-10-01T07:00:00.000Z", oldState: "NEW", status: "storing", prior: false, orderCount: 1 },
-  { scenario: "UNCHANGED_WAITING", ordinal: 2, checkpointAt: "2026-10-02T07:00:00.000Z", oldState: "FOLLOWING_UP", status: "storing", prior: true, orderCount: 1 },
-  { scenario: "BACKLOG_CHANGED", ordinal: 3, checkpointAt: "2026-10-03T07:00:00.000Z", oldState: "FIRST_PUSH_SENT", status: "storing", prior: true, orderCount: 2 },
-  { scenario: "RESOLVED_COMPLETED", ordinal: 4, checkpointAt: "2026-10-04T07:00:00.000Z", oldState: "FIRST_PUSH_SENT", status: "delivered", prior: true, orderCount: 1 },
+  { scenario: "NEW_FIRST_PUSH", ordinal: 1, checkpointAnchor: "2026-10-01T07:00:00.000Z", oldState: "NEW", status: "storing", prior: false, orderCount: 1 },
+  { scenario: "UNCHANGED_WAITING", ordinal: 2, checkpointAnchor: "2026-10-02T07:00:00.000Z", oldState: "FOLLOWING_UP", status: "storing", prior: true, orderCount: 1 },
+  { scenario: "BACKLOG_CHANGED", ordinal: 3, checkpointAnchor: "2026-10-03T07:00:00.000Z", oldState: "FIRST_PUSH_SENT", status: "storing", prior: true, orderCount: 2 },
+  { scenario: "RESOLVED_COMPLETED", ordinal: 4, checkpointAnchor: "2026-10-04T07:00:00.000Z", oldState: "FIRST_PUSH_SENT", status: "delivered", prior: true, orderCount: 1 },
 ];
 
 const slug = (scenario: CanonicalParityScenario) => scenario.toLowerCase();
@@ -80,6 +80,10 @@ function namespacedUuid(namespace: string, label: string): string {
 }
 
 const isoOffset = (checkpointAt: string, offsetMs: number) => new Date(Date.parse(checkpointAt) + offsetMs).toISOString();
+const governedCheckpointAnchor = (checkpointAt: string) => {
+  const checkpoint = new Date(checkpointAt);
+  return Date.UTC(checkpoint.getUTCFullYear(), checkpoint.getUTCMonth(), checkpoint.getUTCDate(), 7, 0, 0, 0);
+};
 
 function orderFor(scenario: CanonicalParityScenario, index: number, status: string, checkpointAt: string): NormalizedRillnetOrder {
   const key = slug(scenario);
@@ -87,8 +91,8 @@ function orderFor(scenario: CanonicalParityScenario, index: number, status: stri
   // The waiting scenario arrives after 07:00, deterministically putting it
   // into the next operating-window deadline.
   const arrival = scenario === "UNCHANGED_WAITING"
-    ? isoOffset(checkpointAt, -6.5 * 3_600_000)
-    : isoOffset(checkpointAt, -7.5 * 3_600_000);
+    ? new Date(governedCheckpointAnchor(checkpointAt) - 6.5 * 3_600_000).toISOString()
+    : new Date(governedCheckpointAnchor(checkpointAt) - 7.5 * 3_600_000).toISOString();
   return {
     id: `order-${key}-${index}`,
     orderCode: `PARITY_${scenario}_${index}`,
@@ -139,8 +143,8 @@ function priorCaseFor(
         stage: "TRANSIT",
         status: oldState === "FIRST_PUSH_SENT" && scenario === "RESOLVED_COMPLETED" ? "storing" : order.status,
         observedAt: isoOffset(checkpointAt, -6 * 3_600_000),
-        readyAt: isoOffset(checkpointAt, -7.5 * 3_600_000),
-        dueAt: isoOffset(checkpointAt, -7 * 3_600_000),
+        readyAt: new Date(governedCheckpointAnchor(checkpointAt) - 7.5 * 3_600_000).toISOString(),
+        dueAt: new Date(governedCheckpointAnchor(checkpointAt) - 7 * 3_600_000).toISOString(),
         baselineStatus: "storing",
         firstSeenAt: isoOffset(checkpointAt, -6 * 3_600_000),
         lastReminderAt: isoOffset(checkpointAt, -24 * 3_600_000),
@@ -152,7 +156,11 @@ function priorCaseFor(
 
 /** Creates exactly the four canonical, deterministic inputs. */
 export function createFourScenarioParityFixtures(identifierNamespace: string = "checkpoint-v2-parity-fixture-v1"): FourScenarioParityFixture[] {
-  return scenarioRows.map(({ scenario, ordinal, checkpointAt, oldState, status, prior, orderCount }) => {
+  const checkpointOffsetMs = Number.parseInt(createHash("sha256").update(identifierNamespace).digest("hex").slice(0, 8), 16) % 3_600_000;
+  return scenarioRows.map(({ scenario, ordinal, checkpointAnchor, oldState, status, prior, orderCount }) => {
+    // Keep every fixture at the governed 14:00 ICT checkpoint hour while
+    // making its full timestamp unique to this execution namespace.
+    const checkpointAt = isoOffset(checkpointAnchor, checkpointOffsetMs);
     const orders = Array.from({ length: orderCount }, (_, index) => orderFor(scenario, index + 1, status, checkpointAt));
     const incidentKey = `WH_PARITY_01:${scenario}`;
     const incident: Incident = {
