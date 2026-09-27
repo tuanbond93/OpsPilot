@@ -71,6 +71,17 @@ const actionTypeByState: Partial<Record<FollowupState, ActionType>> = {
   ESCALATION_PENDING: "ESCALATION",
 };
 
+/**
+ * The V1 transition result is authoritative: only a pending action creates
+ * an intervention. Monitoring and resolution are persisted decisions, not
+ * Telegram work, even in SHADOW mode.
+ */
+export function interventionTypeForDecision(
+  decision: Pick<ShadowDecision, "actionType">
+): string | null {
+  return decision.actionType ? `TELEGRAM_${decision.actionType}` : null;
+}
+
 export class PostBarrierShadowHandler {
   private deps: PostBarrierHandlerDependencies;
   // Audit-only output capture. It is never read while executing a work unit.
@@ -385,11 +396,10 @@ export class PostBarrierShadowHandler {
         // Dispatch is also part of the same durable batch. The ledger is the
         // idempotent hand-off; no dispatch unit reads an earlier handler cache.
         for (const candidate of decisions) {
+          const interventionType = interventionTypeForDecision(candidate);
+          if (!interventionType) continue;
           const persistedCase = persistedByKey.get(candidate.caseIdentity);
           if (!persistedCase) throw new Error(`DURABLE_CASE_PERSIST_MISSING:${candidate.caseIdentity}`);
-          const interventionType = candidate.actionType
-            ? `TELEGRAM_${candidate.actionType}`
-            : "TELEGRAM_FIRST_PUSH";
 
           // Intercept via CheckpointDispatchLedger with hard zero-delivery guard
           const result = await this.dispatchLedger.dispatchEffectivelyOnce({

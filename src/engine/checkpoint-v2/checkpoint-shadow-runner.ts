@@ -293,7 +293,7 @@ export class CheckpointShadowRunner {
       caseCount,
       memberCount: execState?.memberRows?.length || 0,
       decisionsCount: shadowDecisions.length,
-      interventionTypes: v2InterventionTypes.length > 0 ? v2InterventionTypes : ["TELEGRAM_FIRST_PUSH"],
+      interventionTypes: v2InterventionTypes,
       workUnitsExecuted: totalUnits,
       totalWorkerDurationMs: Math.round(elapsedMs),
       telegramSuppressedCount: execState?.telegramSuppressedCount || 0,
