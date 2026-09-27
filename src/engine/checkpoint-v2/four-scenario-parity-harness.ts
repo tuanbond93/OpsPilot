@@ -58,15 +58,16 @@ export interface FourScenarioParityFixture {
 
 const scenarioRows: Array<{
   scenario: CanonicalParityScenario;
+  ordinal: number;
   oldState: FollowupState;
   status: string;
   prior: boolean;
   orderCount: number;
 }> = [
-  { scenario: "NEW_FIRST_PUSH", oldState: "NEW", status: "storing", prior: false, orderCount: 1 },
-  { scenario: "UNCHANGED_WAITING", oldState: "FOLLOWING_UP", status: "storing", prior: true, orderCount: 1 },
-  { scenario: "BACKLOG_CHANGED", oldState: "FIRST_PUSH_SENT", status: "storing", prior: true, orderCount: 2 },
-  { scenario: "RESOLVED_COMPLETED", oldState: "FIRST_PUSH_SENT", status: "delivered", prior: true, orderCount: 1 },
+  { scenario: "NEW_FIRST_PUSH", ordinal: 1, oldState: "NEW", status: "storing", prior: false, orderCount: 1 },
+  { scenario: "UNCHANGED_WAITING", ordinal: 2, oldState: "FOLLOWING_UP", status: "storing", prior: true, orderCount: 1 },
+  { scenario: "BACKLOG_CHANGED", ordinal: 3, oldState: "FIRST_PUSH_SENT", status: "storing", prior: true, orderCount: 2 },
+  { scenario: "RESOLVED_COMPLETED", ordinal: 4, oldState: "FIRST_PUSH_SENT", status: "delivered", prior: true, orderCount: 1 },
 ];
 
 const slug = (scenario: CanonicalParityScenario) => scenario.toLowerCase();
@@ -102,8 +103,8 @@ function priorCaseFor(
   incident: Incident,
   orders: NormalizedRillnetOrder[],
   oldState: FollowupState,
+  caseId: string,
 ): FollowupCaseRow {
-  const caseId = `case-${slug(scenario)}`;
   return {
     id: caseId,
     incident_id: incident.incidentId,
@@ -141,11 +142,11 @@ function priorCaseFor(
 
 /** Creates exactly the four canonical, deterministic inputs. */
 export function createFourScenarioParityFixtures(): FourScenarioParityFixture[] {
-  return scenarioRows.map(({ scenario, oldState, status, prior, orderCount }) => {
+  return scenarioRows.map(({ scenario, ordinal, oldState, status, prior, orderCount }) => {
     const orders = Array.from({ length: orderCount }, (_, index) => orderFor(scenario, index + 1, status));
     const incidentKey = `WH_PARITY_01:${scenario}`;
     const incident: Incident = {
-      incidentId: `incident-${slug(scenario)}`,
+      incidentId: `30000000-0000-4000-8000-${String(ordinal).padStart(12, "0")}`,
       incidentKey,
       warehouseId: "WH_PARITY_01",
       warehouseName: "Kho Hub Parity",
@@ -162,7 +163,7 @@ export function createFourScenarioParityFixtures(): FourScenarioParityFixture[] 
       firstDetectedAt: "2026-09-25T04:00:00.000Z",
       lastDetectedAt: PARITY_CHECKPOINT_AT,
     };
-    const caseId = `case-${slug(scenario)}`;
+    const caseId = `20000000-0000-4000-8000-${String(ordinal).padStart(12, "0")}`;
     const expectedNewState: FollowupState = scenario === "NEW_FIRST_PUSH"
       ? "FIRST_PUSH_PENDING"
       : scenario === "UNCHANGED_WAITING"
@@ -178,16 +179,16 @@ export function createFourScenarioParityFixtures(): FourScenarioParityFixture[] 
     return {
       scenario,
       checkpointAt: PARITY_CHECKPOINT_AT,
-      syncRunId: `run-parity-${slug(scenario)}`,
+      syncRunId: `10000000-0000-4000-8000-${String(ordinal).padStart(12, "0")}`,
       caseId,
       incident,
       orders,
-      priorCase: prior ? priorCaseFor(scenario, incident, orders, oldState) : undefined,
+      priorCase: prior ? priorCaseFor(scenario, incident, orders, oldState, caseId) : undefined,
       comparison: {
         case: { incidentKey, expectedCaseId: caseId },
         decision: { oldState, expectedNewState },
         members: { expectedOrderCodes: orders.map(order => order.orderCode) },
-        generation: { id: `run-parity-${slug(scenario)}` },
+        generation: { id: `10000000-0000-4000-8000-${String(ordinal).padStart(12, "0")}` },
         intervention: { expectedActionType },
       },
     };
