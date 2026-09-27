@@ -14,6 +14,7 @@ import { SupabaseIncidentHistoryRepository } from "../src/repositories/supabase/
 import { SupabaseFollowupRepository } from "../src/repositories/supabase/SupabaseFollowupRepository";
 import { PostBarrierShadowHandler } from "../src/engine/checkpoint-v2/post-barrier-handler";
 import { CheckpointWorker } from "../src/engine/checkpoint-v2/checkpoint-worker";
+import { SupabaseDispatchLedgerStorage } from "../src/engine/checkpoint-v2/dispatch-ledger";
 import type { WorkUnitExecutionHandler } from "../src/engine/checkpoint-v2/checkpoint-worker";
 
 async function main() {
@@ -53,6 +54,7 @@ async function main() {
     incidentRepo: new SupabaseIncidentRepository(supabase),
     incidentHistoryRepo: new SupabaseIncidentHistoryRepository(supabase),
     followupRepo: new SupabaseFollowupRepository(supabase),
+    dispatchLedgerStorage: new SupabaseDispatchLedgerStorage(supabase),
   });
   const realExecutionHandler = postBarrierHandler.createExecutionHandler();
 
