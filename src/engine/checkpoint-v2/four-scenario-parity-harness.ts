@@ -157,12 +157,15 @@ function priorCaseFor(
 /** Creates exactly the four canonical, deterministic inputs. */
 export function createFourScenarioParityFixtures(identifierNamespace: string = "checkpoint-v2-parity-fixture-v1"): FourScenarioParityFixture[] {
   const checkpointOffsetMs = Number.parseInt(createHash("sha256").update(identifierNamespace).digest("hex").slice(0, 8), 16) % 3_600_000;
+  const executionScope = createHash("sha256").update(identifierNamespace).digest("hex").slice(0, 12).toUpperCase();
   return scenarioRows.map(({ scenario, ordinal, checkpointAnchor, oldState, status, prior, orderCount }) => {
     // Keep every fixture at the governed 14:00 ICT checkpoint hour while
     // making its full timestamp unique to this execution namespace.
     const checkpointAt = isoOffset(checkpointAnchor, checkpointOffsetMs);
     const orders = Array.from({ length: orderCount }, (_, index) => orderFor(scenario, index + 1, status, checkpointAt));
-    const incidentKey = `WH_PARITY_01:${scenario}`;
+    // The stable business key is namespaced for staging execution so a prior
+    // fixture run cannot become hidden prior state for a later "NEW" case.
+    const incidentKey = `WH_PARITY_${executionScope}:${scenario}`;
     const incident: Incident = {
       incidentId: namespacedUuid(identifierNamespace, `incident:${ordinal}`),
       incidentKey,
