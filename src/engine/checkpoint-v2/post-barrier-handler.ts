@@ -326,7 +326,12 @@ export class PostBarrierShadowHandler {
           };
           const mutation = buildCaseMutation(processParams);
           mutation.operational_cohort = assessment.cohort;
-          if (prior?.id) mutation.id = prior.id;
+          if (prior?.id) {
+            // Retried batches must carry the persisted optimistic-concurrency
+            // version into the governed generation lifecycle.
+            mutation.id = prior.id;
+            mutation.updated_at = prior.updated_at;
+          }
 
           mutations.push(mutation);
 
