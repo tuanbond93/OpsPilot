@@ -13,7 +13,7 @@ describe("Checkpoint V2 four-scenario parity harness", () => {
     expect(fixtures.map(fixture => fixture.scenario)).toEqual([
       "NEW_FIRST_PUSH", "UNCHANGED_WAITING", "BACKLOG_CHANGED", "RESOLVED_COMPLETED",
     ]);
-    expect(new Set(fixtures.map(fixture => fixture.checkpointAt)).size).toBe(1);
+    expect(new Set(fixtures.map(fixture => fixture.checkpointAt)).size).toBe(4);
     expect(new Set(fixtures.map(fixture => fixture.syncRunId)).size).toBe(4);
     expect(new Set(fixtures.map(fixture => fixture.caseId)).size).toBe(4);
   });

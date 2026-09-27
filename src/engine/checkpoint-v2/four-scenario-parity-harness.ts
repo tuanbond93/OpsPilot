@@ -29,7 +29,6 @@ import { SupabaseOrderSnapshotRepository } from "@/repositories/supabase/Supabas
 import { SupabaseSyncRunRepository } from "@/repositories/supabase/SupabaseSyncRunRepository";
 
 export const SCENARIO_FIXTURES_CREATED = 4 as const;
-export const PARITY_CHECKPOINT_AT = "2026-09-26T07:00:00.000Z";
 
 export type CanonicalParityScenario =
   | "NEW_FIRST_PUSH"
@@ -59,27 +58,30 @@ export interface FourScenarioParityFixture {
 const scenarioRows: Array<{
   scenario: CanonicalParityScenario;
   ordinal: number;
+  checkpointAt: string;
   oldState: FollowupState;
   status: string;
   prior: boolean;
   orderCount: number;
 }> = [
-  { scenario: "NEW_FIRST_PUSH", ordinal: 1, oldState: "NEW", status: "storing", prior: false, orderCount: 1 },
-  { scenario: "UNCHANGED_WAITING", ordinal: 2, oldState: "FOLLOWING_UP", status: "storing", prior: true, orderCount: 1 },
-  { scenario: "BACKLOG_CHANGED", ordinal: 3, oldState: "FIRST_PUSH_SENT", status: "storing", prior: true, orderCount: 2 },
-  { scenario: "RESOLVED_COMPLETED", ordinal: 4, oldState: "FIRST_PUSH_SENT", status: "delivered", prior: true, orderCount: 1 },
+  { scenario: "NEW_FIRST_PUSH", ordinal: 1, checkpointAt: "2026-10-01T07:00:00.000Z", oldState: "NEW", status: "storing", prior: false, orderCount: 1 },
+  { scenario: "UNCHANGED_WAITING", ordinal: 2, checkpointAt: "2026-10-02T07:00:00.000Z", oldState: "FOLLOWING_UP", status: "storing", prior: true, orderCount: 1 },
+  { scenario: "BACKLOG_CHANGED", ordinal: 3, checkpointAt: "2026-10-03T07:00:00.000Z", oldState: "FIRST_PUSH_SENT", status: "storing", prior: true, orderCount: 2 },
+  { scenario: "RESOLVED_COMPLETED", ordinal: 4, checkpointAt: "2026-10-04T07:00:00.000Z", oldState: "FIRST_PUSH_SENT", status: "delivered", prior: true, orderCount: 1 },
 ];
 
 const slug = (scenario: CanonicalParityScenario) => scenario.toLowerCase();
 
-function orderFor(scenario: CanonicalParityScenario, index: number, status: string): NormalizedRillnetOrder {
+const isoOffset = (checkpointAt: string, offsetMs: number) => new Date(Date.parse(checkpointAt) + offsetMs).toISOString();
+
+function orderFor(scenario: CanonicalParityScenario, index: number, status: string, checkpointAt: string): NormalizedRillnetOrder {
   const key = slug(scenario);
   // TRANSIT orders arriving before 07:00 are due at the 14:00 checkpoint.
   // The waiting scenario arrives after 07:00, deterministically putting it
   // into the next operating-window deadline.
   const arrival = scenario === "UNCHANGED_WAITING"
-    ? "2026-09-26T00:30:00.000Z"
-    : "2026-09-25T23:30:00.000Z";
+    ? isoOffset(checkpointAt, -6.5 * 3_600_000)
+    : isoOffset(checkpointAt, -7.5 * 3_600_000);
   return {
     id: `order-${key}-${index}`,
     orderCode: `PARITY_${scenario}_${index}`,
@@ -90,11 +92,11 @@ function orderFor(scenario: CanonicalParityScenario, index: number, status: stri
     customerId: `customer-${key}-${index}`,
     customerName: `Parity customer ${index}`,
     customerCode: `PARITY-${index}`,
-    createdAt: "2026-09-25T10:00:00.000Z",
+    createdAt: isoOffset(checkpointAt, -21 * 3_600_000),
     deliverWarehouseId: "WH_PARITY_02",
     warehouseLog: [{ current_warehouse_id: "WH_PARITY_01", updated_date: arrival }],
-    endPickAt: "2026-09-26T05:00:00.000Z",
-    fetchedAt: "2026-09-26T06:55:00.000Z",
+    endPickAt: isoOffset(checkpointAt, -9 * 3_600_000),
+    fetchedAt: isoOffset(checkpointAt, -5 * 60_000),
   };
 }
 
@@ -104,23 +106,24 @@ function priorCaseFor(
   orders: NormalizedRillnetOrder[],
   oldState: FollowupState,
   caseId: string,
+  checkpointAt: string,
 ): FollowupCaseRow {
   return {
     id: caseId,
     incident_id: incident.incidentId,
     incident_key: incident.incidentKey,
     current_state: oldState,
-    first_detected_at: "2026-09-25T04:00:00.000Z",
-    last_checked_at: "2026-09-25T07:00:00.000Z",
-    last_action_requested_at: "2026-09-25T07:00:00.000Z",
+    first_detected_at: isoOffset(checkpointAt, -27 * 3_600_000),
+    last_checked_at: isoOffset(checkpointAt, -24 * 3_600_000),
+    last_action_requested_at: isoOffset(checkpointAt, -24 * 3_600_000),
     baseline_affected_order_count: 1,
     latest_affected_order_count: 1,
     current_progress_percent: 0,
     current_assessment: "no_progress",
     operational_cohort: {
       version: 1,
-      day: "2026-09-26",
-      capturedAt: "2026-09-26T01:00:00.000Z",
+      day: new Date(Date.parse(checkpointAt) + 7 * 3_600_000).toISOString().slice(0, 10),
+      capturedAt: isoOffset(checkpointAt, -6 * 3_600_000),
       baselineCodes: orders.map(order => order.orderCode),
       members: orders.map(order => ({
         orderCode: order.orderCode,
@@ -128,12 +131,12 @@ function priorCaseFor(
         warehouseId: order.warehouseId,
         stage: "TRANSIT",
         status: oldState === "FIRST_PUSH_SENT" && scenario === "RESOLVED_COMPLETED" ? "storing" : order.status,
-        observedAt: "2026-09-26T01:00:00.000Z",
-        readyAt: "2026-09-25T23:30:00.000Z",
-        dueAt: "2026-09-26T00:00:00.000Z",
+        observedAt: isoOffset(checkpointAt, -6 * 3_600_000),
+        readyAt: isoOffset(checkpointAt, -7.5 * 3_600_000),
+        dueAt: isoOffset(checkpointAt, -7 * 3_600_000),
         baselineStatus: "storing",
-        firstSeenAt: "2026-09-26T01:00:00.000Z",
-        lastReminderAt: "2026-09-25T07:00:00.000Z",
+        firstSeenAt: isoOffset(checkpointAt, -6 * 3_600_000),
+        lastReminderAt: isoOffset(checkpointAt, -24 * 3_600_000),
         lastReminderStatus: "storing",
       })),
     },
@@ -142,8 +145,8 @@ function priorCaseFor(
 
 /** Creates exactly the four canonical, deterministic inputs. */
 export function createFourScenarioParityFixtures(): FourScenarioParityFixture[] {
-  return scenarioRows.map(({ scenario, ordinal, oldState, status, prior, orderCount }) => {
-    const orders = Array.from({ length: orderCount }, (_, index) => orderFor(scenario, index + 1, status));
+  return scenarioRows.map(({ scenario, ordinal, checkpointAt, oldState, status, prior, orderCount }) => {
+    const orders = Array.from({ length: orderCount }, (_, index) => orderFor(scenario, index + 1, status, checkpointAt));
     const incidentKey = `WH_PARITY_01:${scenario}`;
     const incident: Incident = {
       incidentId: `30000000-0000-4000-8000-${String(ordinal).padStart(12, "0")}`,
@@ -160,8 +163,8 @@ export function createFourScenarioParityFixtures(): FourScenarioParityFixture[] 
       averageAgeHours: null,
       maximumAgeHours: null,
       oldestOrderCode: null,
-      firstDetectedAt: "2026-09-25T04:00:00.000Z",
-      lastDetectedAt: PARITY_CHECKPOINT_AT,
+      firstDetectedAt: isoOffset(checkpointAt, -27 * 3_600_000),
+      lastDetectedAt: checkpointAt,
     };
     const caseId = `20000000-0000-4000-8000-${String(ordinal).padStart(12, "0")}`;
     const expectedNewState: FollowupState = scenario === "NEW_FIRST_PUSH"
@@ -178,12 +181,12 @@ export function createFourScenarioParityFixtures(): FourScenarioParityFixture[] 
       : null;
     return {
       scenario,
-      checkpointAt: PARITY_CHECKPOINT_AT,
+      checkpointAt,
       syncRunId: `10000000-0000-4000-8000-${String(ordinal).padStart(12, "0")}`,
       caseId,
       incident,
       orders,
-      priorCase: prior ? priorCaseFor(scenario, incident, orders, oldState, caseId) : undefined,
+      priorCase: prior ? priorCaseFor(scenario, incident, orders, oldState, caseId, checkpointAt) : undefined,
       comparison: {
         case: { incidentKey, expectedCaseId: caseId },
         decision: { oldState, expectedNewState },
