@@ -6,6 +6,7 @@
  * setup or candidate execution functions can perform any IO.
  */
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { createHash } from "node:crypto";
 import type { NormalizedRillnetOrder } from "@/connectors/rillnet/types";
 import type { FollowupCaseRow, FollowupState, OrderSnapshotRow } from "@/connectors/supabase/types";
 import type { Incident, IncidentReasonCode } from "@/engine/incident";
@@ -71,6 +72,12 @@ const scenarioRows: Array<{
 ];
 
 const slug = (scenario: CanonicalParityScenario) => scenario.toLowerCase();
+
+/** Derive durable UUIDs deterministically from an explicit execution namespace. */
+function namespacedUuid(namespace: string, label: string): string {
+  const hex = createHash("sha256").update(`${namespace}:${label}`).digest("hex");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-8${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
+}
 
 const isoOffset = (checkpointAt: string, offsetMs: number) => new Date(Date.parse(checkpointAt) + offsetMs).toISOString();
 
@@ -144,12 +151,12 @@ function priorCaseFor(
 }
 
 /** Creates exactly the four canonical, deterministic inputs. */
-export function createFourScenarioParityFixtures(): FourScenarioParityFixture[] {
+export function createFourScenarioParityFixtures(identifierNamespace: string = "checkpoint-v2-parity-fixture-v1"): FourScenarioParityFixture[] {
   return scenarioRows.map(({ scenario, ordinal, checkpointAt, oldState, status, prior, orderCount }) => {
     const orders = Array.from({ length: orderCount }, (_, index) => orderFor(scenario, index + 1, status, checkpointAt));
     const incidentKey = `WH_PARITY_01:${scenario}`;
     const incident: Incident = {
-      incidentId: `30000000-0000-4000-8000-${String(ordinal).padStart(12, "0")}`,
+      incidentId: namespacedUuid(identifierNamespace, `incident:${ordinal}`),
       incidentKey,
       warehouseId: "WH_PARITY_01",
       warehouseName: "Kho Hub Parity",
@@ -166,7 +173,8 @@ export function createFourScenarioParityFixtures(): FourScenarioParityFixture[] 
       firstDetectedAt: isoOffset(checkpointAt, -27 * 3_600_000),
       lastDetectedAt: checkpointAt,
     };
-    const caseId = `20000000-0000-4000-8000-${String(ordinal).padStart(12, "0")}`;
+    const caseId = namespacedUuid(identifierNamespace, `case:${ordinal}`);
+    const syncRunId = namespacedUuid(identifierNamespace, `run:${ordinal}`);
     const expectedNewState: FollowupState = scenario === "NEW_FIRST_PUSH"
       ? "FIRST_PUSH_PENDING"
       : scenario === "UNCHANGED_WAITING"
@@ -182,7 +190,7 @@ export function createFourScenarioParityFixtures(): FourScenarioParityFixture[] 
     return {
       scenario,
       checkpointAt,
-      syncRunId: `10000000-0000-4000-8000-${String(ordinal).padStart(12, "0")}`,
+      syncRunId,
       caseId,
       incident,
       orders,
@@ -191,7 +199,7 @@ export function createFourScenarioParityFixtures(): FourScenarioParityFixture[] 
         case: { incidentKey, expectedCaseId: caseId },
         decision: { oldState, expectedNewState },
         members: { expectedOrderCodes: orders.map(order => order.orderCode) },
-        generation: { id: `10000000-0000-4000-8000-${String(ordinal).padStart(12, "0")}` },
+        generation: { id: syncRunId },
         intervention: { expectedActionType },
       },
     };
