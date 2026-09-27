@@ -29,6 +29,7 @@ import type { LaneObservationRepository } from "@/domain/lane-observation";
 import type { ISnapshotV3ShadowRepository } from "@/repositories/interfaces/ISnapshotV3ShadowRepository";
 import { isSnapshotV3ShadowEnabled } from "@/config/snapshot-v3";
 import { runSnapshotV3Shadow } from "@/services/snapshot-v3-shadow";
+import { selectActiveWorkingSet, isActiveWorkingSetFeatureEnabled } from "@/domain/load-shedding/active-working-set";
 
 const INBOUND_OBSERVATION_SOURCE = "RILLNET" as const;
 
@@ -673,6 +674,10 @@ export class SyncService implements ISyncService {
         }
       };
 
+      let sourceOrdersCount = 0;
+      let activeWorkingSetOrdersCount = 0;
+      let skippedTerminalOrdersCount = 0;
+
       try {
         if (reusingCompleteInboundPopulation && !completePopulationResumeReady) {
           throw new Error("INBOUND_COMPLETE_POPULATION_RESUME_STATE_UNAVAILABLE");
@@ -923,9 +928,26 @@ export class SyncService implements ISyncService {
           }
           recordPhase("loadExceptions", performance.now() - tExStart, activeExceptions.size, exQueries, activeExceptions.size, exQueries, "Active order exceptions lookup");
 
+          // Load-shedding Active Working Set (Release A)
+          const referenceTimeMs = _options?.referenceTimeMs || (sourceUpdatedAt ? new Date(sourceUpdatedAt).getTime() : startTime);
+          const rawOrdersForWorkingSet = snapshotResult.orders || [];
+          const activeSetResult = selectActiveWorkingSet(rawOrdersForWorkingSet, { referenceTimeMs });
+          sourceOrdersCount = rawOrdersForWorkingSet.length;
+          activeWorkingSetOrdersCount = activeSetResult.workingSet.length;
+          skippedTerminalOrdersCount = activeSetResult.terminalOld;
+
+          if (isActiveWorkingSetFeatureEnabled()) {
+            snapshotResult.orders = activeSetResult.workingSet;
+            logger.info({
+              component: "SyncService",
+              operation: "loadSheddingActiveWorkingSet",
+              status: "info",
+              message: `[LoadShedding] source_orders=${sourceOrdersCount} active_working_set_orders=${activeWorkingSetOrdersCount} skipped_terminal=${skippedTerminalOrdersCount} reduction=${activeSetResult.reductionPercent}%`
+            });
+          }
+
           // Build Incidents in memory if not already rehydrated
           if (incidents.length === 0) {
-            const referenceTimeMs = _options?.referenceTimeMs || (sourceUpdatedAt ? new Date(sourceUpdatedAt).getTime() : startTime);
             incidents = aggregateIncidents(snapshotResult.orders || [], undefined, referenceTimeMs, activeExceptions);
             incidentCount = incidents.length;
           }
@@ -1171,6 +1193,12 @@ export class SyncService implements ISyncService {
               operation: "phaseFollowup",
               status: "info",
               message: `[SyncPhase] phase=${pFol} status=completed durationMs=${Math.round(folDuration)}`
+            });
+          logger.info({
+              component: "SyncService",
+              operation: "loadSheddingObservability",
+              status: "info",
+              message: `[LoadSheddingObservability] source_orders=${sourceOrdersCount} active_working_set_orders=${activeWorkingSetOrdersCount} skipped_terminal=${skippedTerminalOrdersCount} processFollowups_ms=${Math.round(folDuration)}`
             });
         }
 

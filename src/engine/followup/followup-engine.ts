@@ -29,6 +29,12 @@ import { logger } from "@/observability/logger";
 import type { NormalizedRillnetOrder } from "@/connectors/rillnet";
 import { assessOperationalCohort, evidenceFromOrder, checkpointKey, localHour, isFreshRillnetSnapshot, nextCheckpoint, OPERATIONAL_CHECKPOINT_POLICY_VERSION } from "@/domain/operational-learning/checkpoint-policy";
 import {
+  computeMaterialFingerprint,
+  evaluateCaseHeavyProcessingSkip,
+  extractCaseFingerprintInput,
+  isSkipUnchangedNotDueFeatureEnabled,
+} from "@/domain/load-shedding/case-fingerprint";
+import {
   FOLLOWUP_CASE_UPSERT_MAX_PAYLOAD_BYTES,
   FOLLOWUP_CASE_UPSERT_MAX_ROWS,
   followupCaseUpsertPayloadBytes,
@@ -327,6 +333,7 @@ export class FollowupEngine {
     const mutations: FollowupCaseUpsert[] = [];
     const params: ProcessTransitionParams[] = [];
     const actions: EnqueueActionParams[] = [];
+    let skippedUnchangedNotDue = 0;
     for (const incident of work.values()) {
       const prior = byKey.get(incident.incidentKey);
       if (prior?.operational_cohort?.lastCheckpoint === checkpoint
@@ -410,7 +417,36 @@ export class FollowupEngine {
         mutation.member_generation_id = prior.member_generation_id;
       }
       if (!resolved) mutation.resolved_at = null;
-      mutations.push(mutation); params.push(processParams);
+
+      let skipHeavyProcessing = false;
+      if (isSkipUnchangedNotDueFeatureEnabled()) {
+        const isNew = !prior || prior.current_state === "NEW";
+        const isTerminalTransition = resolved || (!isBaseline && oldState === "RESOLVED") || (oldState === "CLOSED" && currentCount === 0);
+
+        if (!isNew && !isTerminalTransition) {
+          const currentFingerprint = computeMaterialFingerprint(extractCaseFingerprintInput(prior, assessment.cohort, incident));
+          const previousFingerprint = computeMaterialFingerprint(extractCaseFingerprintInput(prior, prior.operational_cohort));
+          const nextCheckAt = prior.next_action_at;
+
+          const skipResult = evaluateCaseHeavyProcessingSkip({
+            currentFingerprint,
+            previousFingerprint,
+            nextCheckAt,
+            nowMs: now,
+            isTerminalTransition,
+            isNewCase: isNew,
+          });
+
+          skipHeavyProcessing = skipResult.skipHeavyProcessing;
+        }
+      }
+
+      if (skipHeavyProcessing) {
+        skippedUnchangedNotDue++;
+      } else {
+        mutations.push(mutation);
+        params.push(processParams);
+      }
       const payload = FollowupMessageBuilder.buildPayload({ warehouse: incident.warehouseName, reason: incident.reasonName,
         currentCount: processParams.latestCount, baselineCount: assessment.due, previousCount: prior?.latest_affected_order_count || 0,
         progressPercent: assessment.progressPercent, progressAssessment: assessment.assessment, riskScore: incident.priorityScore,
@@ -489,6 +525,7 @@ export class FollowupEngine {
       if (typeof this.actionQueue.enqueueActionBatch === "function") await this.timeOperation(metrics, "actionEnqueue", () => this.actionQueue!.enqueueActionBatch!(actions));
       else for (const action of actions) await this.timeOperation(metrics, "actionEnqueue", () => this.actionQueue!.enqueueAction(action));
     }
+    logRuntimeMessage(`[LoadSheddingMetrics] followup_candidates_before=${work.size} heavy_cases_after=${mutations.length} skipped_unchanged_not_due=${skippedUnchangedNotDue}`);
     return results;
   }
 
