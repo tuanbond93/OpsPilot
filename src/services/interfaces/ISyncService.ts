@@ -31,7 +31,7 @@ export interface SyncOptions {
     incidents: any[];
   }) => Promise<void>;
   /** Seeds V1 work after history is durable; failure must stop the producer. */
-  onDurableV1CheckpointReady?: (context: { syncRunId: string; checkpointAt: string }) => Promise<void>;
+  onDurableV1CheckpointReady?: (context: { syncRunId: string; checkpointAt: string; orders?: any[] }) => Promise<void>;
   /** Exact producer inputs and journaled results for post-drain continuation. */
   durableV1Finalization?: { incidents: any[]; followupResults: any[] };
 }

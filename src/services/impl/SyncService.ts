@@ -1163,7 +1163,11 @@ export class SyncService implements ISyncService {
         await notifyCheckpointHistoryPersisted();
 
         if (_options?.onDurableV1CheckpointReady && _options.checkpointAt) {
-          await _options.onDurableV1CheckpointReady({ syncRunId, checkpointAt: _options.checkpointAt });
+          await _options.onDurableV1CheckpointReady({
+            syncRunId,
+            checkpointAt: _options.checkpointAt,
+            orders: snapshotResult.orders,
+          });
           if (this.syncRunRepo) {
             await retryTransientInfrastructure(() => this.syncRunRepo!.updatePhase(syncRunId, "PROCESSING_FOLLOWUPS", completedPhases));
           }

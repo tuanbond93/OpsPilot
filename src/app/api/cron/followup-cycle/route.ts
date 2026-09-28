@@ -98,8 +98,8 @@ async function runFollowupCycle(request: NextRequest) {
       ? async input => { await persistDurableV1Input(client, input); }
       : undefined,
     onDurableV1CheckpointReady: process.env.V1_DURABLE_FOLLOWUP_V0 === "true"
-      ? async ({ syncRunId, checkpointAt: readyAt }) => {
-          durableV1Seed = await seedDurableV1Followups(client, readyAt, syncRunId);
+      ? async ({ syncRunId, checkpointAt: readyAt, orders }) => {
+          durableV1Seed = await seedDurableV1Followups(client, readyAt, syncRunId, { orders });
         }
       : undefined,
     onSourceCoreComplete: !recovery && trustedNaturalScheduler

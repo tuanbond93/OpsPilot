@@ -79,14 +79,43 @@ export async function executeDurableV1CaseUnit(
   if (keySet.size !== keys.length || keys.some(key => !input.candidate_keys.includes(key))) {
     throw new Error("V1_WORKER_CANDIDATE_MANIFEST_MISMATCH");
   }
-  const incidents = input.incidents.filter(incident => keySet.has(incident.incidentKey));
+
+  // Load chunk orders: prefer cursor.metadata.chunkOrders (0 queries), then checkpoint_v1_followup_input_chunks, then fallback to input.orders
+  let chunkOrders: NormalizedRillnetOrder[] = (unit.cursor.metadata?.chunkOrders as NormalizedRillnetOrder[] | undefined) || [];
+  let chunkIncidents: Incident[] = [];
+
+  if (chunkOrders.length === 0) {
+    const chunkIndex = unit.cursor.metadata?.chunkIndex;
+    if (typeof chunkIndex === "number") {
+      const { data: chunkRow } = await client.from("checkpoint_v1_followup_input_chunks")
+        .select("orders,incidents")
+        .eq("sync_run_id", unit.syncRunId)
+        .eq("chunk_index", chunkIndex)
+        .maybeSingle();
+      if (chunkRow?.orders) {
+        chunkOrders = chunkRow.orders as NormalizedRillnetOrder[];
+      }
+      if (chunkRow?.incidents) {
+        chunkIncidents = chunkRow.incidents as Incident[];
+      }
+    }
+  }
+
+  if (chunkOrders.length === 0 && input.orders && input.orders.length > 0) {
+    chunkOrders = input.orders;
+  }
+
+  const incidents = chunkIncidents.length > 0
+    ? chunkIncidents.filter(incident => keySet.has(incident.incidentKey))
+    : input.incidents.filter(incident => keySet.has(incident.incidentKey));
+
   const cases = await repo.getCasesByIncidentKeys(keys);
   await engine.processIncidentFollowups(
     incidents,
     new Map(),
     undefined,
     input.reference_time_ms,
-    input.orders,
+    chunkOrders as NormalizedRillnetOrder[],
     unit.syncRunId,
     { existingCases: cases, journalPlan: plan => journalPlan(client, unit, workerId, plan) },
   );
