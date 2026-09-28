@@ -200,24 +200,43 @@ export class SupabaseFollowupRepository extends BaseRepository implements IFollo
     super(client);
   }
 
-  private async readCaseIdentities(
-    column: "id" | "incident_id" | "incident_key",
-    values: string[],
-  ): Promise<FollowupCaseLinkRow[]> {
-    const uniqueValues = [...new Set(values.filter(Boolean))];
+  private async readCaseIdentitiesBatch(
+    keys: string[],
+    incidentIds: string[],
+  ): Promise<{ keyRows: FollowupCaseLinkRow[]; incidentRows: FollowupCaseLinkRow[] }> {
+    const uniqueKeys = [...new Set(keys.filter(Boolean))];
+    const uniqueIncidentIds = [...new Set(incidentIds.filter(Boolean))];
+    if (uniqueKeys.length === 0 && uniqueIncidentIds.length === 0) {
+      return { keyRows: [], incidentRows: [] };
+    }
+
     const rows: FollowupCaseLinkRow[] = [];
-    for (let start = 0; start < uniqueValues.length; start += FOLLOWUP_CASE_IDENTITY_BATCH_SIZE) {
-      const batch = uniqueValues.slice(start, start + FOLLOWUP_CASE_IDENTITY_BATCH_SIZE);
+    const maxLen = Math.max(uniqueKeys.length, uniqueIncidentIds.length);
+    for (let start = 0; start < maxLen; start += FOLLOWUP_CASE_IDENTITY_BATCH_SIZE) {
+      const keyChunk = uniqueKeys.slice(start, start + FOLLOWUP_CASE_IDENTITY_BATCH_SIZE);
+      const incChunk = uniqueIncidentIds.slice(start, start + FOLLOWUP_CASE_IDENTITY_BATCH_SIZE);
+      const predicates: string[] = [];
+      if (keyChunk.length > 0) predicates.push(`incident_key.in.(${keyChunk.join(",")})`);
+      if (incChunk.length > 0) predicates.push(`incident_id.in.(${incChunk.join(",")})`);
+      if (predicates.length === 0) continue;
+
       const query = this.client
         .from("followup_cases")
         .select(FOLLOWUP_CASE_LINK_COLUMNS)
-        .in(column, batch);
-      rows.push(...await this.executeMany<FollowupCaseLinkRow>(query as unknown as Promise<{
+        .or(predicates.join(","));
+      const chunkRows = await this.executeMany<FollowupCaseLinkRow>(query as unknown as Promise<{
         data: FollowupCaseLinkRow[] | null;
         error: unknown;
-      }>));
+      }>);
+      rows.push(...chunkRows);
     }
-    return rows;
+
+    const keySet = new Set(uniqueKeys);
+    const incSet = new Set(uniqueIncidentIds);
+    return {
+      keyRows: rows.filter((r) => keySet.has(r.incident_key)),
+      incidentRows: rows.filter((r) => incSet.has(r.incident_id)),
+    };
   }
 
   /**
@@ -241,10 +260,10 @@ export class SupabaseFollowupRepository extends BaseRepository implements IFollo
       incomingByIncidentId.set(caseData.incident_id, caseData);
     }
 
-    const [keyRows, incidentRows] = await Promise.all([
-      this.readCaseIdentities("incident_key", [...incomingByKey.keys()]),
-      this.readCaseIdentities("incident_id", [...incomingByIncidentId.keys()]),
-    ]);
+    const { keyRows, incidentRows } = await this.readCaseIdentitiesBatch(
+      [...incomingByKey.keys()],
+      [...incomingByIncidentId.keys()]
+    );
     const indexRows = (rows: FollowupCaseLinkRow[], identity: keyof FollowupCaseLinkRow, label: string) => {
       const indexed = new Map<string, FollowupCaseLinkRow>();
       for (const row of rows) {
@@ -475,20 +494,23 @@ export class SupabaseFollowupRepository extends BaseRepository implements IFollo
     const archiveCandidates = options.archiveLegacy === false
       ? []
       : cases.filter((caseData) => caseData.cohort_version !== 2);
-    for (const caseData of archiveCandidates) {
-      const cohort = caseData.operational_cohort as OperationalCohort;
-      const parent = parentByIncident.get(caseData.incident_key);
-      if (!parent) throw new Error(`FOLLOWUP_COHORT_ARCHIVE_PARENT_MISSING:${caseData.incident_key}`);
-      const sourceUpdatedAt = caseData.id ? caseData.updated_at : parent.updated_at;
-      if (!sourceUpdatedAt) throw new Error(`FOLLOWUP_COHORT_ARCHIVE_SOURCE_VERSION_MISSING:${caseData.incident_key}`);
-      const serialized = JSON.stringify(cohort);
-      const { error } = await (this.client.from("followup_case_cohort_archive") as any)
-        .upsert({
+    if (archiveCandidates.length > 0) {
+      const archiveRows = archiveCandidates.map((caseData) => {
+        const cohort = caseData.operational_cohort as OperationalCohort;
+        const parent = parentByIncident.get(caseData.incident_key);
+        if (!parent) throw new Error(`FOLLOWUP_COHORT_ARCHIVE_PARENT_MISSING:${caseData.incident_key}`);
+        const sourceUpdatedAt = caseData.id ? caseData.updated_at : parent.updated_at;
+        if (!sourceUpdatedAt) throw new Error(`FOLLOWUP_COHORT_ARCHIVE_SOURCE_VERSION_MISSING:${caseData.incident_key}`);
+        const serialized = JSON.stringify(cohort);
+        return {
           followup_case_id: parent.id,
           original_operational_cohort: cohort,
           source_case_updated_at: sourceUpdatedAt,
           source_cohort_sha256: createHash("sha256").update(serialized).digest("hex"),
-        }, { onConflict: "followup_case_id", ignoreDuplicates: true });
+        };
+      });
+      const { error } = await (this.client.from("followup_case_cohort_archive") as any)
+        .upsert(archiveRows, { onConflict: "followup_case_id", ignoreDuplicates: true });
       if (error) throw error;
     }
 
@@ -514,11 +536,12 @@ export class SupabaseFollowupRepository extends BaseRepository implements IFollo
       generation_status: "PREPARING",
       committed_at: null,
     }));
-    const { error: generationRegisterError } = await (this.client.from("followup_case_member_generations") as any)
+    const { data: registeredData, error: generationRegisterError } = await (this.client.from("followup_case_member_generations") as any)
       .upsert(generationRecords, {
         onConflict: "followup_case_id,generation_id",
         ignoreDuplicates: true,
-      });
+      })
+      .select("followup_case_id,generation_id,source_sync_run_id,expected_member_count,generation_status");
     if (generationRegisterError) throw generationRegisterError;
     const generationCaseIds = generationRecords.map((record) => record.followup_case_id);
     const storedGenerationRecords: Array<{
@@ -527,8 +550,12 @@ export class SupabaseFollowupRepository extends BaseRepository implements IFollo
       source_sync_run_id: string | null;
       expected_member_count: number;
       generation_status: string;
-    }> = [];
-    const verifyBatchCount = Math.ceil(generationCaseIds.length / MANIFEST_VERIFY_BATCH_SIZE);
+    }> = Array.isArray(registeredData) && registeredData.length === generationRecords.length
+      ? registeredData
+      : [];
+    const verifyBatchCount = storedGenerationRecords.length === generationRecords.length
+      ? 0
+      : Math.ceil(generationCaseIds.length / MANIFEST_VERIFY_BATCH_SIZE);
 
     for (let batchIndex = 0; batchIndex < verifyBatchCount; batchIndex++) {
       const start = batchIndex * MANIFEST_VERIFY_BATCH_SIZE;
@@ -583,6 +610,7 @@ export class SupabaseFollowupRepository extends BaseRepository implements IFollo
 
     const actualByCaseId = new Map<string, FollowupCaseMemberRow[]>();
     const readGenerationRows = async (caseIds: string[]) => {
+      if (!caseIds.length) return;
       for (let start = 0; start < caseIds.length; start += 100) {
         const idBatch = caseIds.slice(start, start + 100);
         let offset = 0;
@@ -625,8 +653,16 @@ export class SupabaseFollowupRepository extends BaseRepository implements IFollo
       let upsertError: any = null;
       try {
         const result = await (this.client.from("followup_case_members") as any)
-          .upsert(chunk, { onConflict: "followup_case_id,generation_id,order_code" });
+          .upsert(chunk, { onConflict: "followup_case_id,generation_id,order_code" })
+          .select(FOLLOWUP_MEMBER_COLUMNS);
         upsertError = result.error;
+        if (!upsertError && Array.isArray(result.data)) {
+          for (const row of result.data as FollowupCaseMemberRow[]) {
+            const rows = actualByCaseId.get(row.followup_case_id) || [];
+            rows.push(row);
+            actualByCaseId.set(row.followup_case_id, rows);
+          }
+        }
       } catch (err: any) {
         upsertError = err;
       }
@@ -651,7 +687,10 @@ export class SupabaseFollowupRepository extends BaseRepository implements IFollo
     }
 
     const pendingCaseIds = [...expectedByCaseId.keys()].filter((caseId) => !committedCaseIds.has(caseId));
-    await readGenerationRows(pendingCaseIds);
+    const missingCaseIds = pendingCaseIds.filter((caseId) => !actualByCaseId.has(caseId));
+    if (missingCaseIds.length > 0) {
+      await readGenerationRows(missingCaseIds);
+    }
     for (const [caseId, expected] of expectedByCaseId) {
       assertFollowupMemberGenerationParity(expected, actualByCaseId.get(caseId) || []);
     }
@@ -665,61 +704,95 @@ export class SupabaseFollowupRepository extends BaseRepository implements IFollo
     const finalizeInputs = cases
       .map((caseData) => ({ caseData, parent: parentByIncident.get(caseData.incident_key)! }))
       .filter(({ parent }) => !committedCaseIds.has(parent.id));
-    for (let start = 0; start < finalizeInputs.length; start += 10) {
-      const batch = finalizeInputs.slice(start, start + 10);
-      const results = await Promise.all(batch.map(async ({ caseData, parent }) => {
-        const cohort = caseData.operational_cohort as OperationalCohort;
+    if (finalizeInputs.length > 0) {
+      const updatesPayload = finalizeInputs.map(({ caseData, parent }) => {
         const metadata = metadataByIncident.get(caseData.incident_key)!;
         const { id: _id, updated_at: _updatedAt, operational_cohort: _oldCohort,
           cohort_version: _oldVersion, member_generation_id: _oldGeneration, ...casePatch } = caseData as any;
-        const update = (this.client.from("followup_cases") as any)
-          .update({
-            ...casePatch,
-            operational_cohort: metadata,
-            cohort_version: 2,
-            member_generation_id: generationId,
-            updated_at: new Date().toISOString(),
-          })
-          .eq("id", parent.id)
-          .eq("updated_at", parent.updated_at)
-          .select(FOLLOWUP_CASE_LINK_COLUMNS)
-          .maybeSingle();
-        const { data, error } = await update;
-        if (error) throw error;
-        if (data) return data as FollowupCaseLinkRow;
+        return {
+          id: parent.id,
+          expected_updated_at: parent.updated_at,
+          operational_cohort: metadata,
+          cohort_version: 2,
+          member_generation_id: generationId,
+          ...casePatch,
+        };
+      });
 
-        const { data: current, error: readError } = await (this.client.from("followup_cases") as any)
-          .select("id,incident_id,incident_key,cohort_version,member_generation_id")
-          .eq("id", parent.id)
-          .maybeSingle();
-        if (readError) throw readError;
-        if (current?.cohort_version === 2 && current.member_generation_id === generationId) {
-          return { id: current.id, incident_id: current.incident_id, incident_key: current.incident_key } as FollowupCaseLinkRow;
+      let updatedRows: any[] | null = null;
+      let rpcError: any = null;
+      try {
+        const res = await (this.client.rpc as any)("batch_update_followup_cases_cohort", { p_updates: updatesPayload });
+        updatedRows = res.data;
+        rpcError = res.error;
+      } catch (err: any) {
+        rpcError = err;
+      }
+
+      if (!rpcError && Array.isArray(updatedRows)) {
+        for (const row of updatedRows) {
+          finalized.push({ id: row.id, incident_id: row.incident_id, incident_key: row.incident_key });
         }
-        throw new Error(`FOLLOWUP_COHORT_PARENT_CONCURRENT_MODIFICATION:${caseData.incident_key}`);
-      }));
-      finalized.push(...results);
-    }
+        if (updatedRows.length !== finalizeInputs.length) {
+          const updatedIds = new Set(updatedRows.map((r: any) => r.id));
+          const missing = finalizeInputs.find(({ parent }) => !updatedIds.has(parent.id));
+          if (missing) {
+            throw new Error(`FOLLOWUP_COHORT_PARENT_CONCURRENT_MODIFICATION:${missing.caseData.incident_key}`);
+          }
+        }
+      } else {
+        // Fallback for environments where RPC is not yet deployed (e.g. unmigrated mock or dev)
+        for (let start = 0; start < finalizeInputs.length; start += 10) {
+          const batch = finalizeInputs.slice(start, start + 10);
+          const results = await Promise.all(batch.map(async ({ caseData, parent }) => {
+            const metadata = metadataByIncident.get(caseData.incident_key)!;
+            const { id: _id, updated_at: _updatedAt, operational_cohort: _oldCohort,
+              cohort_version: _oldVersion, member_generation_id: _oldGeneration, ...casePatch } = caseData as any;
+            const update = (this.client.from("followup_cases") as any)
+              .update({
+                ...casePatch,
+                operational_cohort: metadata,
+                cohort_version: 2,
+                member_generation_id: generationId,
+                updated_at: new Date().toISOString(),
+              })
+              .eq("id", parent.id)
+              .eq("updated_at", parent.updated_at)
+              .select(FOLLOWUP_CASE_LINK_COLUMNS)
+              .maybeSingle();
+            const { data, error } = await update;
+            if (error) throw error;
+            if (data) return data as FollowupCaseLinkRow;
 
-    for (let start = 0; start < generationCaseIds.length; start += 100) {
-      const caseIds = generationCaseIds.slice(start, start + 100);
-      const { error } = await (this.client.from("followup_case_member_generations") as any)
-        .update({ generation_status: "COMMITTED", committed_at: new Date().toISOString() })
-        .eq("generation_id", generationId)
-        .eq("generation_status", "PREPARING")
-        .in("followup_case_id", caseIds)
-        .select("followup_case_id");
-      if (error) throw error;
-      const { data: verified, error: verifyError } = await (this.client.from("followup_case_member_generations") as any)
-        .select("followup_case_id,generation_status,committed_at")
-        .eq("generation_id", generationId)
-        .in("followup_case_id", caseIds);
-      if (verifyError) throw verifyError;
-      if ((verified || []).length !== caseIds.length
-        || verified.some((record: any) => record.generation_status !== "COMMITTED" || !record.committed_at)) {
-        throw new Error(`FOLLOWUP_MEMBER_GENERATION_COMMIT_MISMATCH:expected=${caseIds.length}:actual=${(verified || []).length}`);
+            const { data: current, error: readError } = await (this.client.from("followup_cases") as any)
+              .select("id,incident_id,incident_key,cohort_version,member_generation_id")
+              .eq("id", parent.id)
+              .maybeSingle();
+            if (readError) throw readError;
+            if (current?.cohort_version === 2 && current.member_generation_id === generationId) {
+              return { id: current.id, incident_id: current.incident_id, incident_key: current.incident_key } as FollowupCaseLinkRow;
+            }
+            throw new Error(`FOLLOWUP_COHORT_PARENT_CONCURRENT_MODIFICATION:${caseData.incident_key}`);
+          }));
+          finalized.push(...results);
+        }
+
+        for (let start = 0; start < generationCaseIds.length; start += 100) {
+          const caseIds = generationCaseIds.slice(start, start + 100);
+          const { data: verified, error } = await (this.client.from("followup_case_member_generations") as any)
+            .update({ generation_status: "COMMITTED", committed_at: new Date().toISOString() })
+            .eq("generation_id", generationId)
+            .in("followup_case_id", caseIds)
+            .select("followup_case_id,generation_status,committed_at");
+          if (error) throw error;
+          if ((verified || []).length !== caseIds.length
+            || verified.some((record: any) => record.generation_status !== "COMMITTED" || !record.committed_at)) {
+            throw new Error(`FOLLOWUP_MEMBER_GENERATION_COMMIT_MISMATCH:expected=${caseIds.length}:actual=${(verified || []).length}`);
+          }
+        }
       }
     }
+
     return finalized;
   }
 

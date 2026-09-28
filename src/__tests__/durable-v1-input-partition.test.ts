@@ -235,6 +235,7 @@ describe("Durable V1 Partitioned Input", () => {
           return {
             select: vi.fn().mockReturnThis(),
             in: vi.fn().mockResolvedValue({ data: [], error: null }),
+            or: vi.fn().mockResolvedValue({ data: [], error: null }),
             upsert: vi.fn().mockResolvedValue({ data: [{ incident_key: "INC1", id: "case-1" }], error: null }),
             insert: vi.fn().mockReturnValue({
               select: vi.fn().mockResolvedValue({
@@ -255,7 +256,18 @@ describe("Durable V1 Partitioned Input", () => {
         }
         if (table === "followup_case_member_generations") {
           return {
-            upsert: vi.fn().mockResolvedValue({ error: null }),
+            upsert: vi.fn().mockReturnValue({
+              select: vi.fn().mockResolvedValue({
+                data: [{
+                  followup_case_id: "case-1",
+                  generation_id: syncRunId,
+                  source_sync_run_id: syncRunId,
+                  expected_member_count: 1,
+                  generation_status: "PREPARING",
+                }],
+                error: null,
+              }),
+            }),
             update: vi.fn((patch: any) => {
               if (patch.generation_status) currentGenStatus = patch.generation_status;
               return {
@@ -290,7 +302,9 @@ describe("Durable V1 Partitioned Input", () => {
           return {
             upsert: vi.fn((rows: any[]) => {
               insertedMembers = [...rows];
-              return Promise.resolve({ error: null });
+              return {
+                select: vi.fn().mockResolvedValue({ data: insertedMembers, error: null }),
+              };
             }),
             select: vi.fn().mockReturnThis(),
             eq: vi.fn().mockReturnThis(),

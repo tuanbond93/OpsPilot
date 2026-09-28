@@ -132,6 +132,21 @@ async function v1CaseUnits(client: SupabaseClient, checkpointAt: string, syncRun
 
 async function seedFinalizerIfDrained(client: SupabaseClient, checkpointAt: string, syncRunId: string) {
   const units = await v1CaseUnits(client, checkpointAt, syncRunId);
+  const failedUnit = units.find(unit => unit.status === "FAILED");
+  if (failedUnit) {
+    const errorMessage = failedUnit.lastSafeError || "One or more V1 work units failed after exhausting attempts";
+    await client.from("sync_runs")
+      .update({
+        status: "failed",
+        error_code: "V1_WORK_UNIT_ATTEMPTS_EXHAUSTED",
+        error_message: errorMessage,
+        completed_at: new Date().toISOString(),
+      })
+      .eq("id", syncRunId)
+      .eq("status", "running");
+    return false;
+  }
+
   const { data: input, error } = await client.from("checkpoint_v1_followup_inputs")
     .select("candidate_keys,producer_completed_at")
     .eq("sync_run_id", syncRunId).single();

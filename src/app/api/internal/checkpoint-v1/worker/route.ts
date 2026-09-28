@@ -16,12 +16,9 @@ async function run(request: NextRequest) {
   }
   try {
     const client = createAdminClient();
-    const { data: active, error } = await client.from("checkpoint_work_units")
-      .select("checkpoint_at,sync_run_id")
-      .eq("execution_mode", "PRODUCTION")
-      .like("idempotency_key", "%:V1:%")
-      .in("status", ["PENDING", "LEASED"])
-      .order("checkpoint_at", { ascending: true }).limit(1);
+    const { data: active, error } = await client.rpc("get_next_actionable_v1_checkpoint", {
+      p_execution_mode: "PRODUCTION",
+    });
     if (error) throw error;
     if (!active?.length) return NextResponse.json({ ok: true, status: "IDLE" });
     const { checkpoint_at: checkpointAt, sync_run_id: syncRunId } = active[0];
