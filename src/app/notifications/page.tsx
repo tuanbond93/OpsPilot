@@ -171,12 +171,12 @@ export default function NotificationsDashboard() {
 
       {/* Provider Health Section */}
       <section className="space-y-3">
-        <h2 className="text-sm font-bold text-slate-300 uppercase tracking-wider">Nhà cung cấp thông báo</h2>
+        <h2 className="text-sm font-bold text-slate-300 uppercase tracking-wider">Trạng thái kênh thông báo</h2>
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
           {providers.map((p) => (
             <div key={p.name} className="p-4 bg-slate-900 border border-slate-800 rounded-2xl flex items-center justify-between">
               <div>
-                <span className="font-bold text-sm text-slate-100 capitalize block">{p.name} Provider</span>
+                <span className="font-bold text-sm text-slate-100 capitalize block">Kênh {channelLabel[p.name] || "Nội bộ"}</span>
                 <span className="text-xs text-slate-400 block mt-0.5">{p.details || "Sẵn sàng"}</span>
               </div>
               <span
