@@ -540,12 +540,6 @@ export default function ExecutiveDashboardPage() {
           >
             Cần phê duyệt {copilotReviews.unavailable ? "—" : `(${copilotReviews.pending})`}
           </Link>
-          <Link
-            href="/decisions"
-            className="inline-flex min-h-11 items-center justify-center rounded-xl border border-indigo-500/40 bg-indigo-500/10 px-4 text-xs font-semibold text-indigo-200 transition hover:bg-indigo-500/20 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-300"
-          >
-            Hộp quyết định
-          </Link>
           <div className="grid w-full gap-2 rounded-xl border border-slate-800 bg-slate-900 p-3 text-xs sm:w-auto sm:grid-cols-3">
             <label className="grid gap-1 font-semibold text-slate-400">Vùng
             <select
@@ -641,8 +635,7 @@ export default function ExecutiveDashboardPage() {
       <section aria-labelledby="attention-heading" className="space-y-3">
         <div className="flex flex-wrap items-end justify-between gap-3">
           <div>
-            <h2 id="attention-heading" className="text-lg font-bold text-slate-100">Cần chú ý ngay</h2>
-            <p className="text-xs text-slate-400">Các hàng đợi thực tế cần operator kiểm tra và quyết định.</p>
+            <h2 id="attention-heading" className="text-lg font-bold text-slate-100">Tổng quan cần xử lý</h2>
           </div>
           <Link href="/incidents" className="text-sm font-semibold text-blue-300 hover:text-blue-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-400">
             Xem toàn bộ incident →
@@ -650,11 +643,11 @@ export default function ExecutiveDashboardPage() {
         </div>
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
           <Link href="/incidents" className="min-h-28 rounded-xl border border-rose-500/30 bg-rose-500/10 p-4 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-rose-300">
-            <span className="text-xs font-semibold uppercase tracking-wide text-rose-200">Rủi ro nghiêm trọng</span>
+            <span className="text-xs font-semibold uppercase tracking-wide text-rose-200">Sự cố ưu tiên cao</span>
             <span className="mt-2 block font-mono text-3xl font-bold text-rose-300">{data?.source === "degraded_fallback" ? "—" : kpis?.criticalRiskIncidents || 0}</span>
           </Link>
           <Link href="/reviews" className="min-h-28 rounded-xl border border-amber-500/30 bg-amber-500/10 p-4 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-300">
-            <span className="text-xs font-semibold uppercase tracking-wide text-amber-200">Tổng hợp sự cố cần con người duyệt</span>
+            <span className="text-xs font-semibold uppercase tracking-wide text-amber-200">Sự cố cần quản lý duyệt</span>
             <span className="mt-2 block font-mono text-3xl font-bold text-amber-300">{copilotReviews.unavailable ? "—" : copilotReviews.pending}</span>
             {!copilotReviews.unavailable && <span className="text-xs text-amber-100/70">trên {copilotReviews.total} kết quả có sẵn</span>}
           </Link>
@@ -682,49 +675,27 @@ export default function ExecutiveDashboardPage() {
         </div>
         <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 text-xs">
           <div className="p-4 bg-slate-900 border border-slate-800 rounded-2xl space-y-1">
-            <span className="text-slate-400 font-semibold">Sự cố đang hoạt động</span>
+            <span className="text-slate-400 font-semibold">Tổng số sự cố</span>
             <span className="text-2xl font-extrabold text-amber-400 block font-mono">{kpis?.activeIncidents || 0}</span>
           </div>
 
           <div className="p-4 bg-slate-900 border border-rose-500/30 rounded-2xl space-y-1">
-            <span className="text-rose-400 font-semibold">Sự cố rủi ro nghiêm trọng</span>
+            <span className="text-rose-400 font-semibold">Sự cố ưu tiên cao</span>
             <span className="text-2xl font-extrabold text-rose-400 block font-mono">{kpis?.criticalRiskIncidents || 0}</span>
           </div>
 
           <div className="p-4 bg-slate-900 border border-amber-500/30 rounded-2xl space-y-1">
-            <span className="text-amber-400 font-semibold">Sự cố ưu tiên cao</span>
-            <span className="text-2xl font-extrabold text-amber-400 block font-mono">{kpis?.highPriorityIncidents || 0}</span>
-          </div>
-
-          <div className="p-4 bg-slate-900 border border-slate-800 rounded-2xl space-y-1">
-            <span className="text-slate-400 font-semibold">Thời gian tồn trung bình</span>
-            <span className="text-2xl font-extrabold text-slate-100 block font-mono">{kpis?.averageIncidentDurationHours || 0}h</span>
-          </div>
-
-          <div className="p-4 bg-slate-900 border border-slate-800 rounded-2xl space-y-1">
-            <span className="text-slate-400 font-semibold">Thời gian tồn đơn lâu nhất TB</span>
-            <span className="text-2xl font-extrabold text-slate-100 block font-mono">{kpis?.averageOldestOrderAgeHours || 0}h</span>
+            <span className="text-amber-400 font-semibold">Sự cố cần quản lý duyệt</span>
+            <span className="text-2xl font-extrabold text-amber-400 block font-mono">{copilotReviews.pending || 0}</span>
           </div>
 
           <div className="p-4 bg-slate-900 border border-emerald-500/30 rounded-2xl space-y-1">
-            <span className="text-emerald-400 font-semibold">Case hoàn tất hôm nay</span>
+            <span className="text-emerald-400 font-semibold">Sự cố đã hoàn tất</span>
             <span className="text-2xl font-extrabold text-emerald-400 block font-mono">{kpis?.incidentsResolvedToday || 0}</span>
           </div>
 
-          <div className="p-4 bg-slate-900 border border-purple-500/30 rounded-2xl space-y-1">
-            <span className="text-purple-400 font-semibold">Tác vụ AI đang chạy</span>
-            <span className="text-2xl font-extrabold text-purple-400 block font-mono">
-              {kpis?.aiJobsRunning || 0} <span className="text-xs font-normal text-slate-500">({kpis?.aiJobsPending || 0} đang chờ)</span>
-            </span>
-          </div>
-
-          <div className="p-4 bg-slate-900 border border-rose-500/30 rounded-2xl space-y-1">
-            <span className="text-rose-400 font-semibold">Thông báo thất bại</span>
-            <span className="text-2xl font-extrabold text-rose-400 block font-mono">{kpis?.notificationsFailed || 0}</span>
-          </div>
-
           <div className="p-4 bg-slate-900 border border-indigo-500/30 rounded-2xl space-y-1">
-            <span className="text-indigo-400 font-semibold">Kết quả đang chờ theo dõi</span>
+            <span className="text-indigo-400 font-semibold">Sự cố đang theo dõi</span>
             <span className="text-2xl font-extrabold text-indigo-400 block font-mono">{kpis?.followupsWaiting || 0}</span>
           </div>
 
@@ -741,8 +712,6 @@ export default function ExecutiveDashboardPage() {
                 ({incidentsPayload?.displayedCount || 0}/{incidentsPayload?.totalCount || 0} mục)
               </span>
             </h2>
-            <p className="text-xs text-slate-400">Danh sách các sự cố vận hành đang hoạt động (phạm vi: {selectedScope === "all" ? "toàn hệ thống" : selectedScope})</p>
-            <p className="mt-1 text-[11px] leading-4 text-slate-500">Xu hướng so số đơn của snapshot mới nhất với snapshot liền trước được lưu trong lịch sử sự cố; không mặc định là so với hôm qua.</p>
           </div>
 
           {/* Search & Sort */}
@@ -783,13 +752,13 @@ export default function ExecutiveDashboardPage() {
           <table className="w-full text-left text-xs border-collapse">
             <thead>
               <tr className="border-b border-slate-800 text-slate-400 font-semibold uppercase tracking-wider">
-                <th className="py-3 px-2">Kho Hàng</th>
-                <th className="py-3 px-2">Tín hiệu quan sát được</th>
+                <th className="py-3 px-2">Kho</th>
+                <th className="py-3 px-2">Hiện tượng</th>
                 <th className="py-3 px-2">Mức ưu tiên</th>
                 <th className="py-3 px-2">Xu Hướng</th>
                 <th className="py-3 px-2">Số đơn</th>
                 <th className="py-3 px-2">Tuổi đơn lớn nhất</th>
-                <th className="py-3 px-2">Theo dõi sau phát hiện</th>
+                <th className="py-3 px-2">Trạng thái sự cố</th>
                 <th className="py-3 px-2">Khuyến nghị</th>
                 <th className="py-3 px-2">Phân tích AI</th>
                 <th className="py-3 px-2"><span className="sr-only">Mở hồ sơ</span></th>

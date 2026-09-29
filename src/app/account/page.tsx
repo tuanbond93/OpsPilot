@@ -16,7 +16,8 @@ type DataScope = {
 
 function roleLabel(user: User) {
   const role = user.app_metadata?.opspilot_role ?? user.user_metadata?.opspilot_role;
-  return typeof role === "string" ? role.toUpperCase() : "OPERATOR";
+  const value = typeof role === "string" ? role.toUpperCase() : "OPERATOR";
+  return ({ ADMIN: "Quản trị viên tổng", MANAGER: "Quản lý", REVIEWER: "Người duyệt", OPERATOR: "Người vận hành" } as Record<string, string>)[value] || "Người vận hành";
 }
 
 export default function AccountPage() {
@@ -115,11 +116,11 @@ export default function AccountPage() {
             <div className="flex items-start gap-3"><ShieldCheck aria-hidden="true" className="mt-0.5 text-emerald-400"/><div><h2 className="text-xl font-bold">Đã đăng nhập</h2><p className="mt-1 break-all text-slate-300">{user.email}</p></div></div>
             <dl className="mt-6 grid gap-3 sm:grid-cols-2">
               <div className="rounded-xl bg-slate-950 p-4"><dt className="text-sm text-slate-400">Vai trò OpsPilot</dt><dd className="mt-1 font-bold text-blue-200">{roleLabel(user)}</dd></div>
-              <div className="rounded-xl bg-slate-950 p-4"><dt className="text-sm text-slate-400">Mã nhân viên</dt><dd className="mt-1 font-bold text-blue-200">{dataScope?.employeeId || "Chưa gán"}</dd></div>
+              <div className="rounded-xl bg-slate-950 p-4"><dt className="text-sm text-slate-400">Cấp quyền</dt><dd className="mt-1 font-bold text-blue-200">{roleLabel(user)}</dd></div>
               <div className="rounded-xl bg-slate-950 p-4"><dt className="text-sm text-slate-400">Phạm vi dữ liệu</dt><dd className="mt-1 font-bold text-blue-200">{dataScope?.mode === "ALL" ? "Toàn hệ thống" : dataScope?.mode === "ASSIGNED" ? `${dataScope.warehouseCount} kho được phân công` : "Chưa được phân công"}</dd></div>
               <div className="rounded-xl bg-slate-950 p-4"><dt className="text-sm text-slate-400">Vùng phụ trách</dt><dd className="mt-1 text-sm font-semibold text-slate-200">{dataScope?.zones?.join(", ") || "—"}</dd></div>
             </dl>
-            {dataScope?.mode === "UNASSIGNED" && <p role="alert" className="mt-4 rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-100">Tài khoản chưa có <code>opspilot_employee_id</code>. Dữ liệu vận hành đang được khóa an toàn cho đến khi quản trị viên gán đúng mã nhân viên.</p>}
+            {dataScope?.mode === "UNASSIGNED" && <p role="alert" className="mt-4 rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-100">Tài khoản chưa được phân công phạm vi dữ liệu. Vui lòng liên hệ quản trị viên để được cấp quyền.</p>}
             <button type="button" onClick={signOut} disabled={busy} className="mt-6 inline-flex min-h-11 items-center justify-center gap-2 rounded-lg border border-slate-700 px-5 font-semibold hover:border-rose-400 hover:text-rose-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-400 disabled:cursor-wait disabled:opacity-60"><LogOut aria-hidden="true" size={18}/>{busy ? "Đang đăng xuất…" : "Đăng xuất"}</button>
           </div>
         )}
@@ -127,7 +128,6 @@ export default function AccountPage() {
         {message && <p role={isError ? "alert" : "status"} className={`mt-5 rounded-lg border p-3 text-sm ${isError ? "border-rose-500/40 bg-rose-500/10 text-rose-200" : "border-emerald-500/40 bg-emerald-500/10 text-emerald-200"}`}>{message}</p>}
       </section>
 
-      <aside className="mt-6 rounded-xl border border-amber-500/30 bg-amber-500/5 p-4 text-sm leading-6 text-amber-100"><strong>Lưu ý triển khai:</strong> chế độ bắt buộc xác thực chỉ được bật sau khi quản trị viên tạo tài khoản và gán <code>app_metadata.opspilot_role</code>. Khi chưa bật, hệ thống giữ tương thích với Pilot hiện tại.</aside>
     </main>
   );
 }
