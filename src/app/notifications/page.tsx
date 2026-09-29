@@ -35,6 +35,13 @@ interface ProviderHealthItem {
 
 const actionStatusLabel: Record<string,string>={PENDING:"Đang chờ",PROCESSING:"Đang xử lý",SENT:"Đã gửi",SIMULATED:"Mô phỏng",FAILED:"Thất bại",CANCELLED:"Đã hủy"};
 const providerStatusLabel: Record<string,string>={Healthy:"Ổn định",Degraded:"Suy giảm",Offline:"Ngoại tuyến"};
+const actionTypeLabel: Record<string, string> = { FIRST_PUSH: "Nhắc lần 1", SECOND_PUSH: "Nhắc lần 2", THIRD_PUSH: "Nhắc lần 3", ESCALATION: "Báo cấp trên" };
+const channelLabel: Record<string, string> = { console: "Nội bộ", telegram: "Telegram" };
+
+function warehouseIdFor(action: ActionItem): string | null {
+  const match = `${action.target_id || ""} ${JSON.stringify(action.payload || {})}`.match(/WAREHOUSE:(\d{1,12})|warehouse[_Iid]*["':=\s]+(\d{1,12})/i);
+  return match?.[1] || match?.[2] || null;
+}
 
 export default function NotificationsDashboard() {
   const session = useOpsSession();
@@ -46,6 +53,7 @@ export default function NotificationsDashboard() {
   const [searchQuery, setSearchQuery] = useState<string>("");
   const [operatingId, setOperatingId] = useState<string | null>(null);
   const [error, setError] = useState("");
+  const [warehouseNames, setWarehouseNames] = useState<Record<string, string>>({});
 
   async function loadData() {
     try {
@@ -63,6 +71,12 @@ export default function NotificationsDashboard() {
       handleApiAccess(providersRes, providersJson, "Không thể tải trạng thái nhà cung cấp.");
 
       setActions(actionsJson.actions || []);
+      const ids = [...new Set((actionsJson.actions as ActionItem[] || []).map(warehouseIdFor).filter((id: string | null): id is string => Boolean(id)))];
+      if (ids.length) {
+        const directory = await fetch(`/api/warehouse-directory?ids=${encodeURIComponent(ids.join(","))}`, { cache: "no-store" });
+        const directoryPayload = await directory.json().catch(() => ({}));
+        if (directory.ok) setWarehouseNames(Object.fromEntries(Object.entries(directoryPayload.warehouses || {}).map(([id, item]: [string, any]) => [id, item.name])));
+      }
       setMetrics(actionsJson.metrics || {});
       setProviders(providersJson.providers || []);
     } catch (caught) {
@@ -226,7 +240,7 @@ export default function NotificationsDashboard() {
                   : "bg-slate-950 text-slate-400 hover:text-slate-200 border border-slate-800"
               }`}
             >
-              {st}
+              {st === "ALL" ? "Tất cả" : actionStatusLabel[st] || st}
             </button>
           ))}
         </div>
@@ -257,10 +271,9 @@ export default function NotificationsDashboard() {
               >
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-800 pb-3">
                   <div className="flex items-center gap-3">
-                    <span className="text-xs font-mono text-slate-500">{a.id}</span>
-                    <span className="text-sm font-bold text-slate-100 uppercase tracking-wider">{a.action_type}</span>
-                    <span className="text-xs px-2 py-0.5 rounded bg-slate-800 text-slate-300 font-mono">
-                      Provider: {a.provider}
+                    <span className="text-sm font-bold text-slate-100">{actionTypeLabel[a.action_type] || "Thông báo vận hành"}</span>
+                    <span className="text-xs px-2 py-0.5 rounded bg-slate-800 text-slate-300">
+                      Kênh: {channelLabel[a.provider] || "Nội bộ"}
                     </span>
                   </div>
 
@@ -287,7 +300,7 @@ export default function NotificationsDashboard() {
                         disabled={operatingId === a.id}
                         className="px-3 py-1 bg-indigo-500 hover:bg-indigo-400 text-slate-950 font-bold text-xs rounded-xl shadow transition"
                       >
-                        {operatingId === a.id ? "Đang xác nhận…" : "Xác nhận delivery"}
+                        {operatingId === a.id ? "Đang xác nhận…" : "Xác nhận gửi"}
                       </button>
                     )}
 
@@ -313,46 +326,28 @@ export default function NotificationsDashboard() {
                   </div>
                 </div>
 
-                <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 text-xs text-slate-400">
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 text-xs text-slate-400">
                   <div>
-                    <span className="block text-slate-500">Đối tượng</span>
-                    <span className="text-slate-200 font-medium">{a.target_type}:{a.target_id || "global"}</span>
+                    <span className="block text-slate-500">Phạm vi</span>
+                    <span className="text-slate-200 font-medium">{warehouseIdFor(a) ? warehouseNames[warehouseIdFor(a)!] || "Kho chưa xác định" : "Thông báo hệ thống"}</span>
                   </div>
                   <div>
                     <span className="block text-slate-500">Kết quả</span>
-                    <span className="text-slate-200 font-medium uppercase">{a.outcome || a.status}</span>
-                  </div>
-                  <div>
-                    <span className="block text-slate-500">Mã thông điệp</span>
-                    <span className="text-slate-200 font-mono text-[11px] truncate block">
-                      {a.provider_message_id || "N/A"}
-                    </span>
+                    <span className="text-slate-200 font-medium">{actionStatusLabel[a.outcome || a.status] || "Đã ghi nhận"}</span>
                   </div>
                   <div>
                     <span className="block text-slate-500">Số lần thử lại</span>
                     <span className="text-slate-200 font-medium">{a.retry_count} / {a.max_retry}</span>
                   </div>
-                  <div>
-                    <span className="block text-slate-500">Thông tin khóa</span>
-                    <span className="text-slate-300 font-mono text-[11px] truncate block">
-                      {a.locked_by ? `${a.locked_by}` : "Không khóa"}
-                    </span>
-                  </div>
                 </div>
 
-                {a.last_error && (
-                  <div className="p-2.5 bg-rose-500/10 border border-rose-500/20 text-rose-400 text-xs rounded-xl font-mono">
-                    Error: {a.last_error}
-                  </div>
-                )}
-
-                {a.payload && (
+                {(a.payload || a.last_error || a.provider_response) && session.can("MANAGE_SYSTEM") && (
                   <details className="text-xs text-slate-400 cursor-pointer">
                     <summary className="hover:text-slate-200 font-semibold select-none">
-                      Xem payload và phản hồi nhà cung cấp
+                      Chi tiết kỹ thuật
                     </summary>
                     <pre className="mt-2 p-3 bg-slate-950 rounded-xl border border-slate-800 font-mono text-[11px] overflow-x-auto text-slate-300">
-                      {JSON.stringify({ payload: a.payload, provider_response: a.provider_response }, null, 2)}
+                      {JSON.stringify({ id: a.id, target: a.target_id, payload: a.payload, provider_response: a.provider_response, last_error: a.last_error }, null, 2)}
                     </pre>
                   </details>
                 )}
