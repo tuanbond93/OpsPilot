@@ -152,8 +152,34 @@ async function v1CaseUnits(client: SupabaseClient, checkpointAt: string, syncRun
   const queue = new SupabaseCheckpointWorkQueueRepository(client);
   return (await queue.getWorkUnitsForCheckpoint(checkpointAt))
     .filter(unit => unit.syncRunId === syncRunId
+      && unit.executionMode === "PRODUCTION"
       && unit.workType === "EVALUATE_FOLLOWUP_BATCH"
       && unit.cursor.metadata?.pipelineVersion === "V1");
+}
+
+export type V1FinalizerDecision =
+  | "WAIT_FOR_PARTITION_OUTPUT"
+  | "WAIT_FOR_DRAIN"
+  | "FINALIZE_SUCCESS"
+  | "FINALIZE_FAILED";
+
+/**
+ * Decide whether the persisted production V1 partition is ready for finalization.
+ * FAILED units are terminal, but they do not make other actionable units terminal.
+ */
+export function decideV1FinalizerAction(
+  units: Array<Pick<CheckpointWorkUnit, "status">>,
+  persistedUnitCount: number,
+): V1FinalizerDecision {
+  if (units.length !== persistedUnitCount) return "WAIT_FOR_PARTITION_OUTPUT";
+
+  if (units.some(unit => unit.status !== "COMPLETED" && unit.status !== "FAILED")) {
+    return "WAIT_FOR_DRAIN";
+  }
+
+  return units.some(unit => unit.status === "FAILED")
+    ? "FINALIZE_FAILED"
+    : "FINALIZE_SUCCESS";
 }
 
 export async function persistedV1PartitionCount(client: SupabaseClient, syncRunId: string): Promise<number> {
@@ -167,8 +193,15 @@ export async function persistedV1PartitionCount(client: SupabaseClient, syncRunI
 
 export async function seedFinalizerIfDrained(client: SupabaseClient, checkpointAt: string, syncRunId: string) {
   const units = await v1CaseUnits(client, checkpointAt, syncRunId);
+  const expected = await persistedV1PartitionCount(client, syncRunId);
+  const decision = decideV1FinalizerAction(units, expected);
+
+  if (decision === "WAIT_FOR_PARTITION_OUTPUT" || decision === "WAIT_FOR_DRAIN") {
+    return false;
+  }
+
   const failedUnit = units.find(unit => unit.status === "FAILED");
-  if (failedUnit) {
+  if (decision === "FINALIZE_FAILED" && failedUnit) {
     const errorMessage = failedUnit.lastSafeError || "One or more V1 work units failed after exhausting attempts";
     await client.from("sync_runs")
       .update({
@@ -186,9 +219,7 @@ export async function seedFinalizerIfDrained(client: SupabaseClient, checkpointA
     .select("candidate_keys,producer_completed_at")
     .eq("sync_run_id", syncRunId).single();
   if (error) throw error;
-  const expected = await persistedV1PartitionCount(client, syncRunId);
-  if (!input.producer_completed_at || units.length !== expected
-    || units.some(unit => unit.status !== "COMPLETED")) return false;
+  if (!input.producer_completed_at) return false;
   const queue = new SupabaseCheckpointWorkQueueRepository(client);
   await queue.createWorkUnits([{
     checkpointAt, syncRunId,
