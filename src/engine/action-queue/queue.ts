@@ -9,6 +9,7 @@ import type { ActionQueueMetrics, IActionQueue, ActionQueueDeduplicationResult, 
 import { Deduplicator } from "./deduplicator";
 import { isFallbackAllowed } from "@/connectors/supabase/fallback-policy";
 import { logger } from "@/observability/logger";
+import { traceV1Call } from "@/observability/v1-attempt-telemetry";
 
 export interface DeduplicationResult extends ActionQueueDeduplicationResult {}
 
@@ -37,10 +38,10 @@ export class ActionQueue implements IActionQueue {
         const chunkSize = 100;
         for (let i = 0; i < validKeys.length; i += chunkSize) {
           const chunk = validKeys.slice(i, i + chunkSize);
-          const { data, error } = await this.client
+          const { data, error } = await traceV1Call("intervention_dedup_read", "notification_actions", null, undefined, () => this.client!
             .from("notification_actions")
             .select("*")
-            .in("deduplication_key", chunk);
+            .in("deduplication_key", chunk));
 
           if (!error && data) {
             for (const row of data) {
@@ -76,10 +77,10 @@ export class ActionQueue implements IActionQueue {
         const chunkSize = 100;
         for (let i = 0; i < actions.length; i += chunkSize) {
           const chunk = actions.slice(i, i + chunkSize);
-          const { data, error } = await this.client
+          const { data, error } = await traceV1Call("intervention_persistence", "notification_actions", chunk.length, chunk, () => this.client!
             .from("notification_actions")
             .insert(chunk)
-            .select();
+            .select());
 
           if (error) throw error;
           if (data) insertedRows.push(...data);
@@ -131,10 +132,10 @@ export class ActionQueue implements IActionQueue {
 
         for (let i = 0; i < payloadEvents.length; i += chunkSize) {
           const chunk = payloadEvents.slice(i, i + chunkSize);
-          const { data, error } = await this.client
+          const { data, error } = await traceV1Call("intervention_event_persistence", "notification_action_events", chunk.length, chunk, () => this.client!
             .from("notification_action_events")
             .insert(chunk)
-            .select();
+            .select());
 
           if (error) throw error;
           if (data) insertedEvents.push(...data);

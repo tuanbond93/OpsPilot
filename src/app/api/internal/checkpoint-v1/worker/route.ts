@@ -2,6 +2,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import { createAdminClient } from "@/connectors/supabase";
 import { runDurableV1WorkerBatch } from "@/services/durable-v1-worker";
 import { logger } from "@/observability/logger";
+import { randomUUID } from "node:crypto";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
@@ -22,7 +23,8 @@ async function run(request: NextRequest) {
     if (error) throw error;
     if (!active?.length) return NextResponse.json({ ok: true, status: "IDLE" });
     const { checkpoint_at: checkpointAt, sync_run_id: syncRunId } = active[0];
-    const summary = await runDurableV1WorkerBatch(client, checkpointAt, syncRunId);
+    const requestId = randomUUID();
+    const summary = await runDurableV1WorkerBatch(client, checkpointAt, syncRunId, requestId);
     return NextResponse.json({ ok: true, status: "FOLLOWUP_DRAINING", checkpointAt, syncRunId, summary });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

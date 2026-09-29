@@ -13,6 +13,7 @@ import { runTelegramFollowupPilotDispatch } from "@/services/telegram-followup-p
 import { sendIncidentSyncStatus } from "@/services/telegram-incident-status";
 import { persistCheckpointDispatchAudit } from "@/services/checkpoint-dispatch-audit";
 import { queuePhase2CheckpointWork } from "@/services/phase2-checkpoint-work";
+import { withV1Attempt, setV1Input, traceV1Call, type V1AttemptContext } from "@/observability/v1-attempt-telemetry";
 
 type StoredInput = {
   checkpoint_at: string;
@@ -23,6 +24,21 @@ type StoredInput = {
   producer_completed_at: string | null;
   input_sha256: string;
 };
+
+class V1TelemetryWorkQueue extends SupabaseCheckpointWorkQueueRepository {
+  constructor(client: SupabaseClient, private readonly contexts: Map<string, V1AttemptContext>) {
+    super(client);
+  }
+
+  override async completeWorkUnit(id: string, workerId: string): Promise<void> {
+    const context = this.contexts.get(id);
+    if (!context) return super.completeWorkUnit(id, workerId);
+    return withV1Attempt(context, () => traceV1Call(
+      "work_unit_completion", "checkpoint_work_units", 1, undefined,
+      () => super.completeWorkUnit(id, workerId),
+    ));
+  }
+}
 
 function v1CaseKeys(unit: CheckpointWorkUnit): string[] {
   if (unit.executionMode !== "PRODUCTION"
@@ -38,9 +54,9 @@ function v1CaseKeys(unit: CheckpointWorkUnit): string[] {
 }
 
 async function loadInput(client: SupabaseClient, unit: CheckpointWorkUnit): Promise<StoredInput> {
-  const { data, error } = await client.from("checkpoint_v1_followup_inputs")
+  const { data, error } = await traceV1Call("load_manifest", "checkpoint_v1_followup_inputs", 1, undefined, () => client.from("checkpoint_v1_followup_inputs")
     .select("checkpoint_at,reference_time_ms,orders,incidents,candidate_keys,producer_completed_at,input_sha256")
-    .eq("sync_run_id", unit.syncRunId).single();
+    .eq("sync_run_id", unit.syncRunId).single());
   if (error) throw error;
   if (!data.producer_completed_at
     || new Date(data.checkpoint_at).toISOString() !== new Date(unit.checkpointAt).toISOString()) {
@@ -52,10 +68,10 @@ async function loadInput(client: SupabaseClient, unit: CheckpointWorkUnit): Prom
 }
 
 async function journalPlan(client: SupabaseClient, unit: CheckpointWorkUnit, workerId: string, plan: DurableV1FollowupPlan): Promise<void> {
-  const { data, error } = await client.from("checkpoint_work_units")
+  const { data, error } = await traceV1Call("plan_journal", "checkpoint_work_units", 1, undefined, () => client.from("checkpoint_work_units")
     .update({ cursor: { ...unit.cursor, metadata: { ...unit.cursor.metadata, plan } } })
     .eq("id", unit.id).eq("status", "LEASED").eq("lease_owner", workerId)
-    .select("id");
+    .select("id"));
   if (error) throw error;
   if (data?.length !== 1) throw new Error("V1_WORKER_LEASE_LOST_BEFORE_PLAN_JOURNAL");
 }
@@ -71,6 +87,7 @@ export async function executeDurableV1CaseUnit(
   const engine = new FollowupEngine(repo, new ActionQueue(client));
   const priorPlan = unit.cursor.metadata?.plan as DurableV1FollowupPlan | undefined;
   if (priorPlan) {
+    setV1Input("prior_plan_replay", []);
     await engine.replayDurableV1Plan(priorPlan, unit.syncRunId);
     return { itemsProcessed: keys.length };
   }
@@ -87,11 +104,11 @@ export async function executeDurableV1CaseUnit(
   if (chunkOrders.length === 0) {
     const chunkIndex = unit.cursor.metadata?.chunkIndex;
     if (typeof chunkIndex === "number") {
-      const { data: chunkRow } = await client.from("checkpoint_v1_followup_input_chunks")
+      const { data: chunkRow } = await traceV1Call("load_chunk_input", "checkpoint_v1_followup_input_chunks", 1, undefined, () => client.from("checkpoint_v1_followup_input_chunks")
         .select("orders,incidents")
         .eq("sync_run_id", unit.syncRunId)
         .eq("chunk_index", chunkIndex)
-        .maybeSingle();
+        .maybeSingle());
       if (chunkRow?.orders) {
         chunkOrders = chunkRow.orders as NormalizedRillnetOrder[];
       }
@@ -104,6 +121,10 @@ export async function executeDurableV1CaseUnit(
   if (chunkOrders.length === 0 && input.orders && input.orders.length > 0) {
     chunkOrders = input.orders;
   }
+  setV1Input(chunkOrders.length === 0 ? "empty"
+    : chunkOrders === input.orders ? "legacy_checkpoint_v1_followup_inputs.orders"
+    : unit.cursor.metadata?.chunkOrders === chunkOrders ? "cursor.metadata.chunkOrders"
+    : "checkpoint_v1_followup_input_chunks", chunkOrders);
 
   const incidents = chunkIncidents.length > 0
     ? chunkIncidents.filter(incident => keySet.has(incident.incidentKey))
@@ -233,8 +254,21 @@ async function executeDurableV1Finalizer(client: SupabaseClient, unit: Checkpoin
   return { itemsProcessed: 1 };
 }
 
-export async function runDurableV1WorkerBatch(client: SupabaseClient, checkpointAt: string, syncRunId: string) {
-  const queue = new SupabaseCheckpointWorkQueueRepository(client);
+export async function runDurableV1WorkerBatch(client: SupabaseClient, checkpointAt: string, syncRunId: string, requestId = "unavailable") {
+  const attemptContexts = new Map<string, V1AttemptContext>();
+  const contextFor = (unit: CheckpointWorkUnit): V1AttemptContext => {
+    const existing = attemptContexts.get(unit.id);
+    if (existing && existing.attempt === unit.attempts) return existing;
+    const context: V1AttemptContext = {
+      sync_run_id: unit.syncRunId, work_unit_id: unit.id,
+      chunk_index: typeof unit.cursor.metadata?.chunkIndex === "number" ? unit.cursor.metadata.chunkIndex : null,
+      attempt: unit.attempts, request_id: requestId, input_source: null,
+      input_order_count: null, input_bytes: null,
+    };
+    attemptContexts.set(unit.id, context);
+    return context;
+  };
+  const queue = new V1TelemetryWorkQueue(client, attemptContexts);
   const worker = new CheckpointWorker(queue, {
     softBudgetMs: 35_000,
     safeTailMarginMs: 5_000,
@@ -245,9 +279,9 @@ export async function runDurableV1WorkerBatch(client: SupabaseClient, checkpoint
     maxUnitsPerClaim: 1,
   }, "v1_followup");
   const summary = await worker.runLoop(checkpointAt, syncRunId,
-    (unit, workerId) => unit.workType === "FINALIZE_V1_CHECKPOINT"
+    (unit, workerId) => withV1Attempt(contextFor(unit), () => unit.workType === "FINALIZE_V1_CHECKPOINT"
       ? executeDurableV1Finalizer(client, unit)
-      : executeDurableV1CaseUnit(client, unit, workerId),
+      : executeDurableV1CaseUnit(client, unit, workerId)),
     "PRODUCTION", "V1");
   await seedFinalizerIfDrained(client, checkpointAt, syncRunId);
   return summary;

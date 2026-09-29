@@ -1,4 +1,5 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { traceV1Call } from "@/observability/v1-attempt-telemetry";
 import type { OperationalCohort } from "@/domain/operational-learning/checkpoint-policy";
 import {
   FOLLOWUP_MEMBER_MAX_ROWS,
@@ -35,13 +36,13 @@ async function readMemberPage(
   caseIds: string[],
   offset: number,
 ): Promise<FollowupCaseMemberRow[]> {
-  const { data, error } = await (client.from("followup_case_members") as any)
+  const { data, error } = await traceV1Call("case_member_hydration_read", "followup_case_members", null, undefined, () => (client.from("followup_case_members") as any)
     .select(MEMBER_COLUMNS)
     .in("followup_case_id", caseIds)
     .order("followup_case_id", { ascending: true })
     .order("generation_id", { ascending: true })
     .order("order_code", { ascending: true })
-    .range(offset, offset + FOLLOWUP_MEMBER_READ_PAGE_SIZE - 1);
+    .range(offset, offset + FOLLOWUP_MEMBER_READ_PAGE_SIZE - 1));
   if (error) throw error;
   return (data || []) as FollowupCaseMemberRow[];
 }

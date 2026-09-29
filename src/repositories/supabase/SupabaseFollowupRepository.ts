@@ -12,6 +12,7 @@ import {
 } from "@/domain/operational-learning/normalized-followup-members";
 import type { OperationalCohort } from "@/domain/operational-learning/checkpoint-policy";
 import { logRuntimeError } from "@/observability/runtimeDiagnostics";
+import { traceV1Call } from "@/observability/v1-attempt-telemetry";
 import { BaseRepository } from "../base/BaseRepository";
 import type {
   FollowupCaseUpsert,
@@ -224,10 +225,10 @@ export class SupabaseFollowupRepository extends BaseRepository implements IFollo
         .from("followup_cases")
         .select(FOLLOWUP_CASE_LINK_COLUMNS)
         .or(predicates.join(","));
-      const chunkRows = await this.executeMany<FollowupCaseLinkRow>(query as unknown as Promise<{
+      const chunkRows = await traceV1Call("identity_assertion", "followup_cases", null, undefined, () => this.executeMany<FollowupCaseLinkRow>(query as unknown as Promise<{
         data: FollowupCaseLinkRow[] | null;
         error: unknown;
-      }>);
+      }>));
       rows.push(...chunkRows);
     }
 
@@ -319,7 +320,7 @@ export class SupabaseFollowupRepository extends BaseRepository implements IFollo
       .select(FOLLOWUP_CASE_COLUMNS)
       .in("incident_key", incidentKeys);
 
-    const cases = await this.executeMany<FollowupCaseRow>(query as unknown as Promise<{ data: FollowupCaseRow[] | null; error: unknown }>);
+    const cases = await traceV1Call("case_read", "followup_cases", null, undefined, () => this.executeMany<FollowupCaseRow>(query as unknown as Promise<{ data: FollowupCaseRow[] | null; error: unknown }>));
     return hydrateFollowupCaseRows(this.client, cases);
   }
 
@@ -473,11 +474,11 @@ export class SupabaseFollowupRepository extends BaseRepository implements IFollo
           updated_at: now,
         };
       });
-      const inserted = await this.executeMany<FollowupCaseRow>(
+      const inserted = await traceV1Call("parent_insert", "followup_cases", seeds.length, seeds, () => this.executeMany<FollowupCaseRow>(
         (this.client.from("followup_cases") as any)
           .insert(seeds)
           .select(FOLLOWUP_CASE_COLUMNS) as unknown as Promise<{ data: FollowupCaseRow[] | null; error: unknown }>
-      );
+      ));
       for (const row of inserted) {
         if (!row.updated_at) throw new Error(`FOLLOWUP_MEMBER_PARENT_INSERT_MISSING_UPDATED_AT:${row.incident_key}`);
         parentByIncident.set(row.incident_key, { id: row.id, updated_at: row.updated_at });
@@ -509,8 +510,9 @@ export class SupabaseFollowupRepository extends BaseRepository implements IFollo
           source_cohort_sha256: createHash("sha256").update(serialized).digest("hex"),
         };
       });
-      const { error } = await (this.client.from("followup_case_cohort_archive") as any)
-        .upsert(archiveRows, { onConflict: "followup_case_id", ignoreDuplicates: true });
+      const { error } = await traceV1Call("archive_write", "followup_case_cohort_archive", archiveRows.length, archiveRows,
+        () => (this.client.from("followup_case_cohort_archive") as any)
+          .upsert(archiveRows, { onConflict: "followup_case_id", ignoreDuplicates: true }));
       if (error) throw error;
     }
 
@@ -536,12 +538,12 @@ export class SupabaseFollowupRepository extends BaseRepository implements IFollo
       generation_status: "PREPARING",
       committed_at: null,
     }));
-    const { data: registeredData, error: generationRegisterError } = await (this.client.from("followup_case_member_generations") as any)
+    const { data: registeredData, error: generationRegisterError } = await traceV1Call("generation_upsert", "followup_case_member_generations", generationRecords.length, generationRecords, () => (this.client.from("followup_case_member_generations") as any)
       .upsert(generationRecords, {
         onConflict: "followup_case_id,generation_id",
         ignoreDuplicates: true,
       })
-      .select("followup_case_id,generation_id,source_sync_run_id,expected_member_count,generation_status");
+      .select("followup_case_id,generation_id,source_sync_run_id,expected_member_count,generation_status"));
     if (generationRegisterError) throw generationRegisterError;
     const generationCaseIds = generationRecords.map((record) => record.followup_case_id);
     const storedGenerationRecords: Array<{
@@ -563,10 +565,10 @@ export class SupabaseFollowupRepository extends BaseRepository implements IFollo
       let pageRecords: any[] | null = null;
       let generationReadError: any = null;
       try {
-        const result = await (this.client.from("followup_case_member_generations") as any)
+        const result = await traceV1Call("generation_manifest_verification", "followup_case_member_generations", null, undefined, () => (this.client.from("followup_case_member_generations") as any)
           .select("followup_case_id,generation_id,source_sync_run_id,expected_member_count,generation_status")
           .eq("generation_id", generationId)
-          .in("followup_case_id", batch);
+          .in("followup_case_id", batch));
         pageRecords = result.data;
         generationReadError = result.error;
       } catch (err: any) {
@@ -615,13 +617,13 @@ export class SupabaseFollowupRepository extends BaseRepository implements IFollo
         const idBatch = caseIds.slice(start, start + 100);
         let offset = 0;
         for (;;) {
-          const { data, error } = await (this.client.from("followup_case_members") as any)
+          const { data, error } = await traceV1Call("member_verification_read", "followup_case_members", null, undefined, () => (this.client.from("followup_case_members") as any)
             .select(FOLLOWUP_MEMBER_COLUMNS)
             .eq("generation_id", generationId)
             .in("followup_case_id", idBatch)
             .order("followup_case_id", { ascending: true })
             .order("order_code", { ascending: true })
-            .range(offset, offset + FOLLOWUP_MEMBER_VERIFY_PAGE_SIZE - 1);
+            .range(offset, offset + FOLLOWUP_MEMBER_VERIFY_PAGE_SIZE - 1));
           if (error) throw error;
           const page = (data || []) as FollowupCaseMemberRow[];
           for (const row of page) {
@@ -652,9 +654,9 @@ export class SupabaseFollowupRepository extends BaseRepository implements IFollo
       const chunk = chunks[chunkIndex];
       let upsertError: any = null;
       try {
-        const result = await (this.client.from("followup_case_members") as any)
+        const result = await traceV1Call("followup_case_members_upsert", "followup_case_members", chunk.length, chunk, () => (this.client.from("followup_case_members") as any)
           .upsert(chunk, { onConflict: "followup_case_id,generation_id,order_code" })
-          .select(FOLLOWUP_MEMBER_COLUMNS);
+          .select(FOLLOWUP_MEMBER_COLUMNS));
         upsertError = result.error;
         if (!upsertError && Array.isArray(result.data)) {
           for (const row of result.data as FollowupCaseMemberRow[]) {
@@ -722,7 +724,8 @@ export class SupabaseFollowupRepository extends BaseRepository implements IFollo
       let updatedRows: any[] | null = null;
       let rpcError: any = null;
       try {
-        const res = await (this.client.rpc as any)("batch_update_followup_cases_cohort", { p_updates: updatesPayload });
+        const res = await traceV1Call("batch_update_followup_cases_cohort", "batch_update_followup_cases_cohort", updatesPayload.length, updatesPayload,
+          () => (this.client.rpc as any)("batch_update_followup_cases_cohort", { p_updates: updatesPayload }));
         updatedRows = res.data;
         rpcError = res.error;
       } catch (err: any) {
@@ -760,14 +763,14 @@ export class SupabaseFollowupRepository extends BaseRepository implements IFollo
               .eq("updated_at", parent.updated_at)
               .select(FOLLOWUP_CASE_LINK_COLUMNS)
               .maybeSingle();
-            const { data, error } = await update;
+            const { data, error } = await traceV1Call("parent_update_fallback", "followup_cases", 1, undefined, () => update);
             if (error) throw error;
             if (data) return data as FollowupCaseLinkRow;
 
-            const { data: current, error: readError } = await (this.client.from("followup_cases") as any)
+            const { data: current, error: readError } = await traceV1Call("parent_read_fallback", "followup_cases", 1, undefined, () => (this.client.from("followup_cases") as any)
               .select("id,incident_id,incident_key,cohort_version,member_generation_id")
               .eq("id", parent.id)
-              .maybeSingle();
+              .maybeSingle());
             if (readError) throw readError;
             if (current?.cohort_version === 2 && current.member_generation_id === generationId) {
               return { id: current.id, incident_id: current.incident_id, incident_key: current.incident_key } as FollowupCaseLinkRow;
@@ -779,11 +782,11 @@ export class SupabaseFollowupRepository extends BaseRepository implements IFollo
 
         for (let start = 0; start < generationCaseIds.length; start += 100) {
           const caseIds = generationCaseIds.slice(start, start + 100);
-          const { data: verified, error } = await (this.client.from("followup_case_member_generations") as any)
+          const { data: verified, error } = await traceV1Call("generation_commit_fallback", "followup_case_member_generations", caseIds.length, undefined, () => (this.client.from("followup_case_member_generations") as any)
             .update({ generation_status: "COMMITTED", committed_at: new Date().toISOString() })
             .eq("generation_id", generationId)
             .in("followup_case_id", caseIds)
-            .select("followup_case_id,generation_status,committed_at");
+            .select("followup_case_id,generation_status,committed_at"));
           if (error) throw error;
           if ((verified || []).length !== caseIds.length
             || verified.some((record: any) => record.generation_status !== "COMMITTED" || !record.committed_at)) {
@@ -832,7 +835,8 @@ export class SupabaseFollowupRepository extends BaseRepository implements IFollo
         .insert(payload)
         .select(FOLLOWUP_EVENT_COLUMNS);
 
-    return this.executeMany<FollowupEventRow>(query as unknown as Promise<{ data: FollowupEventRow[] | null; error: unknown }>);
+    return traceV1Call("event_persistence", "followup_events", payload.length, payload,
+      () => this.executeMany<FollowupEventRow>(query as unknown as Promise<{ data: FollowupEventRow[] | null; error: unknown }>));
   }
 
   async getEventsByCaseId(followupCaseId: string): Promise<FollowupEventRow[]> {
