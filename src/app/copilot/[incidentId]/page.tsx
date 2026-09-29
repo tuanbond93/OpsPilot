@@ -7,6 +7,7 @@ import { ArrowLeft, Check, Pencil, RefreshCw, ShieldAlert, X } from "lucide-reac
 import { incidentRuleExplanation, incidentSignalLabel, repairOperationalText, translateStatus } from "@/app/_components/operationalText";
 import { handleApiAccess } from "@/app/_components/apiAccess";
 import { useOpsSession } from "@/app/_components/useOpsSession";
+import { actionableApprovalRecommendation, usableApprovalText } from "@/app/_components/approvalContent";
 
 type ReviewStatus = "APPROVED" | "EDITED" | "REJECTED";
 type Json = Record<string, any>;
@@ -17,18 +18,6 @@ function displayValue(value: unknown): string {
   if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") return repairOperationalText(value);
   if (typeof value === "object" && value && "level" in value) return translateStatus((value as { level?: unknown }).level);
   return repairOperationalText(JSON.stringify(value));
-}
-
-function usableText(value: unknown): string | null {
-  const text = repairOperationalText(value).trim();
-  if (!text || text === "—" || /(?:not valid json|json parse|schema error|provider\/model error|ai response)/i.test(text)) return null;
-  return text;
-}
-
-function actionableRecommendation(value: unknown): string | null {
-  const text = usableText(value);
-  if (!text || /^(?:ưu tiên|tiếp tục theo dõi|xử lý sớm|kiểm tra tình hình|ưu tiên xử lý).*$/i.test(text)) return null;
-  return text;
 }
 
 async function optionalJson(url: string): Promise<Json | null> {
@@ -102,11 +91,11 @@ export default function CopilotReviewPage() {
   const latestSnapshot = history[0] || null;
   const maximumAgeHours = latestSnapshot?.maximumAgeHours;
   const rootCauseItems: CauseDisplay[] = (Array.isArray(rootCause?.analysis?.causes) ? rootCause.analysis.causes : [])
-    .map((item: Json) => ({ cause: usableText(item.title || item.explanation), evidence: [usableText(item.explanation)].filter((value: string | null): value is string => Boolean(value)).slice(0, 3) }))
+    .map((item: Json) => ({ cause: usableApprovalText(item.title || item.explanation), evidence: [usableApprovalText(item.explanation)].filter((value: string | null): value is string => Boolean(value)).slice(0, 3) }))
     .filter((item: { cause: string | null }) => Boolean(item.cause)).slice(0, 3);
-  const fallbackCause = usableText(result?.summary?.rootCause);
-  const causes: CauseDisplay[] = rootCauseItems.length ? rootCauseItems : fallbackCause ? [{ cause: fallbackCause, evidence: Object.values(result?.evidence || {}).flat().map(usableText).filter((value: string | null): value is string => Boolean(value)).slice(0, 3) }] : [];
-  const recommendations: string[] = (result?.summary?.recommendedActions || []).map(actionableRecommendation).filter((value: string | null): value is string => Boolean(value));
+  const fallbackCause = usableApprovalText(result?.summary?.rootCause);
+  const causes: CauseDisplay[] = rootCauseItems.length ? rootCauseItems : fallbackCause ? [{ cause: fallbackCause, evidence: Object.values(result?.evidence || {}).flat().map(usableApprovalText).filter((value: string | null): value is string => Boolean(value)).slice(0, 3) }] : [];
+  const recommendations: string[] = (result?.summary?.recommendedActions || []).map(actionableApprovalRecommendation).filter((value: string | null): value is string => Boolean(value));
 
   return <main id="main-content" tabIndex={-1} className="min-h-dvh bg-slate-950 px-4 py-6 text-slate-100 sm:px-6 lg:px-8"><div className="mx-auto max-w-7xl space-y-5">
     <header className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between"><div><Link href="/reviews" className="inline-flex min-h-11 items-center gap-2 rounded-md text-sm font-semibold text-blue-300 hover:text-blue-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-400"><ArrowLeft aria-hidden="true" size={17}/>Các bản cần phê duyệt</Link><div className="mt-2 flex flex-wrap items-center gap-3"><h1 className="text-2xl font-bold sm:text-3xl">Phê duyệt sự cố</h1><span className="rounded-full border border-amber-500/40 bg-amber-500/10 px-2.5 py-1 text-xs font-bold text-amber-200">{translateStatus(reviewStatus)}</span></div><p className="mt-1 text-sm text-slate-400">Kiểm tra bằng chứng và hành động đề xuất trước khi phê duyệt, chỉnh sửa hoặc từ chối.</p></div><button type="button" onClick={() => void load()} disabled={loading} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-lg border border-slate-700 px-4 text-sm font-semibold hover:bg-slate-900 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-400 disabled:opacity-50"><RefreshCw aria-hidden="true" size={17} className={loading ? "animate-spin motion-reduce:animate-none" : ""}/>Làm mới</button></header>
