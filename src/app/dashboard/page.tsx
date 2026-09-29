@@ -6,7 +6,6 @@ import { Minus, TrendingDown, TrendingUp, CircleHelp, ChevronDown, RefreshCw, Se
 import { incidentRuleExplanation, incidentSignalLabel, repairOperationalText, statusGuidance, translateStatus } from "@/app/_components/operationalText";
 import { handleApiAccess } from "@/app/_components/apiAccess";
 import { useOpsSession } from "@/app/_components/useOpsSession";
-import { OperatorStartHere } from "@/app/dashboard/OperatorStartHere";
 import { CHECKPOINT_HOURS } from "@/domain/operational-learning/checkpoint-policy";
 
 interface KPIs {
@@ -515,7 +514,7 @@ export default function ExecutiveDashboardPage() {
   const primaryTask = session.role === "REVIEWER" && copilotReviews.pending > 0
     ? { eyebrow: "Ưu tiên của người duyệt", title: `${copilotReviews.pending} bản tổng hợp đang chờ bạn`, detail: "Đối chiếu bằng chứng còn mới trước khi duyệt hoặc từ chối.", href: "/reviews", cta: "Mở hàng đợi cần duyệt", tone: "border-amber-500/40 from-amber-500/15" }
     : (session.role === "MANAGER" || session.role === "ADMIN") && (kpis?.plannerDraftsWaitingReview || 0) > 0
-      ? { eyebrow: "Ưu tiên của quản lý", title: `${kpis?.plannerDraftsWaitingReview || 0} đề xuất cần quyết định`, detail: "Kiểm tra mức ảnh hưởng, bằng chứng và người chịu trách nhiệm trước khi phê duyệt.", href: "/planner", cta: "Mở đề xuất cần quyết định", tone: "border-violet-500/40 from-violet-500/15" }
+      ? { eyebrow: "Ưu tiên của quản lý", title: `${kpis?.plannerDraftsWaitingReview || 0} đề xuất cần quyết định`, detail: "Kiểm tra mức ảnh hưởng, bằng chứng và người chịu trách nhiệm trước khi phê duyệt.", href: "/reviews", cta: "Mở sự cố cần phê duyệt", tone: "border-violet-500/40 from-violet-500/15" }
       : topIncident
         ? { eyebrow: "Việc nên làm ngay", title: `${topIncident.warehouseName} · ${incidentSignalLabel(topIncident.reasonName)}`, detail: `${topIncident.affectedOrderCount} đơn ảnh hưởng · đơn lâu nhất ${topIncident.maximumAgeHours ?? "—"} giờ · mức ${priorityPresentation(topIncident.priorityScore).label.toLowerCase()}.`, href: `/incidents/${encodeURIComponent(topIncident.incidentId)}`, cta: "Mở sự cố và kiểm tra", tone: "border-rose-500/40 from-rose-500/15" }
         : { eyebrow: "Không có việc khẩn cấp", title: "Phạm vi hiện tại chưa có sự cố cần xử lý", detail: "Bạn có thể xem kết quả đang theo dõi hoặc đổi phạm vi kho.", href: "/followups", cta: "Xem kết quả đang theo dõi", tone: "border-emerald-500/40 from-emerald-500/15" };
@@ -618,11 +617,6 @@ export default function ExecutiveDashboardPage() {
         </div>
       )}
 
-      <OperatorStartHere
-        incidents={data?.source === "degraded_fallback" ? 0 : (kpis?.activeIncidents || 0)}
-        reviews={copilotReviews.unavailable ? 0 : copilotReviews.pending}
-        followups={data?.source === "degraded_fallback" ? 0 : (kpis?.followupsWaiting || 0)}
-      />
 
       <section aria-labelledby="primary-task-heading" className={`rounded-2xl border bg-gradient-to-br ${primaryTask.tone} to-slate-950 p-5 shadow-xl sm:p-6`}>
         <div className="flex flex-col gap-5 lg:flex-row lg:items-center lg:justify-between">
@@ -651,7 +645,7 @@ export default function ExecutiveDashboardPage() {
             <span className="mt-2 block font-mono text-3xl font-bold text-amber-300">{copilotReviews.unavailable ? "—" : copilotReviews.pending}</span>
             {!copilotReviews.unavailable && <span className="text-xs text-amber-100/70">trên {copilotReviews.total} kết quả có sẵn</span>}
           </Link>
-          <Link href="/planner" className="min-h-28 rounded-xl border border-purple-500/30 bg-purple-500/10 p-4 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-purple-300">
+          <Link href="/reviews" className="min-h-28 rounded-xl border border-purple-500/30 bg-purple-500/10 p-4 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-purple-300">
             <span className="text-xs font-semibold uppercase tracking-wide text-purple-200">Đề xuất của AI cần con người duyệt</span>
             <span className="mt-2 block font-mono text-3xl font-bold text-purple-300">{data?.source === "degraded_fallback" ? "—" : kpis?.plannerDraftsWaitingReview || 0}</span>
           </Link>
