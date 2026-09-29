@@ -26,6 +26,7 @@ import {
 import type { ActionQueueMetrics, IActionQueue, LegacyNotificationActionEvidence } from "../action-queue/IActionQueue";
 import { logRuntimeError, logRuntimeMessage, serializedPayloadBytes } from "@/observability/runtimeDiagnostics";
 import { logger } from "@/observability/logger";
+import { endV1GapSpan, startV1GapSpan, traceV1Gap, traceV1GapSync, v1GapSerializedBytes } from "@/observability/v1-gap-telemetry";
 import type { NormalizedRillnetOrder } from "@/connectors/rillnet";
 import { assessOperationalCohort, evidenceFromOrder, checkpointKey, localHour, isFreshRillnetSnapshot, nextCheckpoint, OPERATIONAL_CHECKPOINT_POLICY_VERSION } from "@/domain/operational-learning/checkpoint-policy";
 import {
@@ -172,8 +173,20 @@ export class FollowupEngine {
       const chunk = cases.slice(index, index + FOLLOWUP_LEGACY_READ_BATCH_SIZE);
       queryCount += 2;
       const [eventResult, actionResult] = await Promise.allSettled([
-        getEventsByCaseIds(chunk.map(item => item.id)),
-        getActionsByIncidentIds(chunk.map(item => item.incident_id)),
+        traceV1Gap(
+          "legacy_event_evidence_read",
+          { input_rows: chunk.length },
+          () => getEventsByCaseIds(chunk.map(item => item.id)),
+          value => ({ output_rows: value?.length || 0, output_bytes: v1GapSerializedBytes(value) }),
+          "followup_events",
+        ),
+        traceV1Gap(
+          "legacy_action_evidence_read",
+          { input_rows: chunk.length },
+          () => getActionsByIncidentIds(chunk.map(item => item.incident_id)),
+          value => ({ output_rows: value?.length || 0, output_bytes: v1GapSerializedBytes(value) }),
+          "notification_actions",
+        ),
       ]);
 
       if (eventResult.status !== "fulfilled" || actionResult.status !== "fulfilled" || actionResult.value === null) {
@@ -293,7 +306,16 @@ export class FollowupEngine {
     }
     // A failed read must abort; replacing an unavailable baseline would erase old work.
     const existing = durableV1 ? durableV1.existingCases : await this.loadOperationalCases(metrics);
-    const byKey = new Map(existing.map(item => [item.incident_key, item]));
+    const postHydrationSpan = startV1GapSpan("post_hydration_to_plan_journal", {
+      input_rows: existing.length + orders.length,
+      input_bytes: (v1GapSerializedBytes(existing) || 0) + (v1GapSerializedBytes(orders) || 0),
+    });
+    const byKey = traceV1GapSync(
+      "existing_case_index",
+      { input_rows: existing.length, input_bytes: v1GapSerializedBytes(existing) },
+      () => new Map(existing.map(item => [item.incident_key, item])),
+      value => ({ output_rows: value.size, output_bytes: v1GapSerializedBytes([...value.keys()]) }),
+    );
     const incomingByKey = new Map<string, string>();
     const incomingById = new Map<string, string>();
     for (const incident of incidents) {
@@ -328,19 +350,32 @@ export class FollowupEngine {
         byKey.set(matchingCase.incident_key, matchingCase);
       }
     }
-    const membership = new Map(orders.map(order => [order.orderCode, evidenceFromOrder(order)]));
+    const membership = traceV1GapSync(
+      "order_evidence_normalization",
+      { input_rows: orders.length, input_bytes: v1GapSerializedBytes(orders) },
+      () => new Map(orders.map(order => [order.orderCode, evidenceFromOrder(order)])),
+      value => ({ output_rows: value.size, output_bytes: v1GapSerializedBytes([...value.values()]) }),
+    );
     // Routine operational checkpoints are Rillnet-first. GHN enrichment is
     // deliberately outside this synchronous checkpoint path.
     const observations = membership;
-    const work = new Map(incidents.map(incident => [incident.incidentKey, incident]));
-    for (const item of existing) {
-      if (work.has(item.incident_key) || !item.operational_cohort || item.current_state === "CLOSED") continue;
-      const member = item.operational_cohort.members[0];
-      work.set(item.incident_key, { incidentId: item.incident_id, incidentKey: item.incident_key,
-        warehouseId: member?.warehouseId || "", warehouseName: item.incident_key, reasonCode: "KHO_TON", reasonName: "Theo dõi nhóm đơn cũ",
-        status: "monitoring", priorityScore: 0, firstDetectedAt: item.first_detected_at, lastDetectedAt: new Date(now).toISOString(),
-        affectedOrderCount: 0, affectedOrders: [], sampleOrderCodes: [], averageAgeHours: null, maximumAgeHours: null, oldestOrderCode: null });
-    }
+    const work = traceV1GapSync(
+      "work_map_merge",
+      { input_rows: incidents.length + existing.length, input_bytes: (v1GapSerializedBytes(incidents) || 0) + (v1GapSerializedBytes(existing) || 0) },
+      () => {
+        const merged = new Map(incidents.map(incident => [incident.incidentKey, incident]));
+        for (const item of existing) {
+          if (merged.has(item.incident_key) || !item.operational_cohort || item.current_state === "CLOSED") continue;
+          const member = item.operational_cohort.members[0];
+          merged.set(item.incident_key, { incidentId: item.incident_id, incidentKey: item.incident_key,
+            warehouseId: member?.warehouseId || "", warehouseName: item.incident_key, reasonCode: "KHO_TON", reasonName: "Theo dõi nhóm đơn cũ",
+            status: "monitoring", priorityScore: 0, firstDetectedAt: item.first_detected_at, lastDetectedAt: new Date(now).toISOString(),
+            affectedOrderCount: 0, affectedOrders: [], sampleOrderCodes: [], averageAgeHours: null, maximumAgeHours: null, oldestOrderCode: null });
+        }
+        return merged;
+      },
+      value => ({ output_rows: value.size, output_bytes: v1GapSerializedBytes([...value.values()]) }),
+    );
     const legacyRecoveryCandidates = [...work.values()].flatMap((incident) => {
       const prior = byKey.get(incident.incidentKey);
       const alreadyProcessed = prior?.operational_cohort?.lastCheckpoint === checkpoint
@@ -359,12 +394,26 @@ export class FollowupEngine {
       const prior = byKey.get(incident.incidentKey);
       if (prior?.operational_cohort?.lastCheckpoint === checkpoint
         && !Object.keys(prior.operational_cohort.verification?.failures || {}).length) continue;
-      const codes = new Set([
-        ...(prior?.operational_cohort?.members || []).map(member => member.orderCode),
-        ...(incident.affectedOrders || []),
-      ]);
-      const incoming = [...codes].flatMap(code => { const order = membership.get(code); return order ? [order] : []; });
-      const assessment = assessOperationalCohort(prior?.operational_cohort, incoming, observations, now);
+      const memberInputs = traceV1GapSync(
+        "case_member_set_and_lookup",
+        { input_rows: (prior?.operational_cohort?.members?.length || 0) + (incident.affectedOrders || []).length },
+        () => {
+          const codes = new Set([
+            ...(prior?.operational_cohort?.members || []).map(member => member.orderCode),
+            ...(incident.affectedOrders || []),
+          ]);
+          const incoming = [...codes].flatMap(code => { const order = membership.get(code); return order ? [order] : []; });
+          return { codes, incoming };
+        },
+        value => ({ output_rows: value.incoming.length, output_bytes: v1GapSerializedBytes(value.incoming) }),
+      );
+      const incoming = memberInputs.incoming;
+      const assessment = traceV1GapSync(
+        "case_cohort_assessment",
+        { input_rows: incoming.length, input_bytes: v1GapSerializedBytes(incoming) },
+        () => assessOperationalCohort(prior?.operational_cohort, incoming, observations, now),
+        value => ({ output_rows: value.cohort.members.length, output_bytes: v1GapSerializedBytes(value.cohort) }),
+      );
       const oldState = prior?.current_state || "NEW";
       const mayRecoverLegacyUnpushed = this.canRecoverLegacyUnpushedCase(
         prior,
@@ -468,12 +517,17 @@ export class FollowupEngine {
         mutations.push(mutation);
         params.push(processParams);
       }
-      const payload = FollowupMessageBuilder.buildPayload({ warehouse: incident.warehouseName, reason: incident.reasonName,
-        currentCount: processParams.latestCount, baselineCount: assessment.due, previousCount: prior?.latest_affected_order_count || 0,
-        progressPercent: assessment.progressPercent, progressAssessment: assessment.assessment, riskScore: incident.priorityScore,
-        riskLevel: "medium", rootCauseSummary: notes, state: newState, nextActionAt: transitionResult.nextActionAt || null,
-        lastActionRequestedAt: transitionResult.actionRequestedAt || prior?.last_action_requested_at || null,
-        lastActionConfirmedAt: prior?.last_action_confirmed_at || null });
+      const payload = traceV1GapSync(
+        "action_payload_build",
+        { input_rows: assessment.cohort.members.length, input_bytes: v1GapSerializedBytes(assessment.cohort) },
+        () => FollowupMessageBuilder.buildPayload({ warehouse: incident.warehouseName, reason: incident.reasonName,
+          currentCount: processParams.latestCount, baselineCount: assessment.due, previousCount: prior?.latest_affected_order_count || 0,
+          progressPercent: assessment.progressPercent, progressAssessment: assessment.assessment, riskScore: incident.priorityScore,
+          riskLevel: "medium", rootCauseSummary: notes, state: newState, nextActionAt: transitionResult.nextActionAt || null,
+          lastActionRequestedAt: transitionResult.actionRequestedAt || prior?.last_action_requested_at || null,
+          lastActionConfirmedAt: prior?.last_action_confirmed_at || null }),
+        value => ({ output_rows: 1, output_bytes: v1GapSerializedBytes(value) }),
+      );
       const actionTypeByState: Partial<Record<FollowupState, ActionType>> = {
         FIRST_PUSH_PENDING: "FIRST_PUSH",
         SECOND_PUSH_PENDING: "SECOND_PUSH",
@@ -506,6 +560,10 @@ export class FollowupEngine {
       candidateCount: work.size,
       skippedUnchangedNotDue,
     };
+    endV1GapSpan(postHydrationSpan, {
+      output_rows: plan.results.length,
+      output_bytes: v1GapSerializedBytes(plan),
+    });
     if (durableV1) await durableV1.journalPlan(plan);
     await this.persistOrderCohortPlan(plan, metrics, syncRunId, Boolean(durableV1));
     logRuntimeMessage(`[LoadSheddingMetrics] followup_candidates_before=${work.size} heavy_cases_after=${mutations.length} skipped_unchanged_not_due=${skippedUnchangedNotDue}`);
