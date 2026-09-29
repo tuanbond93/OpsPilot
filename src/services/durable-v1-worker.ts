@@ -67,9 +67,14 @@ async function loadInput(client: SupabaseClient, unit: CheckpointWorkUnit): Prom
   return data as StoredInput;
 }
 
+export function journaledV1Cursor(unit: CheckpointWorkUnit, plan: DurableV1FollowupPlan): CheckpointWorkUnit["cursor"] {
+  const { chunkOrders: _consumedChunkOrders, ...metadata } = unit.cursor.metadata || {};
+  return { ...unit.cursor, metadata: { ...metadata, plan } };
+}
+
 async function journalPlan(client: SupabaseClient, unit: CheckpointWorkUnit, workerId: string, plan: DurableV1FollowupPlan): Promise<void> {
   const { data, error } = await traceV1Call("plan_journal", "checkpoint_work_units", 1, undefined, () => client.from("checkpoint_work_units")
-    .update({ cursor: { ...unit.cursor, metadata: { ...unit.cursor.metadata, plan } } })
+    .update({ cursor: journaledV1Cursor(unit, plan) })
     .eq("id", unit.id).eq("status", "LEASED").eq("lease_owner", workerId)
     .select("id"));
   if (error) throw error;
@@ -151,7 +156,16 @@ async function v1CaseUnits(client: SupabaseClient, checkpointAt: string, syncRun
       && unit.cursor.metadata?.pipelineVersion === "V1");
 }
 
-async function seedFinalizerIfDrained(client: SupabaseClient, checkpointAt: string, syncRunId: string) {
+export async function persistedV1PartitionCount(client: SupabaseClient, syncRunId: string): Promise<number> {
+  const { count, error } = await client.from("checkpoint_v1_followup_input_chunks")
+    .select("chunk_index", { count: "exact", head: true })
+    .eq("sync_run_id", syncRunId);
+  if (error) throw error;
+  if (count === null) throw new Error("V1_PERSISTED_PARTITION_COUNT_UNAVAILABLE");
+  return count;
+}
+
+export async function seedFinalizerIfDrained(client: SupabaseClient, checkpointAt: string, syncRunId: string) {
   const units = await v1CaseUnits(client, checkpointAt, syncRunId);
   const failedUnit = units.find(unit => unit.status === "FAILED");
   if (failedUnit) {
@@ -172,7 +186,7 @@ async function seedFinalizerIfDrained(client: SupabaseClient, checkpointAt: stri
     .select("candidate_keys,producer_completed_at")
     .eq("sync_run_id", syncRunId).single();
   if (error) throw error;
-  const expected = Math.ceil((input.candidate_keys as string[]).length / 25);
+  const expected = await persistedV1PartitionCount(client, syncRunId);
   if (!input.producer_completed_at || units.length !== expected
     || units.some(unit => unit.status !== "COMPLETED")) return false;
   const queue = new SupabaseCheckpointWorkQueueRepository(client);
@@ -194,7 +208,7 @@ async function executeDurableV1Finalizer(client: SupabaseClient, unit: Checkpoin
     .select("checkpoint_at,reference_time_ms,incidents,candidate_keys,producer_completed_at")
     .eq("sync_run_id", unit.syncRunId).single();
   if (error) throw error;
-  const expected = Math.ceil((input.candidate_keys as string[]).length / 25);
+  const expected = await persistedV1PartitionCount(client, unit.syncRunId);
   if (!input.producer_completed_at || units.length !== expected
     || units.some(item => item.status !== "COMPLETED")) {
     throw new Error("V1_FINALIZER_WORK_NOT_DRAINED");

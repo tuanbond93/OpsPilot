@@ -5,6 +5,8 @@ import type { Incident } from "@/engine/incident";
 import { SupabaseCheckpointWorkQueueRepository } from "@/repositories/supabase/SupabaseCheckpointWorkQueueRepository";
 
 export const V1_FOLLOWUP_CHUNK_SIZE = 25;
+export const V1_FOLLOWUP_MAX_MEMBERS = 2500;
+export const V1_FOLLOWUP_MAX_INPUT_BYTES = 2_000_000;
 const V1_WORK_TYPE = "EVALUATE_FOLLOWUP_BATCH";
 
 export function durableV1InputHash(checkpointAt: string, orders: unknown[], incidents: Incident[]): string {
@@ -79,6 +81,55 @@ export function partitionV1CandidateKeys(keys: string[], chunkSize = V1_FOLLOWUP
   return chunks;
 }
 
+export function partitionWeightedV1Candidates(
+  keys: string[],
+  orderCodesByCaseKey: ReadonlyMap<string, ReadonlySet<string>>,
+  ordersByCode: ReadonlyMap<string, NormalizedRillnetOrder>,
+  limits = {
+    maxCases: V1_FOLLOWUP_CHUNK_SIZE,
+    maxMembers: V1_FOLLOWUP_MAX_MEMBERS,
+    maxInputBytes: V1_FOLLOWUP_MAX_INPUT_BYTES,
+  },
+): string[][] {
+  if (![limits.maxCases, limits.maxMembers, limits.maxInputBytes]
+    .every(value => Number.isInteger(value) && value > 0)) throw new Error("V1_FOLLOWUP_PARTITION_LIMIT_INVALID");
+  const unique = new Set(keys);
+  if (unique.size !== keys.length || keys.some(key => !key)) throw new Error("V1_FOLLOWUP_CANDIDATE_IDENTITY_DUPLICATE");
+
+  const chunks: string[][] = [];
+  let currentKeys: string[] = [];
+  let currentCodes = new Set<string>();
+  const projectedBytes = (codes: ReadonlySet<string>) => Buffer.byteLength(JSON.stringify(
+    [...codes].flatMap(code => {
+      const order = ordersByCode.get(code);
+      return order ? [order] : [];
+    }),
+  ), "utf8");
+
+  for (const key of keys) {
+    const nextCodes = new Set(currentCodes);
+    for (const code of orderCodesByCaseKey.get(key) || []) {
+      if (ordersByCode.has(code)) nextCodes.add(code);
+    }
+    const exceeds = currentKeys.length > 0 && (
+      currentKeys.length + 1 > limits.maxCases
+      || nextCodes.size > limits.maxMembers
+      || projectedBytes(nextCodes) > limits.maxInputBytes
+    );
+    if (exceeds) {
+      chunks.push(currentKeys);
+      currentKeys = [];
+      currentCodes = new Set();
+    }
+    currentKeys.push(key);
+    for (const code of orderCodesByCaseKey.get(key) || []) {
+      if (ordersByCode.has(code)) currentCodes.add(code);
+    }
+  }
+  if (currentKeys.length > 0) chunks.push(currentKeys);
+  return chunks;
+}
+
 /** Save the lightweight manifest (incidents, metadata, and empty orders array) before the history barrier. */
 export async function persistDurableV1Input(client: SupabaseClient, input: DurableV1Input): Promise<void> {
   const { checkpointAt, syncRunId } = input;
@@ -149,8 +200,6 @@ export async function seedDurableV1Followups(
     existingCases = await listOpenCaseIdentities(client);
   }
 
-  const chunks = partitionV1CandidateKeys(candidateKeys);
-
   // Map each candidate key to its required order codes
   const orderCodesByCaseKey = new Map<string, Set<string>>();
   for (const inc of (stored.incidents as Incident[])) {
@@ -171,6 +220,8 @@ export async function seedDurableV1Followups(
       ordersByCode.set(o.orderCode, o);
     }
   }
+
+  const chunks = partitionWeightedV1Candidates(candidateKeys, orderCodesByCaseKey, ordersByCode);
 
   // Pre-project chunk orders and chunk incidents
   const incidentMap = new Map((stored.incidents as Incident[]).map(inc => [inc.incidentKey, inc]));
@@ -223,14 +274,18 @@ export async function seedDurableV1Followups(
   }
 
   const queue = new SupabaseCheckpointWorkQueueRepository(client);
-  const units = chunks.map((keys, chunkIndex) => ({
+  let caseOffset = 0;
+  const units = chunks.map((keys, chunkIndex) => {
+    const offset = caseOffset;
+    caseOffset += keys.length;
+    return ({
     checkpointAt,
     syncRunId,
     stage: "FOLLOWUPS_PROCESSING" as const,
     workType: V1_WORK_TYPE as "EVALUATE_FOLLOWUP_BATCH",
     partitionKey: `v1_followup_${chunkIndex}_of_${chunks.length}`,
     cursor: {
-      offset: chunkIndex * V1_FOLLOWUP_CHUNK_SIZE,
+      offset,
       limit: keys.length,
       total: candidateKeys.length,
       metadata: {
@@ -242,7 +297,8 @@ export async function seedDurableV1Followups(
     },
     executionMode: "PRODUCTION" as const,
     idempotencyKey: `${checkpointAt}:${syncRunId}:V1:${chunkIndex}`,
-  }));
+    });
+  });
   const newlyCreatedUnits = await queue.createWorkUnits(units);
   const persisted = (await queue.getWorkUnitsForCheckpoint(checkpointAt))
     .filter(unit => unit.syncRunId === syncRunId && unit.workType === V1_WORK_TYPE

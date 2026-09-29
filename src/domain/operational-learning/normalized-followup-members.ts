@@ -1,7 +1,7 @@
 import type { CohortMember, OperationalCohort } from "./checkpoint-policy";
 
 export const FOLLOWUP_MEMBER_MAX_ROWS = 500;
-export const FOLLOWUP_MEMBER_MAX_SERIALIZED_BYTES = 131_072;
+export const FOLLOWUP_MEMBER_MAX_SERIALIZED_BYTES = 524_288;
 export const FOLLOWUP_COHORT_NORMAL_TARGET_BYTES = 32_768;
 export const FOLLOWUP_COHORT_HARD_LIMIT_BYTES = 131_072;
 

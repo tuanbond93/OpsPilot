@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { persistDurableV1Input, seedDurableV1Followups, durableV1InputHash } from "@/services/durable-v1-followup";
-import { executeDurableV1CaseUnit } from "@/services/durable-v1-worker";
+import { executeDurableV1CaseUnit, journaledV1Cursor, persistedV1PartitionCount, seedFinalizerIfDrained } from "@/services/durable-v1-worker";
 import type { Incident } from "@/engine/incident";
 import type { NormalizedRillnetOrder } from "@/connectors/rillnet/types";
 
@@ -43,6 +43,63 @@ function mockOrder(code: string): NormalizedRillnetOrder {
 }
 
 describe("Durable V1 Partitioned Input", () => {
+  it("derives finalizer expected units from persisted partition rows", async () => {
+    const eq = vi.fn().mockResolvedValue({ count: 2, error: null });
+    const select = vi.fn().mockReturnValue({ eq });
+    const client: any = { from: vi.fn().mockReturnValue({ select }) };
+    await expect(persistedV1PartitionCount(client, "sync-policy-b")).resolves.toBe(2);
+    expect(client.from).toHaveBeenCalledWith("checkpoint_v1_followup_input_chunks");
+    expect(select).toHaveBeenCalledWith("chunk_index", { count: "exact", head: true });
+    expect(eq).toHaveBeenCalledWith("sync_run_id", "sync-policy-b");
+  });
+
+  it("seeds the finalizer from variable persisted partition count, not candidate-count arithmetic", async () => {
+    const checkpointAt = "2026-09-29T07:00:00.000Z";
+    const syncRunId = "sync-policy-b-finalizer";
+    let finalizerRows: any[] = [];
+    const completedRows = [0, 1].map(index => ({
+      id: `unit-${index}`, checkpoint_at: checkpointAt, sync_run_id: syncRunId,
+      work_type: "EVALUATE_FOLLOWUP_BATCH", stage: "FOLLOWUPS_PROCESSING",
+      partition_key: `v1_followup_${index}_of_2`, cursor: { metadata: { pipelineVersion: "V1", chunkIndex: index } },
+      status: "COMPLETED", execution_mode: "PRODUCTION", attempts: 1, max_attempts: 3,
+      idempotency_key: `${checkpointAt}:${syncRunId}:V1:${index}`,
+    }));
+    const client: any = { from: vi.fn((table: string) => {
+      if (table === "checkpoint_v1_followup_input_chunks") return {
+        select: vi.fn().mockReturnValue({ eq: vi.fn().mockResolvedValue({ count: 2, error: null }) }),
+      };
+      if (table === "checkpoint_v1_followup_inputs") return {
+        select: vi.fn().mockReturnThis(), eq: vi.fn().mockReturnThis(),
+        single: vi.fn().mockResolvedValue({ data: { candidate_keys: Array.from({ length: 25 }, (_, i) => `C${i}`), producer_completed_at: checkpointAt }, error: null }),
+      };
+      if (table === "checkpoint_work_units") return {
+        select: vi.fn().mockReturnThis(), eq: vi.fn().mockReturnThis(),
+        order: vi.fn().mockResolvedValue({ data: completedRows, error: null }),
+        upsert: vi.fn((rows: any[]) => {
+          finalizerRows = rows;
+          return { select: vi.fn().mockResolvedValue({ data: [{ id: "finalizer" }], error: null }) };
+        }),
+      };
+      return {};
+    }) };
+
+    await expect(seedFinalizerIfDrained(client, checkpointAt, syncRunId)).resolves.toBe(true);
+    expect(finalizerRows).toHaveLength(1);
+    expect(finalizerRows[0].work_type).toBe("FINALIZE_V1_CHECKPOINT");
+  });
+
+  it("drops consumed chunk orders when journaling the replay plan", () => {
+    const cursor = journaledV1Cursor({
+      cursor: { offset: 0, limit: 25, total: 25, metadata: {
+        pipelineVersion: "V1", chunkIndex: 0, caseKeys: ["INC1"], chunkOrders: [{ orderCode: "ORD1" }],
+      } },
+    } as any, { mutations: [], params: [], actions: [], results: [], candidateCount: 1, skippedUnchangedNotDue: 0 });
+
+    expect(cursor.metadata?.chunkOrders).toBeUndefined();
+    expect(cursor.metadata?.caseKeys).toEqual(["INC1"]);
+    expect(cursor.metadata?.plan).toMatchObject({ candidateCount: 1 });
+  });
+
   it("persists lightweight manifest with empty orders array and deterministic hash", async () => {
     let insertedPayload: any = null;
     const mockClient: any = {
